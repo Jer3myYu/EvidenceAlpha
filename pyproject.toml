@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evidencealpha"
+version = "0.1.0"
+description = "Investment-research agent answering from traceable public evidence."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.4",
+    "pylint>=3.2",
+    "pytest>=8.2",
+]
+
+[tool.setuptools]
+packages = [
+    "contracts",
+    "ingestion",
+    "ingestion.parsing",
+    "ingestion.parsing.adapters",
+    "ingestion.parsing.converters",
+]
+
+[tool.black]
+line-length = 80
+target-version = ["py311", "py312"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
