@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude working notes / scratch (project rule: all Claude markdown lives here)
+tmp/
