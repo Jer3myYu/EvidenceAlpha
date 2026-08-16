@@ -681,8 +681,10 @@ def context_prefix(
     parts: list[str] = []
     if business.company and business.ticker:
         parts.append(f"{business.company} ({business.ticker})")
-    elif business.company or business.ticker:
-        parts.append(business.company or business.ticker or "")
+    elif business.company:
+        parts.append(business.company)
+    elif business.ticker:
+        parts.append(business.ticker)
     filing = " ".join(
         part
         for part in (business.document_type, business.reporting_period)

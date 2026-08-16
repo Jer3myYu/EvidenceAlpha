@@ -534,9 +534,8 @@ class FormatDetector:
         head = _read_head(artifact.path, SNIFF_BYTES)
         signals = [f"source_class={artifact.source_class.value}"]
         conflicts: list[str] = []
-        encrypted = False
 
-        detected, resolution = self._detect_by_container(
+        detected, resolution, encrypted = self._detect_by_container(
             artifact, head, signals
         )
         if detected is DetectedFormat.UNKNOWN:
@@ -545,13 +544,6 @@ class FormatDetector:
             )
         if detected is DetectedFormat.PDF:
             encrypted = _pdf_is_encrypted(artifact.path)
-        elif detected in (
-            DetectedFormat.DOCX,
-            DetectedFormat.XLSX,
-            DetectedFormat.PPTX,
-            DetectedFormat.ZIP_ARCHIVE,
-        ):
-            encrypted = inspect_zip(artifact.path, self._zip_limits).encrypted
         if encrypted:
             signals.append("encrypted_container_detected")
 
@@ -570,35 +562,49 @@ class FormatDetector:
         artifact: shapes.AcquiredArtifact,
         head: bytes,
         signals: list[str],
-    ) -> tuple[DetectedFormat, Resolution]:
-        """Resolve by magic bytes and container signature."""
+    ) -> tuple[DetectedFormat, Resolution, bool]:
+        """Resolve by magic bytes and container signature.
+
+        Returns:
+          The format, the resolution, and whether the container was
+          found to be encrypted — reported from the one inspection so
+          the archive is never opened twice.
+        """
         if head.startswith(_PDF_MAGIC):
             signals.append("magic=pdf_header")
-            return DetectedFormat.PDF, Resolution.EXACT
+            return DetectedFormat.PDF, Resolution.EXACT, False
         if head.startswith(_PNG_MAGIC):
             signals.append("magic=png")
-            return DetectedFormat.PNG_IMAGE, Resolution.EXACT
+            return DetectedFormat.PNG_IMAGE, Resolution.EXACT, False
         if head.startswith(_JPEG_MAGIC):
             signals.append("magic=jpeg")
-            return DetectedFormat.JPEG_IMAGE, Resolution.EXACT
+            return DetectedFormat.JPEG_IMAGE, Resolution.EXACT, False
         if any(head.startswith(magic) for magic in _TIFF_MAGICS):
             signals.append("magic=tiff")
-            return DetectedFormat.TIFF_IMAGE, Resolution.EXACT
+            return DetectedFormat.TIFF_IMAGE, Resolution.EXACT, False
         if head.startswith(_OLE2_MAGIC):
             signals.append("magic=ole2_compound")
             inspection = inspect_ole2(artifact.path)
             signals.append(f"ole2_streams={inspection.format.value}")
             if inspection.format is DetectedFormat.OLE2_COMPOUND:
-                return DetectedFormat.OLE2_COMPOUND, Resolution.AMBIGUOUS
-            return inspection.format, Resolution.EXACT
+                return (
+                    DetectedFormat.OLE2_COMPOUND,
+                    Resolution.AMBIGUOUS,
+                    False,
+                )
+            return inspection.format, Resolution.EXACT, False
         if head.startswith(_ZIP_MAGIC):
             signals.append("magic=zip_container")
             inspection = inspect_zip(artifact.path, self._zip_limits)
             signals.append(f"zip_parts={inspection.format.value}")
             if inspection.format is DetectedFormat.ZIP_ARCHIVE:
-                return DetectedFormat.ZIP_ARCHIVE, Resolution.UNSUPPORTED
-            return inspection.format, Resolution.EXACT
-        return DetectedFormat.UNKNOWN, Resolution.UNSUPPORTED
+                return (
+                    DetectedFormat.ZIP_ARCHIVE,
+                    Resolution.UNSUPPORTED,
+                    inspection.encrypted,
+                )
+            return inspection.format, Resolution.EXACT, inspection.encrypted
+        return DetectedFormat.UNKNOWN, Resolution.UNSUPPORTED, False
 
     def _detect_by_content(
         self,

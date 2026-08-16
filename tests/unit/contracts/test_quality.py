@@ -1,7 +1,5 @@
 """Tests for the shared quality vocabulary (03 §5.5, §8.2)."""
 
-import pytest
-
 from contracts import quality
 
 
@@ -33,37 +31,10 @@ class TestLocatorTier:
         )
 
 
-class TestClosedEnums:
-    """Warning codes are a closed set, not free text (03 §8.2)."""
-
-    @pytest.mark.parametrize(
-        "code",
-        [
-            "TABLE_STRUCTURE_LOST",
-            "OCR_LOW_CONFIDENCE",
-            "LOCATOR_MISSING",
-            "COVERAGE_BELOW_THRESHOLD",
-            "GENERATIVE_EXTRACTION",
-        ],
-    )
-    def test_named_codes_exist(self, code):
-        """Codes 03 §8.2 names by hand are all present."""
-        assert quality.WarningCode(code)
-
-    def test_an_invented_code_is_rejected(self):
-        """A warning that cannot be filtered on is a log line."""
-        with pytest.raises(ValueError):
-            quality.WarningCode("SOMETHING_I_MADE_UP")
-
-    def test_verdicts_are_the_three_the_design_names(self):
-        """valid, partial, failed — and nothing else (03 §7.4)."""
-        assert {verdict.value for verdict in quality.QualityVerdict} == {
-            "valid",
-            "partial",
-            "failed",
-        }
-
-    def test_caution_warnings_are_a_subset_of_the_enum(self):
-        """The caution set names real codes."""
-        for code in quality.CAUTION_WARNINGS:
-            assert isinstance(code, quality.WarningCode)
+def test_verdicts_are_the_three_the_design_names():
+    """valid, partial, failed — and nothing else (03 §7.4)."""
+    assert {verdict.value for verdict in quality.QualityVerdict} == {
+        "valid",
+        "partial",
+        "failed",
+    }

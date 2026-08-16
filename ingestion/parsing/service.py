@@ -340,9 +340,18 @@ class ParserService:
             )
         if fallback is not None and self._should_escalate(attempts[0], binding):
             if self._egress_denial(artifact, fallback) is None:
-                attempts.append(
-                    self._attempt(request, role, fallback, parse_id, True)
-                )
+                try:
+                    attempts.append(
+                        self._attempt(request, role, fallback, parse_id, True)
+                    )
+                except base.UnsupportedContent as unsupported:
+                    # Unlike the primary, an unsupported-content refusal
+                    # from the fallback does not end the parse: the
+                    # primary's result is still on the table, so the
+                    # refusal is recorded and the better attempt wins.
+                    refused = _Attempt(role, fallback, True)
+                    refused.error = f"{unsupported.format_name}: {unsupported}"
+                    attempts.append(refused)
 
         best = self._best(attempts)
         elapsed = time.monotonic() - started

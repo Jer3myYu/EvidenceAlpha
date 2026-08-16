@@ -1,9 +1,10 @@
 """Fixtures for the adapter conformance suite (03 §13).
 
-The suite runs with network access disabled by default. Local adapters
-must pass under that condition: 03 §3.7's "explicitly network-free" is
-asserted here rather than left merely unimplemented — for the real SEC
-adapter this is also 03 §4.1's dedicated offline test.
+The suite runs with network access disabled — the shared ``no_network``
+fixture in the parsing tests' ``conftest.py`` applies here. Local
+adapters must pass under that condition: 03 §3.7's "explicitly
+network-free" is asserted rather than left merely unimplemented — for
+the real SEC adapter this is also 03 §4.1's dedicated offline test.
 
 Each adapter joins the suite as a **case**: the adapter, the route role
 it serves, and a factory for an artifact it can parse. The stubs share
@@ -12,7 +13,6 @@ format.
 """
 
 import os
-import socket
 from typing import Callable, NamedTuple
 
 import pytest
@@ -102,21 +102,6 @@ CONFORMANCE_CASES: tuple[ConformanceCase, ...] = tuple(
         make_artifact=_pdf_artifact,
     ),
 )
-
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    """Fail any attempt to open a socket during the suite."""
-
-    def deny(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError(
-            "the parser subsystem must not touch the network (03 §1.0)"
-        )
-
-    monkeypatch.setattr(socket, "socket", deny)
-    monkeypatch.setattr(socket, "create_connection", deny)
-    monkeypatch.setattr(socket, "getaddrinfo", deny)
 
 
 @pytest.fixture(

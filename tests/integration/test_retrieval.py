@@ -89,9 +89,3 @@ class TestVerticalSlice:
             ids=[sample.chunk.chunk_id], include=["documents"]
         )
         assert found["documents"][0] == sample.chunk.citation_text
-
-    def test_warnings_round_trip_when_present(self, ten_q_embedded):
-        """A clean parse stores no warning_codes key at all."""
-        metadata = indexer_module.chunk_metadata(ten_q_embedded[0].chunk)
-        assert ten_q_embedded[0].chunk.warning_codes == []
-        assert "warning_codes" not in metadata

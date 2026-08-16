@@ -10,7 +10,8 @@ Three things an adapter must never do: dereference a URL derived from
 document content, document metadata, or the artifact's own source URL
 (03 §1.0); write to ChromaDB; or implement RAG chunking.
 
-No concrete adapter lives in this package yet. Roles are declared in
+Concrete adapters live beside this module (``sec_html_lxml``,
+``pdf_pymupdf``). Roles are declared in
 :mod:`ingestion.parsing.capabilities` and bound in
 :mod:`ingestion.parsing.registry`; a role with no binding returns
 ``UNSUPPORTED_FORMAT`` rather than falling through to a text adapter.

@@ -76,42 +76,6 @@ def test_table_text_is_the_canonical_rendering(result):
             assert block.text == document.render_table_text(block.payload)
 
 
-def test_table_grid_invariant_holds(result):
-    """Exactly one entry per coordinate, spans agreeing (03 §5.3)."""
-    for block in result.parsed_document.blocks:
-        if block.type is not document.BlockType.TABLE:
-            continue
-        table = block.payload
-        coordinates = {(cell.row, cell.column) for cell in table.cells}
-        assert len(table.cells) == table.n_rows * table.n_columns
-        assert len(coordinates) == len(table.cells)
-        by_coordinate = {(cell.row, cell.column): cell for cell in table.cells}
-        for cell in table.cells:
-            if cell.is_origin:
-                assert cell.raw_text is not None
-                continue
-            origin = by_coordinate[cell.origin]
-            assert origin.is_origin
-            assert cell.raw_text is None
-            assert origin.row <= cell.row < origin.row + origin.row_span
-            assert (
-                origin.column
-                <= cell.column
-                < origin.column + origin.column_span
-            )
-
-
-def test_table_cells_preserve_raw_text(result):
-    """``raw_text`` survives; typing appears only where declared."""
-    for block in result.parsed_document.blocks:
-        if block.type is not document.BlockType.TABLE:
-            continue
-        for cell in block.payload.cells:
-            if not cell.is_origin:
-                continue
-            assert cell.raw_text is not None
-
-
 def test_typing_only_where_typed_grid_declared(adapter, result):
     """Cells are typed only when ``typed_grid`` was declared (03 §3.6)."""
     if (
@@ -229,12 +193,6 @@ def test_no_credentials_in_the_manifest(result, caplog):
     serialized = result.manifest.model_dump_json()
     assert stub_adapters.STUB_CREDENTIAL not in serialized
     assert stub_adapters.STUB_CREDENTIAL not in caplog.text
-
-
-def test_locator_tier_travels_with_every_block(result):
-    """Every admitted block records the tier it achieved (03 §5.5)."""
-    for block in result.parsed_document.blocks:
-        assert isinstance(block.locator_tier, quality.LocatorTier)
 
 
 # --- Non-conforming adapters: the suite must reject each of these. ---

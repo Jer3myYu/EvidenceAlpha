@@ -7,15 +7,15 @@ small 8-K. Per 03 §13, they assert critical structure — an expected
 Item heading, a table shape and one specific fact value, locators, and
 coverage — rather than exact full text.
 
-The suite runs with sockets disabled: this is 03 §4.1's requirement
-that the SEC adapter parses an already-acquired filing with the network
-unavailable, asserted rather than assumed.
+The suite runs with sockets disabled (the shared ``no_network``
+fixture): this is 03 §4.1's requirement that the SEC adapter parses an
+already-acquired filing with the network unavailable, asserted rather
+than assumed.
 """
 
 # pylint: disable=protected-access  # white-box tests of adapter internals
 
 import os
-import socket
 
 import lxml.html
 import pytest
@@ -40,21 +40,6 @@ _TEN_Q = os.path.normpath(os.path.join(_FIXTURES, "photronics_2026_q2_10q.htm"))
 _EIGHT_K = os.path.normpath(
     os.path.join(_FIXTURES, "photronics_2026_05_8k.htm")
 )
-
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    """Assert the adapter parses local filings with no network."""
-
-    def deny(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError(
-            "the SEC adapter must parse local fixtures offline (03 §4.1)"
-        )
-
-    monkeypatch.setattr(socket, "socket", deny)
-    monkeypatch.setattr(socket, "create_connection", deny)
-    monkeypatch.setattr(socket, "getaddrinfo", deny)
 
 
 def _artifact(path: str) -> shapes.AcquiredArtifact:

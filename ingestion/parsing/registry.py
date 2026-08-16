@@ -17,11 +17,12 @@ serves traffic. A binding is rejected when its adapter is unknown, its
 capabilities fall below the route's minimum profile (03 §3.5), or the
 egress policy would never permit it (03 §3.7).
 
-**One route is bound**: SEC HTML, served by the in-house lxml adapter
-(03 §14 step 5; the EdgarTools spike outcome is recorded in §18). Every
-other route below is a planned route: it is detected and named, and it
-returns ``UNSUPPORTED_FORMAT`` with the detected format reported, so the
-gap is measurable. It never falls through to a text adapter.
+**Two routes are bound**: SEC HTML, served by the in-house lxml adapter
+(03 §14 step 5; the EdgarTools spike outcome is recorded in §18), and
+digital PDF, served by PyMuPDF (03 §14 step 7). Every other route below
+is a planned route: it is detected and named, and it returns
+``UNSUPPORTED_FORMAT`` with the detected format reported, so the gap is
+measurable. It never falls through to a text adapter.
 """
 
 from collections.abc import Iterable, Mapping
@@ -122,8 +123,8 @@ ROUTE_TABLE: dict[detector.DetectedFormat, capabilities_module.RouteRole] = {
     ),
 }
 
-#: Role to implementation. A role absent here is an unregistered route:
-#: digital PDF arrives at 03 §14 step 7 behind the PyMuPDF table spike.
+#: Role to implementation. A role absent here is an unregistered route
+#: and returns ``UNSUPPORTED_FORMAT`` with the detected format named.
 #:
 #: The SEC route escalates a ``partial`` on lost table structure or lost
 #: filing identity (03 §6). It has no fallback to spend yet — a

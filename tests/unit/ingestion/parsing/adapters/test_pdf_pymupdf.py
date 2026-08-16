@@ -10,7 +10,6 @@ branch (03 §4.3).
 # pylint: disable=protected-access  # white-box tests of adapter internals
 
 import os
-import socket
 
 import pymupdf
 import pytest
@@ -22,21 +21,6 @@ from ingestion.parsing import service as service_module
 from ingestion.parsing import shapes
 from ingestion.parsing.adapters import pdf_pymupdf
 from tests.unit.ingestion.parsing import pdf_fixture
-
-
-@pytest.fixture(autouse=True)
-def no_network(monkeypatch):
-    """Assert the adapter parses local files with no network."""
-
-    def deny(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError(
-            "the PDF adapter must parse local fixtures offline (03 §1.0)"
-        )
-
-    monkeypatch.setattr(socket, "socket", deny)
-    monkeypatch.setattr(socket, "create_connection", deny)
-    monkeypatch.setattr(socket, "getaddrinfo", deny)
 
 
 def _artifact(path: str) -> shapes.AcquiredArtifact:

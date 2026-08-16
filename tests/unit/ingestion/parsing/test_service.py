@@ -188,6 +188,23 @@ class TestFallback:
         assert len(result.manifest.observed.attempts) == 1
         assert result.status is quality.QualityVerdict.PARTIAL
 
+    def test_a_fallback_refusing_the_content_is_recorded(
+        self, markdown_artifact
+    ):
+        """An ``UnsupportedContent`` refusal from the fallback is a
+        recorded attempt failure, never an escaped exception — the
+        primary's usable result is kept (03 §6, §8.1)."""
+        result = _service(
+            stub_adapters.SeverePartialAdapter(),
+            stub_adapters.UnsupportedContentAdapter(),
+            fallback="stub_unsupported_content",
+            severe=frozenset({quality.WarningCode.TABLE_STRUCTURE_LOST}),
+        ).parse(markdown_artifact)
+        assert result.status is quality.QualityVerdict.PARTIAL
+        assert result.fallback_used is False
+        assert len(result.manifest.observed.attempts) == 2
+        assert "scanned_pdf" in result.manifest.observed.attempts[1].error
+
     def test_the_better_of_the_two_results_is_kept(self, markdown_artifact):
         """A worse fallback does not replace a usable primary."""
         result = _service(

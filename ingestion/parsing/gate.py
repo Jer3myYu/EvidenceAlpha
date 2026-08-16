@@ -46,8 +46,8 @@ class QualityPolicy(pydantic.BaseModel):
     """Versioned thresholds the gate applies (03 §7.1).
 
     These numbers are **policy v0: provisional, configurable, and not
-    architectural constants.** They are strawmen to be calibrated
-    against the golden SEC and PDF fixtures once those exist.
+    architectural constants.** They are strawmen awaiting calibration
+    against the golden SEC and PDF fixtures in the test suite.
 
     The version is part of the planned parse manifest, so changing a
     threshold changes ``parse_id`` and makes the affected documents

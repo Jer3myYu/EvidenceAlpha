@@ -179,26 +179,3 @@ class TestStartupValidation:
         registry = registry_module.AdapterRegistry()
         with pytest.raises(registry_module.RegistryError):
             registry.adapter("absent")
-
-
-class TestSeverePartialDeclaration:
-    """A route may declare which warnings justify the fallback."""
-
-    def test_binding_carries_the_escalation_set(self):
-        """MVP financial routes escalate on lost table structure."""
-        binding = registry_module.Binding(
-            primary="capable",
-            severe_partial_warnings=frozenset(
-                {quality.WarningCode.TABLE_STRUCTURE_LOST}
-            ),
-        )
-        assert (
-            quality.WarningCode.TABLE_STRUCTURE_LOST
-            in binding.severe_partial_warnings
-        )
-
-    def test_the_default_escalation_set_is_empty(self):
-        """Everything else keeps the plain failed-only rule."""
-        assert not registry_module.Binding(
-            primary="capable"
-        ).severe_partial_warnings

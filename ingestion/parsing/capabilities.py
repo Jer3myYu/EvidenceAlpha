@@ -226,10 +226,11 @@ def check_capabilities(
 #: carries financial values, and the refusal happens at startup rather
 #: than per document (03 §3.8).
 #:
-#: The PDF route's ``GRID`` minimum is **contingent on the PyMuPDF
-#: table spike** (03 §14 step 6). If the spike fails, this drops to
-#: ``TEXT`` with a standing warning on affected blocks — which is a
-#: one-line change here precisely because the claim lives in one place.
+#: The PDF route's ``GRID`` minimum was confirmed by the PyMuPDF table
+#: spike (03 §14 step 6, 2026-08-15): real cell grids extract from the
+#: golden filing, so the minimum stands. Were a future adapter to lose
+#: that, the drop to ``TEXT`` is a one-line change here precisely
+#: because the claim lives in one place.
 ROUTE_PROFILES: dict[RouteRole, RouteProfile] = {
     RouteRole.SEC_HTML_PARSER: RouteProfile(
         role=RouteRole.SEC_HTML_PARSER,

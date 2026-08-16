@@ -436,6 +436,28 @@ class EmptyAdapter(StubBlockSequenceAdapter):
         )
 
 
+class UnsupportedContentAdapter(StubBlockSequenceAdapter):
+    """Refuses every artifact as content needing an unbuilt route.
+
+    As a primary this maps to ``UNSUPPORTED_FORMAT`` without spending
+    the fallback; as a fallback the refusal is recorded on the attempt
+    and the primary's result is kept (03 §6, §8.1).
+    """
+
+    name = "stub_unsupported_content"
+
+    def parse(self, request: base.ParseRequest) -> shapes.RawParseResult:
+        """Refuse the content by name.
+
+        Raises:
+          UnsupportedContent: Always.
+        """
+        del request
+        raise base.UnsupportedContent(
+            "scanned_pdf", "the stub refuses this content"
+        )
+
+
 class SeverePartialAdapter(StubBlockSequenceAdapter):
     """Returns usable content, but with a severe warning attached.
 

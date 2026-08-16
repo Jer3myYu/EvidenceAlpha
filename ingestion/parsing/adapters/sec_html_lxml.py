@@ -590,13 +590,13 @@ class _BlockBuilder:
         layout table, so a table whose entire text is a section heading
         is emitted as the heading it is, not as a one-cell grid.
         """
-        heading_text = _clean(element.text_content())
-        level = self._heading_level(heading_text)
+        text = _clean(element.text_content())
+        level = self._heading_level(text)
         if level is not None:
-            enclosing = self._push_heading(level, heading_text, element)
+            enclosing = self._push_heading(level, text, element)
             self._append(
                 document.BlockType.HEADING,
-                heading_text,
+                text,
                 element,
                 heading_path=enclosing,
             )
@@ -613,7 +613,6 @@ class _BlockBuilder:
                 payload=table,
             )
             return
-        text = _clean(element.text_content())
         if not text:
             return
         self.warnings.append(
