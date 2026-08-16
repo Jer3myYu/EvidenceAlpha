@@ -5,7 +5,9 @@ import zipfile
 import pytest
 
 from contracts import document
+from ingestion.parsing import capabilities as capabilities_module
 from ingestion.parsing import detector as detector_module
+from ingestion.parsing import registry as registry_module
 from ingestion.parsing import shapes
 
 
@@ -212,6 +214,205 @@ class TestTextFormats:
         """Unstructured text is plain text, not a guess at structure."""
         path = _write(tmp_path, "a.txt", "just some prose\nand more prose\n")
         assert _detect(path).format is detector_module.DetectedFormat.PLAIN_TEXT
+
+
+#: Directory object types, from MS-CFB: unallocated, storage, stream,
+#: and root storage.
+_UNALLOCATED, _STORAGE, _STREAM, _ROOT = 0x00, 0x01, 0x02, 0x05
+
+
+def _ole2(tmp_path, name, stream_names, object_type=_STREAM):
+    """Write a minimal 512-byte-sector compound file.
+
+    Builds only what detection reads: the header, one FAT sector, and a
+    one-sector directory whose entries carry the given names.
+
+    Args:
+      tmp_path: Directory to write into.
+      name: Filename for the fixture.
+      stream_names: Directory entry names, in order.
+      object_type: The object type byte every entry carries; pass
+        ``_UNALLOCATED`` to build a container of deleted entries.
+    """
+    sector_size = 512
+    header = bytearray(b"\x00" * sector_size)
+    header[0:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    header[28:30] = (0xFFFE).to_bytes(2, "little")  # byte order
+    header[30:32] = (9).to_bytes(2, "little")  # 512-byte sectors
+    header[44:48] = (1).to_bytes(4, "little")  # one FAT sector
+    header[48:52] = (1).to_bytes(4, "little")  # directory at sector 1
+    header[76:80] = (0).to_bytes(4, "little")  # FAT itself at sector 0
+
+    fat = bytearray(b"\xff" * sector_size)
+    fat[0:4] = (0xFFFFFFFD).to_bytes(4, "little")  # sector 0: the FAT
+    fat[4:8] = (0xFFFFFFFE).to_bytes(4, "little")  # sector 1: chain end
+
+    directory = bytearray()
+    for stream_name in stream_names:
+        entry = bytearray(b"\x00" * 128)
+        encoded = stream_name.encode("utf-16-le") + b"\x00\x00"
+        entry[0 : len(encoded)] = encoded
+        entry[64:66] = len(encoded).to_bytes(2, "little")
+        entry[66] = object_type
+        directory += entry
+    directory += b"\x00" * (sector_size - len(directory))
+    return _write(tmp_path, name, bytes(header + fat + directory))
+
+
+class TestLegacyCompoundFiles:
+    """OLE2 gets the same treatment as ZIP (03 §3.2.1).
+
+    Regression: ``XLS_LEGACY`` was unreachable — every compound file
+    resolved to ``OLE2_COMPOUND``/``AMBIGUOUS``, so the enum member and
+    its ``ROUTE_TABLE`` entry were dead code and a legacy workbook
+    failed with ``PARSE_FAILED``/``different_source`` rather than
+    reaching the spreadsheet route.
+    """
+
+    def test_workbook_stream_names_a_spreadsheet(self, tmp_path):
+        """A `Workbook` stream makes a compound file an XLS."""
+        path = _ole2(tmp_path, "a.xls", ["Root Entry", "Workbook"])
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.XLS_LEGACY
+        assert result.resolution is detector_module.Resolution.EXACT
+        assert not result.conflicts
+
+    def test_legacy_book_stream_is_also_a_spreadsheet(self, tmp_path):
+        """The pre-Excel 97 `Book` spelling resolves the same way."""
+        path = _ole2(tmp_path, "a.xls", ["Root Entry", "Book"])
+        assert _detect(path).format is detector_module.DetectedFormat.XLS_LEGACY
+
+    def test_a_spreadsheet_reaches_the_spreadsheet_route(self, tmp_path):
+        """The detected format must actually resolve to a route."""
+        path = _ole2(tmp_path, "a.xls", ["Root Entry", "Workbook"])
+        role = registry_module.ROUTE_TABLE.get(_detect(path).format)
+        assert role is capabilities_module.RouteRole.SPREADSHEET_PARSER
+
+    def test_other_compound_files_stay_ambiguous(self, tmp_path):
+        """A Word or PowerPoint compound file has no route to claim."""
+        path = _ole2(tmp_path, "a.doc", ["Root Entry", "WordDocument"])
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.OLE2_COMPOUND
+        assert result.resolution is detector_module.Resolution.AMBIGUOUS
+
+    def test_a_deleted_workbook_entry_does_not_name_the_file(self, tmp_path):
+        """An unallocated entry keeps its name; it must not be read.
+
+        MS-CFB frees a directory slot without clearing the name bytes,
+        so a Word document that once held a `Workbook` stream would
+        otherwise be named a spreadsheet and routed to one.
+        """
+        path = _ole2(
+            tmp_path,
+            "a.doc",
+            ["Root Entry", "Workbook"],
+            object_type=_UNALLOCATED,
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.OLE2_COMPOUND
+        assert result.resolution is detector_module.Resolution.AMBIGUOUS
+
+    def test_a_storage_entry_still_counts(self, tmp_path):
+        """Storage and root entries are live and are read."""
+        path = _ole2(
+            tmp_path, "a.xls", ["Root Entry", "Workbook"], object_type=_STORAGE
+        )
+        assert _detect(path).format is detector_module.DetectedFormat.XLS_LEGACY
+
+    def test_stream_names_are_reported(self, tmp_path):
+        """Inspection reports what it read, not just its conclusion."""
+        path = _ole2(tmp_path, "a.xls", ["Root Entry", "Workbook"])
+        inspection = detector_module.inspect_ole2(str(path))
+        assert inspection.stream_names == ["Root Entry", "Workbook"]
+
+    def test_a_truncated_compound_file_is_ambiguous(self, tmp_path):
+        """A header too short to inspect resolves to ambiguous, not raise."""
+        path = _write(tmp_path, "a.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+        assert (
+            detector_module.inspect_ole2(str(path)).format
+            is detector_module.DetectedFormat.OLE2_COMPOUND
+        )
+
+    def test_an_unreadable_compound_file_is_a_detection_error(self, tmp_path):
+        """An unreadable container is a controlled failure."""
+        with pytest.raises(detector_module.DetectionError):
+            detector_module.inspect_ole2(str(tmp_path / "absent.xls"))
+
+
+class TestLargeJsonDocuments:
+    """JSON above the sniff window (03 §3.2).
+
+    Regression: ``_is_json`` parsed the truncated window, so any JSON
+    larger than ``SNIFF_BYTES`` — which every SEC ``companyfacts``
+    response is — fell through to ``plain_text``. That is the silent
+    text fallback the design forbids, reached one stage before route
+    dispatch can guard against it.
+    """
+
+    def _big_json(self, tmp_path, name="facts.json"):
+        """Write a single-line JSON document larger than the window."""
+        entries = ",".join(
+            f'"concept{index}":{{"value":{index},"unit":"USD"}}'
+            for index in range(4000)
+        )
+        payload = (
+            '{"cik":810136,"entityName":"PHOTRONICS, INC.",' + entries + "}"
+        )
+        assert len(payload) > detector_module.SNIFF_BYTES
+        return _write(tmp_path, name, payload)
+
+    def test_json_larger_than_the_sniff_window_is_json(self, tmp_path):
+        """The window is judged as a prefix once it is truncated."""
+        path = self._big_json(tmp_path)
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.JSON
+        assert "content=json_prefix_syntax" in result.signals
+
+    def test_a_large_json_array_is_json(self, tmp_path):
+        """A top-level array is a prefix in the same way."""
+        payload = "[" + ",".join(f'{{"i":{n}}}' for n in range(8000)) + "]"
+        assert len(payload) > detector_module.SNIFF_BYTES
+        path = _write(tmp_path, "rows.json", payload)
+        assert _detect(path).format is detector_module.DetectedFormat.JSON
+
+    def test_no_extension_conflict_is_recorded(self, tmp_path):
+        """The `.json` hint now agrees with the decision."""
+        assert not _detect(self._big_json(tmp_path)).conflicts
+
+    def test_a_large_json_reaches_the_json_route(self, tmp_path):
+        """Detection must land on a route, not on plain text."""
+        role = registry_module.ROUTE_TABLE.get(
+            _detect(self._big_json(tmp_path)).format
+        )
+        assert role is capabilities_module.RouteRole.JSON_PARSER
+
+    def test_truncated_prose_is_not_json(self, tmp_path):
+        """A large text file that opens with a brace is still text."""
+        payload = "{ this is prose, not a document. " * 5000
+        assert len(payload) > detector_module.SNIFF_BYTES
+        path = _write(tmp_path, "notes.txt", payload)
+        assert _detect(path).format is not detector_module.DetectedFormat.JSON
+
+    def test_a_small_malformed_json_is_not_json(self, tmp_path):
+        """Below the window there is no truncation to forgive."""
+        path = _write(tmp_path, "broken.json", '{"a": 1, "b":')
+        assert _detect(path).format is not detector_module.DetectedFormat.JSON
+
+    def test_a_complete_value_with_trailing_junk_is_not_json(self, tmp_path):
+        """A closed value followed by content is not a JSON prefix."""
+        payload = '{"a": 1} ' + "x" * detector_module.SNIFF_BYTES
+        path = _write(tmp_path, "mixed.json", payload)
+        assert _detect(path).format is not detector_module.DetectedFormat.JSON
+
+    def test_a_brace_inside_a_string_does_not_confuse_the_scan(self, tmp_path):
+        """String contents are skipped, braces and commas included."""
+        entries = ",".join(
+            f'"k{index}":"a, b {{ c }} \\" d"' for index in range(3000)
+        )
+        payload = "{" + entries + "}"
+        assert len(payload) > detector_module.SNIFF_BYTES
+        path = _write(tmp_path, "quoted.json", payload)
+        assert _detect(path).format is detector_module.DetectedFormat.JSON
 
 
 class TestControlledFailures:

@@ -39,6 +39,24 @@ SNIFF_BYTES = 64 * 1024
 #: How many trailing bytes the encryption probe may look at.
 _PDF_TRAILER_BYTES = 4096
 
+#: Compound-file (OLE2) inspection bounds and layout, from MS-CFB. The
+#: directory chain is followed only as far as the header's own DIFAT
+#: reaches, which is all a document-sized container needs.
+_OLE2_HEADER_BYTES = 512
+_OLE2_DIRECTORY_ENTRY_BYTES = 128
+_OLE2_MAX_DIRECTORY_SECTORS = 64
+_OLE2_HEADER_DIFAT_ENTRIES = 109
+_OLE2_HEADER_DIFAT_OFFSET = 76
+#: Sector numbers at or above this are chain terminators, not sectors.
+_OLE2_RESERVED_SECTOR = 0xFFFFFFFA
+#: Directory object types that are live: storage, stream, and root.
+#: Type 0 is an unallocated entry, whose name bytes MS-CFB leaves in
+#: place.
+_OLE2_ALLOCATED_OBJECT_TYPES = frozenset({0x01, 0x02, 0x05})
+#: Stream names that make a compound file a legacy Excel workbook;
+#: ``Book`` is the pre-Excel 97 spelling.
+_XLS_STREAM_NAMES = frozenset({"Workbook", "Book"})
+
 _PDF_MAGIC = b"%PDF-"
 _ZIP_MAGIC = b"PK\x03\x04"
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
@@ -355,6 +373,120 @@ def inspect_zip(path: str, limits: ZipLimits | None = None) -> ZipInspection:
     )
 
 
+class Ole2Inspection(pydantic.BaseModel):
+    """What inspection found inside an OLE2 compound file."""
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    format: DetectedFormat
+    stream_names: list[str] = pydantic.Field(default_factory=list)
+
+
+def _ole2_directory_entry_names(block: bytes) -> list[str]:
+    """Return the live entry names in one directory sector.
+
+    An unallocated entry keeps its name: MS-CFB frees the slot without
+    clearing the bytes. Reading names without checking the object type
+    would let a deleted ``Workbook`` stream inside a Word document name
+    the whole container a spreadsheet, so only allocated entries count.
+    """
+    names: list[str] = []
+    stride = _OLE2_DIRECTORY_ENTRY_BYTES
+    for offset in range(0, len(block) - stride + 1, stride):
+        entry = block[offset : offset + stride]
+        if entry[66] not in _OLE2_ALLOCATED_OBJECT_TYPES:
+            continue
+        length = int.from_bytes(entry[64:66], "little")
+        if not 2 <= length <= 64:
+            continue
+        name = entry[: length - 2].decode("utf-16-le", errors="replace")
+        if name:
+            names.append(name)
+    return names
+
+
+def _ole2_next_sector(
+    handle, header: bytes, sector_size: int, sector: int
+) -> int:
+    """Return the sector following ``sector`` in the FAT chain."""
+    entries_per_sector = sector_size // 4
+    fat_index = sector // entries_per_sector
+    if fat_index >= _OLE2_HEADER_DIFAT_ENTRIES:
+        return _OLE2_RESERVED_SECTOR
+    start = _OLE2_HEADER_DIFAT_OFFSET + fat_index * 4
+    fat_sector = int.from_bytes(header[start : start + 4], "little")
+    if fat_sector >= _OLE2_RESERVED_SECTOR:
+        return _OLE2_RESERVED_SECTOR
+    handle.seek(
+        (fat_sector + 1) * sector_size + (sector % entries_per_sector) * 4
+    )
+    raw = handle.read(4)
+    if len(raw) < 4:
+        return _OLE2_RESERVED_SECTOR
+    return int.from_bytes(raw, "little")
+
+
+def _ole2_directory_names(handle, header: bytes, sector_size: int) -> set[str]:
+    """Return every stream name in a compound file's directory."""
+    sector = int.from_bytes(header[48:52], "little")
+    names: set[str] = set()
+    visited: set[int] = set()
+    for _ in range(_OLE2_MAX_DIRECTORY_SECTORS):
+        if sector >= _OLE2_RESERVED_SECTOR or sector in visited:
+            break
+        visited.add(sector)
+        handle.seek((sector + 1) * sector_size)
+        block = handle.read(sector_size)
+        if len(block) < _OLE2_DIRECTORY_ENTRY_BYTES:
+            break
+        names.update(_ole2_directory_entry_names(block))
+        sector = _ole2_next_sector(handle, header, sector_size, sector)
+    return names
+
+
+def inspect_ole2(path: str) -> Ole2Inspection:
+    """Discriminate a legacy Excel workbook from other OLE2 files.
+
+    XLS, DOC, and PPT share one magic signature exactly as DOCX, XLSX,
+    and PPTX share the ZIP one, so the container has to be opened before
+    it can be named. The compound file's directory carries the stream
+    names, and a ``Workbook`` stream is what makes one a spreadsheet
+    (03 §3.2.1).
+
+    Only Excel is discriminated: it is the sole legacy OLE2 format with
+    a member in :class:`DetectedFormat` and a route in the registry.
+    Anything else stays ``OLE2_COMPOUND``, and therefore ambiguous,
+    which is the honest answer while no route can serve it.
+
+    Args:
+      path: Local path to the compound file.
+
+    Returns:
+      What the container is, with the directory names that were read.
+
+    Raises:
+      DetectionError: If the file cannot be read.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(_OLE2_HEADER_BYTES)
+            if len(header) < _OLE2_HEADER_BYTES:
+                return Ole2Inspection(format=DetectedFormat.OLE2_COMPOUND)
+            sector_shift = int.from_bytes(header[30:32], "little")
+            if sector_shift not in (9, 12):
+                return Ole2Inspection(format=DetectedFormat.OLE2_COMPOUND)
+            names = _ole2_directory_names(handle, header, 1 << sector_shift)
+    except OSError as error:
+        raise DetectionError(f"cannot read compound file: {error}") from error
+
+    detected = (
+        DetectedFormat.XLS_LEGACY
+        if names & _XLS_STREAM_NAMES
+        else DetectedFormat.OLE2_COMPOUND
+    )
+    return Ole2Inspection(format=detected, stream_names=sorted(names))
+
+
 class FormatDetector:
     """Resolve an artifact to exactly one format (03 §3.2).
 
@@ -440,7 +572,11 @@ class FormatDetector:
             return DetectedFormat.TIFF_IMAGE, Resolution.EXACT
         if head.startswith(_OLE2_MAGIC):
             signals.append("magic=ole2_compound")
-            return DetectedFormat.OLE2_COMPOUND, Resolution.AMBIGUOUS
+            inspection = inspect_ole2(artifact.path)
+            signals.append(f"ole2_streams={inspection.format.value}")
+            if inspection.format is DetectedFormat.OLE2_COMPOUND:
+                return DetectedFormat.OLE2_COMPOUND, Resolution.AMBIGUOUS
+            return inspection.format, Resolution.EXACT
         if head.startswith(_ZIP_MAGIC):
             signals.append("magic=zip_container")
             inspection = inspect_zip(artifact.path, self._zip_limits)
@@ -474,8 +610,13 @@ class FormatDetector:
                 signals.append("content=xbrl_instance_detected")
                 return DetectedFormat.XBRL_XML, Resolution.EXACT
             return DetectedFormat.GENERIC_XML, Resolution.EXACT
-        if _is_json(text):
-            signals.append("content=json_syntax")
+        truncated = len(head) >= SNIFF_BYTES
+        if _is_json(text, truncated=truncated):
+            signals.append(
+                "content=json_prefix_syntax"
+                if truncated
+                else "content=json_syntax"
+            )
             return DetectedFormat.JSON, Resolution.EXACT
 
         extension = _extension(artifact)
@@ -547,13 +688,80 @@ class FormatDetector:
             )
 
 
-def _is_json(text: str) -> bool:
-    """Return whether a sniff window parses as a complete JSON value."""
+def _is_json(text: str, truncated: bool = False) -> bool:
+    """Return whether a sniff window is JSON, or the start of JSON.
+
+    A large artifact is only ever seen through ``SNIFF_BYTES``, so
+    requiring the window to parse whole means no JSON document above the
+    window size is ever detected — and every SEC ``companyfacts``
+    response is far above it. Such a file would fall through to plain
+    text, which is the silent text fallback the design forbids, one
+    stage earlier than route dispatch can guard against it.
+
+    Widening ``SNIFF_BYTES`` would not fix that; it would only move the
+    threshold, while reading more of an untrusted file. Instead, a window
+    known to be truncated is judged as a *prefix*.
+
+    Args:
+      text: The decoded sniff window.
+      truncated: Whether the window stopped short of the whole artifact.
+
+    Returns:
+      Whether the artifact is a JSON document.
+    """
     stripped = text.strip()
     if not stripped or stripped[0] not in "[{":
         return False
     try:
         json.loads(stripped)
+    except ValueError:
+        return _is_json_prefix(stripped) if truncated else False
+    return True
+
+
+def _is_json_prefix(text: str) -> bool:
+    """Return whether a truncated window is a valid start of JSON.
+
+    Walks the window tracking string state and open containers, cuts it
+    back to the last point at which an element was complete, closes
+    whatever was still open there, and lets :mod:`json` judge the
+    result. Deciding the grammar stays with the real parser; this only
+    finds a defensible place to cut.
+
+    A window whose containers all closed is *not* a truncated prefix —
+    it is a complete value with trailing content, which the caller has
+    already found unparseable — so it is rejected here.
+    """
+    stack: list[str] = []
+    cut: int | None = None
+    cut_stack: list[str] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+            cut, cut_stack = index + 1, list(stack)
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                return False
+            stack.pop()
+            cut, cut_stack = index + 1, list(stack)
+        elif char == ",":
+            cut, cut_stack = index, list(stack)
+    if cut is None or not cut_stack:
+        return False
+    try:
+        json.loads(text[:cut] + "".join(reversed(cut_stack)))
     except ValueError:
         return False
     return True
