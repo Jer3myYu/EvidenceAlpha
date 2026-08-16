@@ -11,6 +11,10 @@ dependencies = [
     "pydantic>=2.7,<3",
     "lxml>=5.2,<7",
     "pymupdf>=1.24,<2",
+    # Doc 04 §7: the two post-parser dependencies. CPU torch wheels
+    # suffice; install torch from the cpu index before this project.
+    "sentence-transformers>=3.0",
+    "chromadb>=1.0,<2",
 ]
 
 [dependency-groups]

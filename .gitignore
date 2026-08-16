@@ -219,3 +219,9 @@ __marimo__/
 
 # Claude working notes / scratch (project rule: all Claude markdown lives here)
 tmp/
+
+# Runtime data (starting-prompt §6): generated, never committed. The
+# storage/ package itself (repositories.py, schema.sql) is code.
+storage/chroma/
+storage/documents/
+storage/research.db
