@@ -9,6 +9,19 @@ description = "Investment-research agent answering from traceable public evidenc
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "pydantic>=2.7,<3",
+    "lxml>=5.2,<7",
+    "pymupdf>=1.24,<2",
+]
+
+[dependency-groups]
+# Spike outcome (2026-08-15, doc 03 §18): EdgarTools parses SEC HTML
+# offline but its document model carries no source-DOM anchors, so it
+# cannot meet the SEC route's per-block tier-1 locator minimum; the
+# in-house lxml adapter is primary. EdgarTools stays here as a
+# dev-time comparator and the planned acquisition/search client — it
+# is not a runtime dependency of the parser.
+spike = [
+    "edgartools>=4.0",
 ]
 
 [project.optional-dependencies]

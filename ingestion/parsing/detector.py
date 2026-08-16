@@ -70,12 +70,24 @@ _INLINE_XBRL_MARKERS = (
     "<ix:nonfraction",
     "<ix:nonnumeric",
 )
-_XBRL_MARKERS = (
-    "http://www.xbrl.org/2003/instance",
-    "<xbrl",
-    "<xbrli:xbrl",
-)
 _HTML_MARKERS = ("<!doctype html", "<html", "<head", "<body")
+
+#: EDGAR's full-submission dissemination file opens with this SGML tag.
+#: The wrapper bundles every document of a filing — 03 has no route for
+#: it, and splitting it belongs to the ingestion service, so detection
+#: names it and stops (03 §18).
+_SEC_SUBMISSION_MARKER = "<sec-document>"
+
+#: XML root local names that identify an XBRL *taxonomy* file rather
+#: than an instance. A schema or linkbase declares the instance
+#: namespace without being one, so the namespace alone must never decide
+#: (defect D4, 2026-08-15).
+_XBRL_TAXONOMY_ROOTS = frozenset({"schema", "linkbase"})
+
+#: Structural markers a markdown document may open with. The extension
+#: is never the only signal (03 §3.2), so a ``.md`` file must show at
+#: least one of these at a line start before it is named markdown.
+_MARKDOWN_LINE_MARKERS = ("#", "- ", "* ", "+ ", "```", ">", "|")
 
 
 @enum.unique
@@ -94,6 +106,7 @@ class DetectedFormat(enum.StrEnum):
 
     SEC_INLINE_XBRL_HTML = "sec_inline_xbrl_html"
     SEC_HTML = "sec_html"
+    SEC_SUBMISSION_TEXT = "sec_submission_text"
     NEWS_HTML = "news_html"
     GENERIC_HTML = "generic_html"
     PDF = "pdf"
@@ -128,6 +141,7 @@ class Resolution(enum.StrEnum):
 _MEDIA_TYPES: dict[DetectedFormat, str] = {
     DetectedFormat.SEC_INLINE_XBRL_HTML: "text/html",
     DetectedFormat.SEC_HTML: "text/html",
+    DetectedFormat.SEC_SUBMISSION_TEXT: "text/plain",
     DetectedFormat.NEWS_HTML: "text/html",
     DetectedFormat.GENERIC_HTML: "text/html",
     DetectedFormat.PDF: "application/pdf",
@@ -599,6 +613,13 @@ class FormatDetector:
 
         text = _decode(head)
         lowered = text.lower()
+        if lowered.lstrip().startswith(_SEC_SUBMISSION_MARKER):
+            # Checked before the HTML markers: the wrapper embeds whole
+            # HTML documents inside the sniff window, and matching one of
+            # them would mistake the container for its first passenger
+            # (defect D3, 2026-08-15).
+            signals.append("content=sec_submission_wrapper")
+            return DetectedFormat.SEC_SUBMISSION_TEXT, Resolution.UNSUPPORTED
         if any(marker in lowered for marker in _HTML_MARKERS):
             signals.append("content=html_root_detected")
             return self._resolve_html(artifact, lowered, signals)
@@ -606,9 +627,15 @@ class FormatDetector:
             "<"
         ):
             signals.append("content=xml_root_detected")
-            if any(marker in lowered for marker in _XBRL_MARKERS):
-                signals.append("content=xbrl_instance_detected")
+            root = _xml_root_name(lowered)
+            if root == "xbrl":
+                signals.append("content=xbrl_instance_root")
                 return DetectedFormat.XBRL_XML, Resolution.EXACT
+            if root in _XBRL_TAXONOMY_ROOTS:
+                # A schema or linkbase declares the XBRL instance
+                # namespace without being an instance; representing its
+                # elements as financial facts would be wrong (03 §4.6).
+                signals.append(f"content=xbrl_taxonomy_root({root})")
             return DetectedFormat.GENERIC_XML, Resolution.EXACT
         truncated = len(head) >= SNIFF_BYTES
         if _is_json(text, truncated=truncated):
@@ -627,8 +654,13 @@ class FormatDetector:
                 return DetectedFormat.TSV, Resolution.EXACT
             signals.append("content=delimited_rows(comma)")
             return DetectedFormat.CSV, Resolution.EXACT
-        if extension in (".md", ".markdown"):
-            signals.append(f"extension={extension}")
+        if extension in (".md", ".markdown") and _looks_markdown(text):
+            # The extension corroborates; the structure decides. A
+            # ``.md`` file with no markdown structure stays plain text,
+            # and the hint disagreement is recorded as a conflict —
+            # the extension is never the only signal (03 §3.2,
+            # defect D5, 2026-08-15).
+            signals.append("content=markdown_structure")
             return DetectedFormat.MARKDOWN, Resolution.EXACT
         signals.append("content=plain_text")
         return DetectedFormat.PLAIN_TEXT, Resolution.EXACT
@@ -682,10 +714,80 @@ class FormatDetector:
                 return
             if hint in _HTML_FAMILY and detected in _HTML_FAMILY:
                 return
+            if (
+                hint is DetectedFormat.PLAIN_TEXT
+                and detected is DetectedFormat.SEC_SUBMISSION_TEXT
+            ):
+                # EDGAR serves the submission wrapper as ``.txt``; the
+                # extension is right about the encoding, not wrong about
+                # the format.
+                return
             conflicts.append(
                 f"extension {extension} suggests {hint.value}, detected "
                 f"{detected.value}"
             )
+
+
+def _xml_root_name(lowered: str) -> str | None:
+    """Return the local name of an XML document's first real element.
+
+    Walks past the prolog, comments, processing instructions, and any
+    DOCTYPE to the first element tag, and strips its namespace prefix.
+    A namespace *declaration* can appear on any file that references a
+    vocabulary — only the root element says what the document is.
+
+    Args:
+      lowered: The lowercased, decoded sniff window.
+
+    Returns:
+      The root element's local name, or None when no element was found
+      inside the window.
+    """
+    index = 0
+    length = len(lowered)
+    while index < length:
+        start = lowered.find("<", index)
+        if start < 0:
+            return None
+        if lowered.startswith("<?", start):
+            end = lowered.find("?>", start)
+            index = end + 2 if end >= 0 else length
+            continue
+        if lowered.startswith("<!--", start):
+            end = lowered.find("-->", start)
+            index = end + 3 if end >= 0 else length
+            continue
+        if lowered.startswith("<!", start):
+            end = lowered.find(">", start)
+            index = end + 1 if end >= 0 else length
+            continue
+        name = []
+        for char in lowered[start + 1 :]:
+            if char.isspace() or char in "/>":
+                break
+            name.append(char)
+        if not name:
+            return None
+        return "".join(name).rsplit(":", 1)[-1]
+    return None
+
+
+def _looks_markdown(text: str) -> bool:
+    """Return whether a text window shows any markdown structure.
+
+    A single structural marker at a line start is enough, because the
+    caller only asks when the extension already says markdown — the
+    probe exists so the extension is never the *only* signal (03 §3.2).
+    """
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped:
+            continue
+        if stripped.startswith(_MARKDOWN_LINE_MARKERS):
+            return True
+        if "](" in stripped:
+            return True
+    return False
 
 
 def _is_json(text: str, truncated: bool = False) -> bool:

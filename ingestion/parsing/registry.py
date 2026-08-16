@@ -17,10 +17,11 @@ serves traffic. A binding is rejected when its adapter is unknown, its
 capabilities fall below the route's minimum profile (03 §3.5), or the
 egress policy would never permit it (03 §3.7).
 
-**No adapter is bound yet.** Every route below is a planned route: it is
-detected and named, and it returns ``UNSUPPORTED_FORMAT`` with the
-detected format reported, so the gap is measurable. It never falls
-through to a text adapter.
+**One route is bound**: SEC HTML, served by the in-house lxml adapter
+(03 §14 step 5; the EdgarTools spike outcome is recorded in §18). Every
+other route below is a planned route: it is detected and named, and it
+returns ``UNSUPPORTED_FORMAT`` with the detected format reported, so the
+gap is measurable. It never falls through to a text adapter.
 """
 
 from collections.abc import Iterable, Mapping
@@ -32,6 +33,8 @@ from ingestion.parsing import capabilities as capabilities_module
 from ingestion.parsing import detector
 from ingestion.parsing import egress as egress_module
 from ingestion.parsing.adapters import base
+from ingestion.parsing.adapters import pdf_pymupdf
+from ingestion.parsing.adapters import sec_html_lxml
 
 
 class RegistryError(Exception):
@@ -119,10 +122,37 @@ ROUTE_TABLE: dict[detector.DetectedFormat, capabilities_module.RouteRole] = {
     ),
 }
 
-#: Role to implementation. Empty until an adapter exists: 03 §14 builds
-#: the SEC HTML route at step 5 and digital PDF at step 7, each behind
-#: its own spike. A role absent here is an unregistered route.
-ROUTE_BINDINGS: dict[capabilities_module.RouteRole, Binding] = {}
+#: Role to implementation. A role absent here is an unregistered route:
+#: digital PDF arrives at 03 §14 step 7 behind the PyMuPDF table spike.
+#:
+#: The SEC route escalates a ``partial`` on lost table structure or lost
+#: filing identity (03 §6). It has no fallback to spend yet — a
+#: below-minimum fallback cannot bind, and 03 §4.1's option 3 (a
+#: single-adapter route) was chosen on 2026-08-15 — so escalation is
+#: currently a no-op that becomes real the day a second adapter lands.
+ROUTE_BINDINGS: dict[capabilities_module.RouteRole, Binding] = {
+    capabilities_module.RouteRole.SEC_HTML_PARSER: Binding(
+        primary="sec_html_lxml",
+        severe_partial_warnings=frozenset(
+            {
+                quality.WarningCode.TABLE_STRUCTURE_LOST,
+                quality.WarningCode.SEC_IDENTITY_INCOMPLETE,
+            }
+        ),
+    ),
+    capabilities_module.RouteRole.PDF_LAYOUT_PARSER: Binding(
+        primary="pdf_pymupdf",
+        severe_partial_warnings=frozenset(
+            {quality.WarningCode.TABLE_STRUCTURE_LOST}
+        ),
+    ),
+}
+
+#: Every adapter implementation available to bind (03 §3.3).
+DEFAULT_ADAPTERS: tuple[base.ParserAdapter, ...] = (
+    sec_html_lxml.SecHtmlLxmlAdapter(),
+    pdf_pymupdf.PdfPymupdfAdapter(),
+)
 
 
 class AdapterRegistry:
@@ -134,7 +164,7 @@ class AdapterRegistry:
 
     def __init__(
         self,
-        adapters: Iterable[base.ParserAdapter] = (),
+        adapters: Iterable[base.ParserAdapter] | None = None,
         bindings: Mapping[capabilities_module.RouteRole, Binding] | None = None,
         profiles: (
             Mapping[
@@ -147,7 +177,8 @@ class AdapterRegistry:
         """Build and validate a registry.
 
         Args:
-          adapters: Every adapter implementation available to bind.
+          adapters: Every adapter implementation available to bind;
+            :data:`DEFAULT_ADAPTERS` when omitted.
           bindings: Role to implementation; :data:`ROUTE_BINDINGS` when
             omitted.
           profiles: Route minimum profiles;
@@ -162,6 +193,8 @@ class AdapterRegistry:
             an adapter below its route's minimum capability profile, or
             binds one the egress policy would never permit.
         """
+        if adapters is None:
+            adapters = DEFAULT_ADAPTERS
         self._adapters = {adapter.name: adapter for adapter in adapters}
         self._bindings = dict(
             bindings if bindings is not None else ROUTE_BINDINGS

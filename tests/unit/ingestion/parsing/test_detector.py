@@ -468,3 +468,142 @@ def test_signals_are_recorded_in_priority_order(tmp_path):
     path = _write(tmp_path, "a.htm", "<html><body>x</body></html>")
     result = _detect(path, source_class=document.SourceClass.SEC_FILING)
     assert result.signals[0] == "source_class=sec_filing"
+
+
+class TestSecSubmissionWrapper:
+    """The EDGAR full-submission file is named, never mistaken (D3)."""
+
+    _HEAD = (
+        "<SEC-DOCUMENT>0001140361-25-045801.txt : 20251217\n"
+        "<SEC-HEADER>0001140361-25-045801.hdr.sgml : 20251217\n"
+        "ACCESSION NUMBER:\t0001140361-25-045801\n"
+        "CONFORMED SUBMISSION TYPE:\t10-K\n"
+        "<DOCUMENT>\n<TYPE>10-K\n<TEXT>\n"
+        "<html><body><p>The first embedded document.</p></body></html>\n"
+    )
+
+    def test_the_wrapper_is_named_not_its_first_passenger(self, tmp_path):
+        """Embedded HTML inside the window must not win detection."""
+        path = _write(tmp_path, "submission.txt", self._HEAD)
+        result = _detect(path, source_class=document.SourceClass.SEC_FILING)
+        assert (
+            result.format is detector_module.DetectedFormat.SEC_SUBMISSION_TEXT
+        )
+        assert result.resolution is detector_module.Resolution.UNSUPPORTED
+        assert "content=sec_submission_wrapper" in result.signals
+
+    def test_the_txt_extension_is_not_a_conflict(self, tmp_path):
+        """EDGAR serves the wrapper as ``.txt``; that is not a lie."""
+        path = _write(tmp_path, "submission.txt", self._HEAD)
+        result = _detect(path, source_class=document.SourceClass.SEC_FILING)
+        assert result.conflicts == []
+
+    def test_the_wrapper_has_no_route(self):
+        """Splitting the wrapper belongs to ingestion, not a route."""
+        registry = registry_module.AdapterRegistry()
+        assert (
+            registry.resolve(detector_module.DetectedFormat.SEC_SUBMISSION_TEXT)
+            is None
+        )
+
+    def test_an_ordinary_sgml_like_text_is_not_a_wrapper(self, tmp_path):
+        """Only the leading marker names a submission file."""
+        path = _write(
+            tmp_path,
+            "notes.txt",
+            "notes about <SEC-DOCUMENT> markers\nand more prose\n",
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.PLAIN_TEXT
+
+
+class TestXbrlTaxonomyFiles:
+    """The instance namespace never makes a taxonomy an instance (D4)."""
+
+    def test_a_schema_is_generic_xml(self, tmp_path):
+        """An ``.xsd`` declaring XBRL namespaces is not an instance."""
+        path = _write(
+            tmp_path,
+            "plab-2025.xsd",
+            '<?xml version="1.0"?>\n'
+            "<!-- generated -->\n"
+            '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+            'xmlns:xbrli="http://www.xbrl.org/2003/instance">'
+            "</xs:schema>",
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.GENERIC_XML
+        assert "content=xbrl_taxonomy_root(schema)" in result.signals
+
+    def test_a_linkbase_is_generic_xml(self, tmp_path):
+        """A linkbase references the instance namespace; it is not one."""
+        path = _write(
+            tmp_path,
+            "plab-lab.xml",
+            '<?xml version="1.0"?>'
+            '<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase" '
+            'xmlns:xbrli="http://www.xbrl.org/2003/instance"/>',
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.GENERIC_XML
+
+    def test_a_prefixed_instance_root_is_an_instance(self, tmp_path):
+        """``<xbrli:xbrl>`` is the instance root, prefix and all."""
+        path = _write(
+            tmp_path,
+            "instance.xbrl",
+            '<?xml version="1.0"?>'
+            '<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"/>',
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.XBRL_XML
+        assert "content=xbrl_instance_root" in result.signals
+
+    def test_comments_and_doctype_are_skipped_to_the_root(self, tmp_path):
+        """Prolog noise before the root element does not confuse it."""
+        path = _write(
+            tmp_path,
+            "instance.xml",
+            '<?xml version="1.0"?>\n'
+            "<!-- Created: today -->\n"
+            "<!DOCTYPE something>\n"
+            '<xbrl xmlns="http://www.xbrl.org/2003/instance"/>',
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.XBRL_XML
+
+
+class TestMarkdownProbe:
+    """The extension is never the only markdown signal (D5, 03 §3.2)."""
+
+    def test_structure_plus_extension_is_markdown(self, tmp_path):
+        """A heading at a line start is structure enough."""
+        path = _write(tmp_path, "a.md", "# Title\n\nBody text.\n")
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.MARKDOWN
+        assert "content=markdown_structure" in result.signals
+
+    def test_prose_with_the_extension_stays_plain_text(self, tmp_path):
+        """A ``.md`` file with no structure is plain text, with the
+        disagreement recorded rather than obeyed."""
+        path = _write(tmp_path, "a.md", "just prose\nand more prose\n")
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.PLAIN_TEXT
+        assert any("extension .md" in c for c in result.conflicts)
+
+    def test_structure_without_the_extension_stays_plain_text(self, tmp_path):
+        """Markdown is a plain-text superset; without the extension the
+        conservative answer stands."""
+        path = _write(tmp_path, "a.txt", "# Title\n\nBody text.\n")
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.PLAIN_TEXT
+
+    def test_a_pipe_table_is_structure(self, tmp_path):
+        """A markdown table row counts as structure."""
+        path = _write(
+            tmp_path,
+            "metrics.md",
+            "Metric summary follows.\n\n| Metric | Value |\n|---|---|\n",
+        )
+        result = _detect(path)
+        assert result.format is detector_module.DetectedFormat.MARKDOWN

@@ -34,6 +34,29 @@ class AdapterError(Exception):
     """
 
 
+class UnsupportedContent(AdapterError):
+    """Raised when the artifact's *content* needs an unbuilt route.
+
+    The PDF route's answer to a scanned document (03 §4.3): the
+    embedded-text metric says no digital parse can succeed, and the
+    route that could — OCR — is not registered. The service maps this
+    to ``UNSUPPORTED_FORMAT`` naming the content format, so the gap is
+    measurable, and it does **not** consume the one permitted fallback:
+    no parser of this route could succeed on this content.
+    """
+
+    def __init__(self, format_name: str, message: str) -> None:
+        """Describe the unsupported content.
+
+        Args:
+          format_name: The content format needing an unbuilt route,
+            e.g. ``scanned_pdf``.
+          message: Why the current route cannot serve it.
+        """
+        super().__init__(message)
+        self.format_name = format_name
+
+
 class ParseRequest(pydantic.BaseModel):
     """What an adapter is asked to parse (03 §3.4).
 

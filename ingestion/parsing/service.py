@@ -245,14 +245,18 @@ class ParserService:
                 detection=detection,
             )
         if detection.resolution is detector_module.Resolution.AMBIGUOUS:
+            # No parser ran and none could be chosen, so this is an
+            # unsupported input, not a parse failure — and re-fetching
+            # the same bytes cannot disambiguate them, so no retry hint
+            # is offered (defect D6, 2026-08-15).
             return self._failure(
                 artifact,
-                shapes.ParserErrorCode.PARSE_FAILED,
+                shapes.ParserErrorCode.UNSUPPORTED_FORMAT,
                 (
                     "format detection was ambiguous: "
                     + "; ".join(detection.conflicts or detection.signals)
                 ),
-                shapes.RetryWith.DIFFERENT_SOURCE,
+                shapes.RetryWith.NONE,
                 detection=detection,
             )
         if detection.resolution is detector_module.Resolution.UNSUPPORTED:
@@ -320,7 +324,20 @@ class ParserService:
             )
 
         request = base.ParseRequest(artifact=artifact, detection=detection)
-        attempts = [self._attempt(request, role, primary, parse_id, False)]
+        try:
+            attempts = [self._attempt(request, role, primary, parse_id, False)]
+        except base.UnsupportedContent as unsupported:
+            # The content needs a route that is not built — e.g. a
+            # scanned PDF on the digital-PDF route (03 §4.3). No parser
+            # of this route could succeed, so the fallback is not spent.
+            return self._failure(
+                artifact,
+                shapes.ParserErrorCode.UNSUPPORTED_FORMAT,
+                f"{unsupported.format_name}: {unsupported}",
+                shapes.RetryWith.NONE,
+                detection=detection,
+                parse_id=parse_id,
+            )
         if fallback is not None and self._should_escalate(attempts[0], binding):
             if self._egress_denial(artifact, fallback) is None:
                 attempts.append(
@@ -361,6 +378,8 @@ class ParserService:
             return attempt
         try:
             raw = adapter.parse(request)
+        except base.UnsupportedContent:
+            raise
         except base.AdapterError as error:
             attempt.error = f"adapter {adapter.name!r} failed: {error}"
             return attempt

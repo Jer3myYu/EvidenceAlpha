@@ -90,10 +90,21 @@ class TestRouteResolution:
             is None
         )
 
-    def test_no_adapter_is_bound_yet(self):
-        """Every MVP route is still a planned route (03 §2.1)."""
+    def test_only_the_mvp_routes_are_bound(self):
+        """SEC HTML and digital PDF are live (03 §2.1); the rest stay
+        planned routes."""
+        live = {
+            capabilities_module.RouteRole.SEC_HTML_PARSER: "sec_html_lxml",
+            capabilities_module.RouteRole.PDF_LAYOUT_PARSER: "pdf_pymupdf",
+        }
         for role in capabilities_module.RouteRole:
-            assert registry_module.DEFAULT_REGISTRY.binding_for(role) is None
+            binding = registry_module.DEFAULT_REGISTRY.binding_for(role)
+            if role in live:
+                assert binding is not None
+                assert binding.primary == live[role]
+                assert binding.fallback is None
+            else:
+                assert binding is None
 
 
 class TestStartupValidation:
@@ -156,7 +167,9 @@ class TestStartupValidation:
 
     def test_the_egress_policy_is_consulted_at_startup(self):
         """A registry records the policy it validated against."""
-        registry = registry_module.AdapterRegistry(adapters=[_Adapter()])
+        registry = registry_module.AdapterRegistry(
+            adapters=[_Adapter()], bindings={}
+        )
         assert isinstance(
             registry.egress_policy, egress_module.DenyAllEgressPolicy
         )

@@ -69,15 +69,41 @@ class TestControlledFailures:
         )
 
     def test_ambiguous_detection_never_guesses(self, tmp_path):
-        """An ambiguous container is a controlled failure."""
+        """An ambiguous container is unsupported, not a parse failure.
+
+        No parser ran, so ``PARSE_FAILED`` would be a lie, and
+        re-fetching identical bytes cannot disambiguate them, so no
+        retry hint is offered (defect D6).
+        """
         path = tmp_path / "legacy.xls"
         path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32)
         artifact = stub_adapters.make_artifact(
             str(path), path.stat().st_size, filename="legacy.xls"
         )
         result = _service(stub_adapters.StubMarkdownAdapter()).parse(artifact)
-        assert result.error.code is shapes.ParserErrorCode.PARSE_FAILED
-        assert result.retry_with is shapes.RetryWith.DIFFERENT_SOURCE
+        assert result.error.code is shapes.ParserErrorCode.UNSUPPORTED_FORMAT
+        assert result.retry_with is shapes.RetryWith.NONE
+
+    def test_a_non_excel_compound_file_stops_before_dispatch(self, tmp_path):
+        """``OLE2_COMPOUND`` never reaches route resolution (defect D7).
+
+        The format has no route-table entry, which is safe only because
+        the detector only ever returns it as ambiguous — this pins that
+        the pre-dispatch stop is what handles it.
+        """
+        path = tmp_path / "document.doc"
+        path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+        artifact = stub_adapters.make_artifact(
+            str(path), path.stat().st_size, filename="document.doc"
+        )
+        result = _service(stub_adapters.StubMarkdownAdapter()).parse(artifact)
+        assert result.error.code is shapes.ParserErrorCode.UNSUPPORTED_FORMAT
+        assert (
+            result.detected_format
+            is detector_module.DetectedFormat.OLE2_COMPOUND
+        )
+        assert result.parser_used is None
+        assert result.parsed_document is None
 
     def test_encrypted_file_fails_before_dispatch(self, tmp_path):
         """An encrypted file does not consume the fallback (03 §8.1)."""

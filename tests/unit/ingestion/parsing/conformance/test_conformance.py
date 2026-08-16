@@ -23,21 +23,17 @@ from ingestion.parsing import registry as registry_module
 from ingestion.parsing import shapes
 from tests.unit.ingestion.parsing.conformance import stub_adapters
 
-_ADAPTER_IDS = [adapter.name for adapter in stub_adapters.CONFORMING_ADAPTERS]
 
-
-@pytest.fixture(
-    name="adapter", params=stub_adapters.CONFORMING_ADAPTERS, ids=_ADAPTER_IDS
-)
-def adapter_fixture(request):
-    """Yield each conforming adapter in turn."""
-    return request.param
+@pytest.fixture(name="adapter")
+def adapter_fixture(case):
+    """Return the current conformance case's adapter."""
+    return case.adapter
 
 
 @pytest.fixture(name="result")
-def result_fixture(adapter, build_service, fixture_artifact):
+def result_fixture(case, build_service, fixture_artifact):
     """Run one adapter end to end through the parser service."""
-    return build_service(adapter).parse(fixture_artifact)
+    return build_service(case.adapter, role=case.role).parse(fixture_artifact)
 
 
 def test_parse_succeeds(result):
@@ -131,15 +127,15 @@ def test_typing_only_where_typed_grid_declared(adapter, result):
             assert cell.value_type is None
 
 
-def test_pinned_determinism(adapter, build_service, fixture_artifact):
+def test_pinned_determinism(case, adapter, build_service, fixture_artifact):
     """A pinned adapter over one fixture twice is byte-identical."""
     if (
         adapter.capabilities.determinism
         is not capabilities_module.Determinism.PINNED
     ):
         pytest.skip("determinism is not pinned")
-    first = build_service(adapter).parse(fixture_artifact)
-    second = build_service(adapter).parse(fixture_artifact)
+    first = build_service(adapter, role=case.role).parse(fixture_artifact)
+    second = build_service(adapter, role=case.role).parse(fixture_artifact)
     assert (
         first.parsed_document.model_dump_json()
         == second.parsed_document.model_dump_json()
@@ -169,14 +165,20 @@ def test_manifest_records_the_planned_half(adapter, result):
 
 
 def test_every_registered_attempt_is_planned(
-    adapter, build_service, fixture_artifact
+    adapter, build_service, markdown_artifact
 ):
-    """A registered fallback is described before anything runs."""
+    """A registered fallback is described before anything runs.
+
+    Runs on the markdown route for every case, because the point is the
+    planned manifest's completeness: even when the case's adapter
+    declines the markdown fixture and the stub fallback does the work,
+    both attempts must have been described before either ran.
+    """
     other = stub_adapters.StubElementListAdapter()
     if other.name == adapter.name:
         other = stub_adapters.StubMarkdownAdapter()
     result = build_service(adapter, other, fallback=other.name).parse(
-        fixture_artifact
+        markdown_artifact
     )
     planned = result.manifest.planned
     assert [item.adapter_name for item in planned.attempts] == [
@@ -238,10 +240,10 @@ def test_locator_tier_travels_with_every_block(result):
 # --- Non-conforming adapters: the suite must reject each of these. ---
 
 
-def test_overstating_adapter_is_caught(build_service, fixture_artifact):
+def test_overstating_adapter_is_caught(build_service, markdown_artifact):
     """An undeclared block type is rejected, loudly (03 §3.5)."""
     result = build_service(stub_adapters.OverstatingAdapter()).parse(
-        fixture_artifact
+        markdown_artifact
     )
     rejected = result.parsed_document.parse_quality.rejected_blocks
     reasons = {item.reason for item in rejected}
@@ -250,20 +252,20 @@ def test_overstating_adapter_is_caught(build_service, fixture_artifact):
     assert quality.WarningCode.CAPABILITY_OVERSTATED in codes
 
 
-def test_shape_liar_adapter_is_caught(build_service, fixture_artifact):
+def test_shape_liar_adapter_is_caught(build_service, markdown_artifact):
     """A returned shape must match the declared one."""
     result = build_service(stub_adapters.ShapeLiarAdapter()).parse(
-        fixture_artifact
+        markdown_artifact
     )
     assert result.status is quality.QualityVerdict.FAILED
     assert result.error.code is shapes.ParserErrorCode.PARSE_FAILED
     assert "native shape" in result.error.message
 
 
-def test_typing_overreach_is_stripped(build_service, fixture_artifact):
+def test_typing_overreach_is_stripped(build_service, markdown_artifact):
     """Undeclared cell typing is discarded, and the loss is reported."""
     result = build_service(stub_adapters.TypingOverreachAdapter()).parse(
-        fixture_artifact
+        markdown_artifact
     )
     tables = [
         block
@@ -287,20 +289,22 @@ def test_typing_overreach_is_stripped(build_service, fixture_artifact):
 
 
 def test_failing_adapter_is_a_controlled_failure(
-    build_service, fixture_artifact
+    build_service, markdown_artifact
 ):
     """An adapter exception becomes a controlled failure, not a crash."""
     result = build_service(stub_adapters.FailingAdapter()).parse(
-        fixture_artifact
+        markdown_artifact
     )
     assert result.status is quality.QualityVerdict.FAILED
     assert result.parsed_document is None
     assert result.error.code is shapes.ParserErrorCode.PARSE_FAILED
 
 
-def test_empty_adapter_fails_loudly(build_service, fixture_artifact):
+def test_empty_adapter_fails_loudly(build_service, markdown_artifact):
     """An empty extraction never becomes an empty document (03 §7.2)."""
-    result = build_service(stub_adapters.EmptyAdapter()).parse(fixture_artifact)
+    result = build_service(stub_adapters.EmptyAdapter()).parse(
+        markdown_artifact
+    )
     assert result.status is quality.QualityVerdict.FAILED
     assert result.parsed_document is None
     assert result.error.code is shapes.ParserErrorCode.PARSE_QUALITY_TOO_LOW
