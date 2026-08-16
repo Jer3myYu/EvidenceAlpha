@@ -269,3 +269,15 @@ class TestVerifierFindings:
             any("item" in part.lower() for part in block.heading_path)
             for block in with_path
         )
+
+
+class TestHeadingPathConvention:
+    """03 §5.3: ``heading_path`` is *enclosing* headings only."""
+
+    def test_a_heading_block_does_not_enclose_itself(self, ten_q):
+        """Heading blocks carry the exclusive path, matching the
+        shared markdown converter's convention (design-review round)."""
+        for block in ten_q.parsed_document.blocks:
+            if block.type is not document.BlockType.HEADING:
+                continue
+            assert block.text not in block.heading_path

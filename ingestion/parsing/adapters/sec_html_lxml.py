@@ -317,7 +317,7 @@ class SecHtmlLxmlAdapter:
     """SEC HTML and inline XBRL over lxml (03 §4.1)."""
 
     name = "sec_html_lxml"
-    version = "1.0"
+    version = "1.1"
     capabilities = capabilities_module.AdapterCapabilities(
         block_types=frozenset(
             {
@@ -443,14 +443,25 @@ class _BlockBuilder:
 
     def _push_heading(
         self, level: int, text: str, element: lxml.etree._Element
-    ) -> None:
-        """Record a heading, popping deeper or equal levels."""
+    ) -> list[str]:
+        """Record a heading, popping deeper or equal levels.
+
+        Returns:
+          The heading's *enclosing* path — the stack after popping
+          peers, before the heading itself. 03 §5.3 defines
+          ``heading_path`` as enclosing headings, so a heading block
+          carries this exclusive path (adapter 1.1; the 1.0 behavior
+          was self-inclusive and disagreed with the shared markdown
+          converter).
+        """
         while self._headings and self._headings[-1][0] >= level:
             self._headings.pop()
+        enclosing = self._path()
         self._headings.append((level, text))
         order = self._order.get(element)
         if order is not None:
             self._heading_marks.append((order, self._path()))
+        return enclosing
 
     def _path_at(self, element: lxml.etree._Element) -> list[str]:
         """Return the heading path enclosing an element's position.
@@ -506,12 +517,14 @@ class _BlockBuilder:
         if tag in _HEADING_LEVELS:
             text = _clean(element.text_content())
             if text:
-                self._push_heading(_HEADING_LEVELS[tag], text, element)
+                enclosing = self._push_heading(
+                    _HEADING_LEVELS[tag], text, element
+                )
                 self._append(
                     document.BlockType.HEADING,
                     text,
                     element,
-                    heading_path=self._path(),
+                    heading_path=enclosing,
                 )
             return
         if not _has_block_descendant(element):
@@ -528,12 +541,12 @@ class _BlockBuilder:
             return
         level = self._heading_level(text)
         if level is not None:
-            self._push_heading(level, text, element)
+            enclosing = self._push_heading(level, text, element)
             self._append(
                 document.BlockType.HEADING,
                 text,
                 element,
-                heading_path=self._path(),
+                heading_path=enclosing,
             )
             return
         self._append(document.BlockType.PARAGRAPH, text, element)
@@ -580,12 +593,12 @@ class _BlockBuilder:
         heading_text = _clean(element.text_content())
         level = self._heading_level(heading_text)
         if level is not None:
-            self._push_heading(level, heading_text, element)
+            enclosing = self._push_heading(level, heading_text, element)
             self._append(
                 document.BlockType.HEADING,
                 heading_text,
                 element,
-                heading_path=self._path(),
+                heading_path=enclosing,
             )
             return
         try:
