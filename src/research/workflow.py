@@ -14,6 +14,9 @@ Phase 6.3 adds the loop::
 
 Evidence and answers accumulate across rounds through LangGraph's
 ``operator.add`` reducer: a research round returns only its new items.
+Before they enter state, a round's observations are relabelled with
+stable source ids (``research.sources``), so the evaluator, the
+follow-up round, and the synthesis all cite ``[S#]``.
 The finish node synthesises one answer from everything and, when the
 loop ended insufficient, appends the evaluator's unresolved gaps.
 
@@ -31,6 +34,7 @@ from langgraph.graph.state import CompiledStateGraph
 from research import agent
 from research import evaluate as evaluate_module
 from research import plan as plan_module
+from research import sources as sources_module
 from research import synthesize as synthesize_module
 
 # Round 1 is the initial research, round 2 the one follow-up.
@@ -43,8 +47,11 @@ class ResearchState(TypedDict, total=False):
     Attributes:
       question: The user's question (input).
       research_plan: The planning call's result, unchanged.
-      evidence: Every tool observation from every round, verbatim, in
-        order. Appended by the reducer; a node returns only new items.
+      evidence: Every tool observation from every round, in order, with
+        source labels rewritten to ``[S#]``. Appended by the reducer; a
+        node returns only new items.
+      sources: The source registry, ``[S#]`` id to record. Replaced
+        whole by the research node.
       answers: One agent answer per research round, in order. Appended
         by the reducer.
       research_round: How many research rounds have completed.
@@ -56,6 +63,7 @@ class ResearchState(TypedDict, total=False):
     question: str
     research_plan: plan_module.ResearchPlan
     evidence: Annotated[list[str], operator.add]
+    sources: dict[str, sources_module.SourceRecord]
     answers: Annotated[list[str], operator.add]
     research_round: int
     evidence_sufficient: bool
@@ -86,8 +94,12 @@ async def research_node(state: ResearchState) -> dict[str, Any]:
             state["evidence_gaps"],
         )
     result = await agent.research(prompt)
+    evidence, sources = sources_module.normalize_observations(
+        result.observations, state.get("sources", {})
+    )
     return {
-        "evidence": result.observations,
+        "evidence": evidence,
+        "sources": sources,
         "answers": [result.answer],
         "research_round": completed + 1,
     }
@@ -164,7 +176,7 @@ def build_graph(
     Args:
       plan: Node filling ``research_plan``.
       research: Node adding ``evidence`` and ``answers`` and setting
-        ``research_round``.
+        ``sources`` and ``research_round``.
       evaluate: Node filling ``evidence_sufficient`` and ``evidence_gaps``.
       finish: Node filling ``final_answer``.
 

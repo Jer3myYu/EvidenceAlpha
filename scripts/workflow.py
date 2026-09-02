@@ -70,13 +70,14 @@ async def main() -> None:
     show("EVIDENCE EVALUATION", f"sufficient: {verdict}\ngaps:{gaps}")
     show("RESEARCH ROUNDS", str(state["research_round"]))
     show("FINAL ANSWER", state["final_answer"])
-    sources = [
-        line
-        for text in state["evidence"]
-        for line in text.splitlines()
-        if line.startswith(("[D", "[W"))
-    ]
-    show("SOURCES", "\n".join(sources) or "none (no tool called)")
+    sources = []
+    for record in state["sources"].values():
+        seen_via = ", ".join(record.seen_via)
+        location = record.canonical_url or record.local_document_id
+        sources.append(
+            f"{record.source_id}  {record.title}  {location}  via {seen_via}"
+        )
+    show("SOURCES", "\n".join(sources) or "none (no source seen)")
 
 
 if __name__ == "__main__":

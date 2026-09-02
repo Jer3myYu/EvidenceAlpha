@@ -19,11 +19,14 @@ gathered in one or more research rounds. You do not research, call
 tools, or add facts of your own.
 
 The tool observations are the evidence; use all of them, from every
-round. The round answers show how each round read its evidence; they
-are context, not evidence, and a claim that appears only in a round
-answer is unsupported. Cite each claim with the label it carries in
-the observations, such as [D2] or [W1]. Answer what the evidence
-supports and no more. If it supports nothing, reply with exactly:
+round. Factual support must come from the observations. Cite each
+claim with the label it carries in the observations, such as [S2]; a
+final citation is always [S#]. The round answers show how each round
+read its evidence; they are context, not evidence, and a claim that
+appears only in a round answer is unsupported. Labels such as [D1] or
+[W1] inside the round answers are round-local and are not valid
+citations. Answer what the evidence supports and no more. If it
+supports nothing, reply with exactly:
 {agent.EVIDENCE_GAP}
 Write plain prose.
 """

@@ -12,6 +12,7 @@ from langgraph.graph import END, START
 from research import agent
 from research import evaluate
 from research import plan
+from research import sources
 from research import synthesize
 from research import workflow
 
@@ -22,10 +23,32 @@ CHOSEN = plan.Candidate("B", "Technology stack", "strong", "medium", "strong")
 TOT_PLAN = plan.ResearchPlan(
     use_tot=True, candidates=[CHOSEN], selected="B", reason="Best fit."
 )
+INGESTED = (
+    "Ingested 3 chunks from https://x.example/p into the local document "
+    "collection. Use search_documents to retrieve from it."
+)
+# Raw observations as the tools label them: round 2's [D1] is a different
+# source from round 1's [D1], and its web hit is the URL round 1 ingested.
 ROUNDS = [
-    (["[D1] a.txt\nAcme makes arms.", "Ingested 3 chunks."], "answer 1"),
-    (["[W1] Site - https://x.example\nSnippet."], "answer 2"),
+    (
+        ["[D1] source: a.txt (distance 0.1000)\nAcme makes arms.", INGESTED],
+        "answer 1",
+    ),
+    (
+        [
+            "[W1] Site - https://x.example/p\nSnippet.",
+            "[D1] source: b.md (distance 0.2000)\nBeta sells peas.",
+        ],
+        "answer 2",
+    ),
     (["never used"], "answer 3"),
+]
+STABLE = [
+    ["[S1] source: a.txt (distance 0.1000)\nAcme makes arms.", INGESTED],
+    [
+        "[S2] Site - https://x.example/p\nSnippet.",
+        "[S3] source: b.md (distance 0.2000)\nBeta sells peas.",
+    ],
 ]
 
 
@@ -45,8 +68,12 @@ def fake_nodes(verdicts: list[bool]):
         seen["research"] = dict(state)
         completed = state.get("research_round", 0)
         observations, answer = ROUNDS[completed]
+        evidence, registry = sources.normalize_observations(
+            observations, state.get("sources", {})
+        )
         return {
-            "evidence": observations,
+            "evidence": evidence,
+            "sources": registry,
             "answers": [answer],
             "research_round": completed + 1,
         }
@@ -84,7 +111,7 @@ def test_sufficient_after_round_one_goes_straight_to_finish():
 
     assert calls == ["plan", "research", "evaluate", "finish"]
     assert state["research_round"] == 1
-    assert state["evidence"] == ROUNDS[0][0]
+    assert state["evidence"] == STABLE[0]
     assert state["answers"] == ["answer 1"]
     assert state["evidence_sufficient"] is True
     assert state["final_answer"] == "final"
@@ -105,13 +132,13 @@ def test_insufficient_then_sufficient_runs_a_second_round_and_accumulates():
         "finish",
     ]
     assert state["research_round"] == 2
-    assert state["evidence"] == ROUNDS[0][0] + ROUNDS[1][0]
+    assert state["evidence"] == STABLE[0] + STABLE[1]
     assert state["answers"] == ["answer 1", "answer 2"]
     # The follow-up round saw round one's evidence and the gaps.
-    assert seen["research"]["evidence"] == ROUNDS[0][0]
+    assert seen["research"]["evidence"] == STABLE[0]
     assert seen["research"]["evidence_gaps"] == ["gap after round 1"]
     # The second evaluation saw everything, and finish saw both answers.
-    assert seen["evaluate"]["evidence"] == ROUNDS[0][0] + ROUNDS[1][0]
+    assert seen["evaluate"]["evidence"] == STABLE[0] + STABLE[1]
     assert seen["finish"]["answers"] == ["answer 1", "answer 2"]
     assert state["evidence_sufficient"] is True
 
@@ -126,7 +153,57 @@ def test_insufficient_twice_stops_after_the_second_round():
     assert state["research_round"] == 2
     assert state["evidence_sufficient"] is False
     assert state["evidence_gaps"] == ["gap after round 2"]
-    assert seen["finish"]["evidence"] == ROUNDS[0][0] + ROUNDS[1][0]
+    assert seen["finish"]["evidence"] == STABLE[0] + STABLE[1]
+
+
+def test_round_two_receives_stable_labels_and_one_id_per_source():
+    graph, _, seen = fake_nodes([False, True])
+
+    state = run(graph)
+
+    # Round one's [D1] became [S1] before round two saw it.
+    assert seen["research"]["evidence"] == STABLE[0]
+    assert set(seen["research"]["sources"]) == {"S1", "S2"}
+    followup = agent.followup_prompt(
+        "Where is Acme based?",
+        PLAN,
+        seen["research"]["evidence"],
+        seen["research"]["evidence_gaps"],
+    )
+    assert "[S1] source: a.txt" in followup
+    assert "[D1]" not in followup
+    # Round two's [D1] is a different file and got its own id; its web
+    # hit is the URL round one ingested, so the id was reused.
+    registry = state["sources"]
+    assert [record.source_id for record in registry.values()] == [
+        "S1",
+        "S2",
+        "S3",
+    ]
+    assert registry["S2"].canonical_url == "https://x.example/p"
+    assert registry["S2"].seen_via == ("ingest", "web")
+    assert registry["S2"].title == "Site"
+    assert registry["S3"].local_document_id == "b.md"
+
+
+def test_synthesis_sees_only_stable_source_ids():
+    graph, _, seen = fake_nodes([False, True])
+    run(graph)
+    finish_state = seen["finish"]
+
+    prompt = synthesize.build_prompt(
+        finish_state["question"],
+        finish_state["research_plan"],
+        finish_state["answers"],
+        finish_state["evidence"],
+    )
+    observations = prompt[prompt.index("Tool observations (evidence):") :]
+
+    assert "[S1]" in observations and "[S3]" in observations
+    assert "[D" not in observations and "[W" not in observations
+    rules = " ".join(synthesize.SYSTEM_PROMPT.split())
+    assert "a final citation is always [S#]" in rules
+    assert "are round-local and are not valid citations" in rules
 
 
 def test_router_never_allows_a_third_round():
@@ -233,16 +310,20 @@ def test_followup_prompt_frames_the_round_around_the_gaps():
 
 
 def test_followup_prompt_imposes_no_tool_order():
+    # Only the instruction may name tools; the evidence block is quoted
+    # tool output and can mention them too.
+    instruction = FOLLOWUP[FOLLOWUP.index(INSTRUCTION) :]
+
     for tool in ("search_documents", "search_web", "ingest_url"):
-        assert FOLLOWUP.count(tool) == 1
-        assert f"use {tool} when" in FOLLOWUP
+        assert instruction.count(tool) == 1
+        assert f"use {tool} when" in instruction
     for sequence in (
         "first search",
         "then search",
         "then ingest",
         "after search",
     ):
-        assert sequence not in FOLLOWUP.lower()
+        assert sequence not in instruction.lower()
 
 
 def test_evaluator_prompt_lays_out_question_plan_answer_and_observations():
@@ -273,7 +354,7 @@ def test_synthesis_prompt_labels_rounds_and_keeps_observations_verbatim():
         "Where is Acme based?",
         PLAN,
         ["answer 1", "answer 2"],
-        ROUNDS[0][0] + ROUNDS[1][0],
+        STABLE[0] + STABLE[1],
     )
 
     headings = [
@@ -289,7 +370,7 @@ def test_synthesis_prompt_labels_rounds_and_keeps_observations_verbatim():
     assert prompt.index("--- observation 3 ---") > prompt.index(
         "--- observation 2 ---"
     )
-    assert ROUNDS[1][0][0] in prompt
+    assert STABLE[1][0] in prompt
 
 
 def test_evaluation_schema_uses_question_keys_not_sufficient():
