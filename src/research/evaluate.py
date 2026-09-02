@@ -10,6 +10,7 @@ the verdict.
 import claude_agent_sdk
 import pydantic
 
+from research import agent
 from research import plan as plan_module
 
 MODEL = "claude-sonnet-5"
@@ -97,18 +98,11 @@ def build_prompt(
         if chosen
         else "none: single-path question"
     )
-    observation_text = (
-        "\n".join(
-            f"--- observation {number} ---\n{observation}"
-            for number, observation in enumerate(observations, start=1)
-        )
-        or "none: no tool was called"
-    )
     return (
         f"Question:\n{question}\n\n"
         f"Research plan:\n{plan_text}\n\n"
         f"Agent answer:\n{answer}\n\n"
-        f"Tool observations:\n{observation_text}"
+        f"Tool observations:\n{agent.format_observations(observations)}"
     )
 
 

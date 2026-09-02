@@ -219,6 +219,46 @@ def _observation_text(block: claude_agent_sdk.ToolResultBlock) -> str:
     return "\n".join(part.get("text", "") for part in block.content or [])
 
 
+def format_observations(observations: list[str]) -> str:
+    """Render tool observations as numbered blocks, or a fixed sentence."""
+    return (
+        "\n".join(
+            f"--- observation {number} ---\n{observation}"
+            for number, observation in enumerate(observations, start=1)
+        )
+        or "none: no tool was called"
+    )
+
+
+def followup_prompt(
+    question: str,
+    plan: plan_module.ResearchPlan,
+    evidence: list[str],
+    gaps: list[str],
+) -> str:
+    """Build a follow-up round's message: prior evidence, gaps, one task.
+
+    Args:
+      question: The user's question.
+      plan: The planning result; its chosen approach is repeated.
+      evidence: Every observation from the earlier rounds, in order.
+      gaps: The evaluator's unresolved gaps.
+
+    Returns:
+      The message for ``research``.
+    """
+    gap_lines = "\n".join(
+        f"{number}. {gap}" for number, gap in enumerate(gaps, start=1)
+    )
+    return (
+        f"{research_prompt(question, plan)}\n\n"
+        f"Evidence collected so far:\n{format_observations(evidence)}\n\n"
+        f"Unresolved evidence gaps:\n{gap_lines}\n\n"
+        "Research only these unresolved gaps with the tools; do not repeat "
+        "research that the evidence above already supports."
+    )
+
+
 async def research(prompt: str) -> ResearchResult:
     """Run the agent once and return its answer with the evidence it saw.
 

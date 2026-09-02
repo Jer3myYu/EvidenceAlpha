@@ -58,6 +58,8 @@ async def main() -> None:
         show("TOOL OBSERVATION", "none (no tool called)")
     for observation in state["evidence"]:
         show("TOOL OBSERVATION", observation)
+    for number, answer in enumerate(state["answers"], start=1):
+        show(f"ROUND {number} ANSWER", answer)
     verdict = "yes" if state["evidence_sufficient"] else "no"
     gaps = (
         "".join(
@@ -66,6 +68,7 @@ async def main() -> None:
         or " none"
     )
     show("EVIDENCE EVALUATION", f"sufficient: {verdict}\ngaps:{gaps}")
+    show("RESEARCH ROUNDS", str(state["research_round"]))
     show("FINAL ANSWER", state["final_answer"])
     sources = [
         line

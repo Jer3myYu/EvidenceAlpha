@@ -1,23 +1,29 @@
-"""Explicit research workflow on LangGraph: plan, research, evaluate, finish.
+"""Explicit research workflow on LangGraph with one follow-up round.
 
 LangGraph owns the workflow level: which stage runs next and what state
 moves between stages. The Research Agent (``research.agent``) keeps the
 tool-use level: which tool to call, in what order, and when to answer.
 Neither layer makes the other's decisions.
 
-Phase 6.2 is the linear graph::
+Phase 6.3 adds the loop::
 
-    START -> plan -> research -> evaluate -> finish -> END
+    START -> plan -> research -> evaluate -+- sufficient -----> finish -> END
+                        ^                  +- insufficient, round 1 --+
+                        +---------------------------------------------+
+                                           +- insufficient, round 2 -> finish
 
-The evaluator's verdict is carried in state and printed; nothing routes
-on it yet.
+Evidence and answers accumulate across rounds through LangGraph's
+``operator.add`` reducer: a research round returns only its new items.
+The finish node synthesises one answer from everything and, when the
+loop ended insufficient, appends the evaluator's unresolved gaps.
 
 The node functions are plain async functions over ``ResearchState``
 and are parameters of ``build_graph`` so tests can pass fakes.
 """
 
+import operator
 from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -25,6 +31,10 @@ from langgraph.graph.state import CompiledStateGraph
 from research import agent
 from research import evaluate as evaluate_module
 from research import plan as plan_module
+from research import synthesize as synthesize_module
+
+# Round 1 is the initial research, round 2 the one follow-up.
+MAX_RESEARCH_ROUNDS = 2
 
 
 class ResearchState(TypedDict, total=False):
@@ -33,17 +43,21 @@ class ResearchState(TypedDict, total=False):
     Attributes:
       question: The user's question (input).
       research_plan: The planning call's result, unchanged.
-      evidence: Every tool observation the agent saw, verbatim, in order.
-      answer: The agent's answer for the research round.
-      evidence_sufficient: The evaluator's verdict on the evidence.
-      evidence_gaps: The evaluator's actionable gaps; empty if sufficient.
+      evidence: Every tool observation from every round, verbatim, in
+        order. Appended by the reducer; a node returns only new items.
+      answers: One agent answer per research round, in order. Appended
+        by the reducer.
+      research_round: How many research rounds have completed.
+      evidence_sufficient: The latest evaluator verdict.
+      evidence_gaps: The latest evaluator gaps; empty if sufficient.
       final_answer: The answer returned by the workflow.
     """
 
     question: str
     research_plan: plan_module.ResearchPlan
-    evidence: list[str]
-    answer: str
+    evidence: Annotated[list[str], operator.add]
+    answers: Annotated[list[str], operator.add]
+    research_round: int
     evidence_sufficient: bool
     evidence_gaps: list[str]
     final_answer: str
@@ -58,18 +72,33 @@ async def plan_node(state: ResearchState) -> dict[str, Any]:
 
 
 async def research_node(state: ResearchState) -> dict[str, Any]:
-    """Run the existing Research Agent once with the selected approach."""
-    prompt = agent.research_prompt(state["question"], state["research_plan"])
+    """Run the agent for one round; a follow-up sees prior evidence and gaps."""
+    completed = state.get("research_round", 0)
+    if completed == 0:
+        prompt = agent.research_prompt(
+            state["question"], state["research_plan"]
+        )
+    else:
+        prompt = agent.followup_prompt(
+            state["question"],
+            state["research_plan"],
+            state["evidence"],
+            state["evidence_gaps"],
+        )
     result = await agent.research(prompt)
-    return {"answer": result.answer, "evidence": result.observations}
+    return {
+        "evidence": result.observations,
+        "answers": [result.answer],
+        "research_round": completed + 1,
+    }
 
 
 async def evaluate_node(state: ResearchState) -> dict[str, Any]:
-    """Run the evaluator on the round's answer and observations."""
+    """Evaluate all accumulated evidence against the latest answer."""
     verdict = await evaluate_module.evaluate_evidence(
         state["question"],
         state["research_plan"],
-        state["answer"],
+        state["answers"][-1],
         state["evidence"],
     )
     return {
@@ -78,9 +107,50 @@ async def evaluate_node(state: ResearchState) -> dict[str, Any]:
     }
 
 
+def route_after_evaluate(state: ResearchState) -> str:
+    """Return ``"finish"`` or ``"research"`` from the latest verdict."""
+    if state["evidence_sufficient"]:
+        return "finish"
+    if state["research_round"] >= MAX_RESEARCH_ROUNDS:
+        return "finish"
+    return "research"
+
+
+def format_unresolved_gaps(gaps: list[str]) -> str:
+    """Render the evaluator's gaps as a numbered block under a fixed heading.
+
+    The wording is kept; the only changes are numbering and whitespace
+    normalisation.
+
+    Args:
+      gaps: The evaluator's gap sentences.
+
+    Returns:
+      The block, or an empty string if there are no gaps.
+    """
+    if not gaps:
+        return ""
+    lines = "\n".join(
+        f"{number}. {normalised}"
+        for number, normalised in enumerate(
+            (" ".join(gap.split()) for gap in gaps), start=1
+        )
+    )
+    return f"Unresolved evidence gaps:\n{lines}"
+
+
 async def finish_node(state: ResearchState) -> dict[str, Any]:
-    """Pass the agent's answer through unchanged (Phases 6.1 and 6.2)."""
-    return {"final_answer": state["answer"]}
+    """Synthesise one answer from every round, then disclose open gaps."""
+    answer = await synthesize_module.synthesize(
+        state["question"],
+        state["research_plan"],
+        state["answers"],
+        state["evidence"],
+    )
+    block = format_unresolved_gaps(state["evidence_gaps"])
+    if state["evidence_sufficient"] or not block:
+        return {"final_answer": answer}
+    return {"final_answer": f"{answer}\n\n{block}"}
 
 
 def build_graph(
@@ -89,11 +159,12 @@ def build_graph(
     evaluate: NodeFunction = evaluate_node,
     finish: NodeFunction = finish_node,
 ) -> CompiledStateGraph:
-    """Compile ``START -> plan -> research -> evaluate -> finish -> END``.
+    """Compile the graph with the evaluate -> research / finish loop.
 
     Args:
       plan: Node filling ``research_plan``.
-      research: Node filling ``answer`` and ``evidence``.
+      research: Node adding ``evidence`` and ``answers`` and setting
+        ``research_round``.
       evaluate: Node filling ``evidence_sufficient`` and ``evidence_gaps``.
       finish: Node filling ``final_answer``.
 
@@ -109,6 +180,10 @@ def build_graph(
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "research")
     graph.add_edge("research", "evaluate")
-    graph.add_edge("evaluate", "finish")
+    graph.add_conditional_edges(
+        "evaluate",
+        route_after_evaluate,
+        {"finish": "finish", "research": "research"},
+    )
     graph.add_edge("finish", END)
     return graph.compile()
