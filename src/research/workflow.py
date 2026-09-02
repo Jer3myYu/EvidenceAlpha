@@ -22,12 +22,19 @@ loop ended insufficient, appends the evaluator's unresolved gaps.
 
 The node functions are plain async functions over ``ResearchState``
 and are parameters of ``build_graph`` so tests can pass fakes.
+
+Phase 7 adds one optional ``checkpointer``. With it, LangGraph stores
+the state after every completed node under the caller's thread id
+(``research.persist``), so an interrupted run resumes at the node that
+did not finish and a completed run can be reopened. Without it the
+graph is exactly the Phase 6 graph.
 """
 
 import operator
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, TypedDict
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -170,6 +177,7 @@ def build_graph(
     research: NodeFunction = research_node,
     evaluate: NodeFunction = evaluate_node,
     finish: NodeFunction = finish_node,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     """Compile the graph with the evaluate -> research / finish loop.
 
@@ -179,10 +187,13 @@ def build_graph(
         ``sources`` and ``research_round``.
       evaluate: Node filling ``evidence_sufficient`` and ``evidence_gaps``.
       finish: Node filling ``final_answer``.
+      checkpointer: Where LangGraph saves the state after each node.
+        ``None`` (the default) keeps every run in memory and anonymous.
 
     Returns:
       The compiled graph; run it with ``await graph.ainvoke({"question":
-      ...})``.
+      ...})``. With a checkpointer, every call also needs
+      ``persist.thread_config(thread_id)`` as its config.
     """
     graph = StateGraph(ResearchState)
     graph.add_node("plan", plan)
@@ -198,4 +209,4 @@ def build_graph(
         {"finish": "finish", "research": "research"},
     )
     graph.add_edge("finish", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

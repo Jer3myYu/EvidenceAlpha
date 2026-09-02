@@ -42,6 +42,11 @@ class SourceRecord:
     local_document_id: str | None
     seen_via: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        # A checkpoint stores tuples as lists (msgpack has no tuple);
+        # restore the invariant so ``seen_via + (kind,)`` keeps working.
+        object.__setattr__(self, "seen_via", tuple(self.seen_via))
+
 
 # The complete header shapes written by agent.format_chunks,
 # agent.format_results, and the ingest_url tool handler. A line must
