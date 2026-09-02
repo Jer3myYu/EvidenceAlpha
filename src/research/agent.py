@@ -1,10 +1,9 @@
 """A research agent with planning, local search, web search, and acquisition.
 
-One optional planning step, then Claude chooses among three tools::
+The caller plans first (``research.plan``), then Claude chooses among
+three tools::
 
-    question
-      -> plan.plan_research(): lightweight Tree-of-Thought, one call;
-         for a broad research task it picks a research structure
+    question + selected approach   (research_prompt)
       -> Claude decides: search_documents, search_web, ingest_url, or none
       -> observations come back as numbered evidence
            [D1], [D2], ...  passages from the local documents
@@ -19,6 +18,7 @@ registered through the SDK's in-process MCP server, its supported
 mechanism for local Python tools.
 """
 
+import dataclasses
 from typing import Any
 
 import claude_agent_sdk
@@ -199,24 +199,49 @@ def research_prompt(question: str, plan: plan_module.ResearchPlan) -> str:
     )
 
 
-async def research(question: str) -> str:
-    """Plan, then run the agent on one question and return its answer.
+@dataclasses.dataclass(frozen=True)
+class ResearchResult:
+    """One agent run: the answer and the tool observations behind it.
+
+    Attributes:
+      answer: Claude's cited answer, or the fixed evidence-gap sentence.
+      observations: Every tool result Claude saw, verbatim and in order.
+    """
+
+    answer: str
+    observations: list[str]
+
+
+def _observation_text(block: claude_agent_sdk.ToolResultBlock) -> str:
+    """Flatten a tool result's content to plain text."""
+    if isinstance(block.content, str):
+        return block.content
+    return "\n".join(part.get("text", "") for part in block.content or [])
+
+
+async def research(prompt: str) -> ResearchResult:
+    """Run the agent once and return its answer with the evidence it saw.
 
     Args:
-      question: The user's question.
+      prompt: The finished user message, normally from ``research_prompt``.
 
     Returns:
-      Claude's cited answer, or the fixed evidence-gap sentence.
+      The answer and the tool observations in the order Claude received
+      them.
 
     Raises:
       RuntimeError: If the SDK reports an error or returns no result.
     """
-    prompt = research_prompt(
-        question, await plan_module.plan_research(question)
-    )
+    observations: list[str] = []
+    result = None
     async for message in claude_agent_sdk.query(prompt=prompt, options=OPTIONS):
-        if isinstance(message, claude_agent_sdk.ResultMessage):
-            if message.is_error or message.result is None:
-                raise RuntimeError(f"Agent run failed: {message.errors}")
-            return message.result
-    raise RuntimeError("Agent run ended without a result")
+        if isinstance(message, claude_agent_sdk.UserMessage):
+            for block in message.content:
+                if isinstance(block, claude_agent_sdk.ToolResultBlock):
+                    observations.append(_observation_text(block))
+        elif isinstance(message, claude_agent_sdk.ResultMessage):
+            result = message
+    if result is None or result.is_error or result.result is None:
+        errors = result.errors if result else "no result"
+        raise RuntimeError(f"Agent run failed: {errors}")
+    return ResearchResult(answer=result.result, observations=observations)

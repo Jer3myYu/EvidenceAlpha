@@ -29,6 +29,9 @@ dependencies = [
     "tavily-python>=0.8",
     # Phase 5 decision (2026-09-02): WebBaseLoader needs BeautifulSoup.
     "beautifulsoup4>=4.12",
+    # Phase 6 decision (2026-09-02): LangGraph for the explicit
+    # plan -> research -> finish workflow with state.
+    "langgraph>=1.2,<2",
 ]
 
 [project.optional-dependencies]
