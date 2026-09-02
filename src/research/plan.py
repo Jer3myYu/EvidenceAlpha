@@ -39,6 +39,9 @@ PLAN_SCHEMA = {
                     "evidence",
                     "coverage",
                 ],
+                # Candidate(**item) accepts exactly these keys; an extra
+                # one from the model (seen: "approach_detail") crashed it.
+                "additionalProperties": False,
             },
         },
         "selected": {"type": "string"},

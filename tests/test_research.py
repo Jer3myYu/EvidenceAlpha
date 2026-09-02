@@ -1,5 +1,7 @@
 """Phase 2 test: the prompt carries every chunk, numbered, plus the question."""
 
+import dataclasses
+
 from rag import models
 from research import acquire
 from research import agent
@@ -89,6 +91,16 @@ def test_parse_plan_reads_candidates_selection_and_reason():
     assert result.candidates[1].evidence == "medium"
     assert result.chosen().approach == "Vendors vs suppliers"
     assert result.reason == "Covers direct and indirect exposure."
+
+
+def test_candidate_schema_allows_only_candidate_fields():
+    # parse_plan builds Candidate(**item), so any key the schema lets the
+    # model emit must be a Candidate field, and no other key may pass.
+    item = plan.PLAN_SCHEMA["properties"]["candidates"]["items"]
+    fields = {field.name for field in dataclasses.fields(plan.Candidate)}
+
+    assert set(item["properties"]) == fields
+    assert item["additionalProperties"] is False
 
 
 def test_is_pdf_uses_content_type_or_url_suffix():
