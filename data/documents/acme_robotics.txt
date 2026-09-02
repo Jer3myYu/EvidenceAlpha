@@ -1,0 +1,4 @@
+Acme Robotics manufactures industrial robotic arms in Pittsburgh.
+The company was founded in 2011 and employs about 400 people.
+Its largest customers are automotive assembly plants in the Midwest.
+Acme sells directly to manufacturers and through two regional distributors.

@@ -4,28 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evidencealpha"
-version = "0.1.0"
-description = "Investment-research agent answering from traceable public evidence."
+version = "0.2.0"
+description = "Progressive industry-research agent. Phase 1: standalone RAG."
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "pydantic>=2.7,<3",
-    "lxml>=5.2,<7",
-    "pymupdf>=1.24,<2",
-    # Doc 04 §7: the two post-parser dependencies. CPU torch wheels
-    # suffice; install torch from the cpu index before this project.
+    # LangChain pieces used by src/rag: loaders, splitter, Chroma, embeddings.
+    "langchain-core>=0.3",
+    "langchain-community>=0.3",
+    "langchain-text-splitters>=0.3",
+    "langchain-chroma>=0.2",
+    "langchain-huggingface>=0.1",
+    # PyMuPDFLoader needs the pymupdf package itself.
+    "pymupdf>=1.24",
+    # Phase 1 decision (2026-09-02): all-MiniLM-L6-v2, local, via
+    # sentence-transformers. Install torch from the CPU wheel index
+    # BEFORE this project so pip does not pull the CUDA build:
+    #   .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
     "sentence-transformers>=3.0",
-    "chromadb>=1.0,<2",
-]
-
-[dependency-groups]
-# Spike outcome (2026-08-15, doc 03 §18): EdgarTools parses SEC HTML
-# offline but its document model carries no source-DOM anchors, so it
-# cannot meet the SEC route's per-block tier-1 locator minimum; the
-# in-house lxml adapter is primary. EdgarTools stays here as a
-# dev-time comparator and the planned acquisition/search client — it
-# is not a runtime dependency of the parser.
-spike = [
-    "edgartools>=4.0",
+    # Phase 2 decision (2026-09-02): the official Claude Agent SDK, pinned
+    # to the version verified against the local Claude Code login. The
+    # wheel bundles the Claude Code CLI binary (~215 MB).
+    "claude-agent-sdk==0.2.151",
+    # Phase 4 decision (2026-09-02): Tavily web search, key in TAVILY_API_KEY.
+    "tavily-python>=0.8",
+    # Phase 5 decision (2026-09-02): WebBaseLoader needs BeautifulSoup.
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]
@@ -36,13 +39,8 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = [
-    "contracts",
-    "ingestion",
-    "ingestion.parsing",
-    "ingestion.parsing.adapters",
-    "ingestion.parsing.converters",
-]
+package-dir = {"" = "src"}
+packages = ["rag", "research"]
 
 [tool.black]
 line-length = 80
