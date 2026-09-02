@@ -32,6 +32,9 @@ dependencies = [
     # Phase 6 decision (2026-09-02): LangGraph for the explicit
     # plan -> research -> finish workflow with state.
     "langgraph>=1.2,<2",
+    # Phase 6.2 decision (2026-09-02): pydantic for the evaluator's
+    # validated structured output.
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
