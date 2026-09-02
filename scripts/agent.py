@@ -68,9 +68,7 @@ async def main() -> None:
             for block in message.content:
                 if isinstance(block, claude_agent_sdk.ToolUseBlock):
                     actions += 1
-                    title = (
-                        "AGENT ACTION" if actions == 1 else "NEXT ACTION"
-                    )
+                    title = "AGENT ACTION" if actions == 1 else "NEXT ACTION"
                     show(title, block.name.removeprefix("mcp__research__"))
                     show("TOOL INPUT", str(block.input))
         elif isinstance(message, claude_agent_sdk.UserMessage):
