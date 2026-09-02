@@ -186,19 +186,63 @@ def test_format_unresolved_gaps_numbers_and_normalises_only():
     )
 
 
-def test_followup_prompt_carries_question_approach_evidence_and_gaps():
-    prompt = agent.followup_prompt(
-        "Where is Acme based?", TOT_PLAN, ROUNDS[0][0], ["gap one", "gap two"]
+GAPS = ["No source gives the 2025 revenue.", "No IPO date is stated."]
+FOLLOWUP = agent.followup_prompt(
+    "Where is Acme based?", TOT_PLAN, ROUNDS[0][0], GAPS
+)
+INSTRUCTION = "Address each unresolved gap."
+
+
+def test_followup_prompt_lists_every_gap_verbatim_and_numbered():
+    heading = FOLLOWUP.index("Unresolved evidence gaps:")
+
+    assert FOLLOWUP[heading:].startswith(
+        "Unresolved evidence gaps:\n"
+        "1. No source gives the 2025 revenue.\n"
+        "2. No IPO date is stated.\n"
     )
 
-    assert prompt.startswith("Where is Acme based?")
-    assert "Selected research approach (B): Technology stack" in prompt
-    assert prompt.index("Evidence collected so far:") < prompt.index(
-        ROUNDS[0][0][0]
+
+def test_followup_prompt_puts_gaps_right_before_the_final_instruction():
+    gaps_block = "Unresolved evidence gaps:\n1. " + GAPS[0] + "\n2. " + GAPS[1]
+    after_gaps = FOLLOWUP[FOLLOWUP.index(gaps_block) + len(gaps_block) :]
+
+    assert after_gaps.startswith("\n\n" + INSTRUCTION)
+    assert FOLLOWUP.rstrip().endswith("which gaps you could not resolve.")
+
+
+def test_followup_prompt_shows_prior_evidence_in_order_before_the_gaps():
+    first, second = ROUNDS[0][0]
+    evidence_at = FOLLOWUP.index("Evidence already collected:")
+
+    assert evidence_at < FOLLOWUP.index(first) < FOLLOWUP.index(second)
+    assert FOLLOWUP.index(second) < FOLLOWUP.index("Unresolved evidence gaps:")
+    assert "--- observation 2 ---\n" + second in FOLLOWUP
+
+
+def test_followup_prompt_frames_the_round_around_the_gaps():
+    assert FOLLOWUP.startswith("Where is Acme based?\n\n")
+    assert "Selected research approach (B): Technology stack" in FOLLOWUP
+    assert (
+        "Your task is the numbered list of unresolved evidence gaps" in FOLLOWUP
     )
-    assert prompt.index(ROUNDS[0][0][0]) < prompt.index(ROUNDS[0][0][1])
-    assert "Unresolved evidence gaps:\n1. gap one\n2. gap two" in prompt
-    assert prompt.rstrip().endswith("already supports.")
+    assert (
+        "Do not re-research claims the evidence above already supports."
+        in FOLLOWUP
+    )
+
+
+def test_followup_prompt_imposes_no_tool_order():
+    for tool in ("search_documents", "search_web", "ingest_url"):
+        assert FOLLOWUP.count(tool) == 1
+        assert f"use {tool} when" in FOLLOWUP
+    for sequence in (
+        "first search",
+        "then search",
+        "then ingest",
+        "after search",
+    ):
+        assert sequence not in FOLLOWUP.lower()
 
 
 def test_evaluator_prompt_lays_out_question_plan_answer_and_observations():

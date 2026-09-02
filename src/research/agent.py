@@ -236,13 +236,18 @@ def followup_prompt(
     evidence: list[str],
     gaps: list[str],
 ) -> str:
-    """Build a follow-up round's message: prior evidence, gaps, one task.
+    """Build a follow-up round's message with the gaps as the task.
+
+    Layout: question and approach, a framing sentence, the evidence
+    already collected, the unresolved gaps as separate numbered items,
+    then the instruction. Tool choice is left to the agent; the message
+    gives heuristics, not an order.
 
     Args:
       question: The user's question.
       plan: The planning result; its chosen approach is repeated.
       evidence: Every observation from the earlier rounds, in order.
-      gaps: The evaluator's unresolved gaps.
+      gaps: The evaluator's unresolved gaps, kept verbatim.
 
     Returns:
       The message for ``research``.
@@ -252,10 +257,21 @@ def followup_prompt(
     )
     return (
         f"{research_prompt(question, plan)}\n\n"
-        f"Evidence collected so far:\n{format_observations(evidence)}\n\n"
+        "This is a follow-up research round. Your task is the numbered "
+        "list of unresolved evidence gaps below; the evidence already "
+        "collected is shown so you can reuse it instead of repeating it."
+        "\n\n"
+        f"Evidence already collected:\n{format_observations(evidence)}\n\n"
         f"Unresolved evidence gaps:\n{gap_lines}\n\n"
-        "Research only these unresolved gaps with the tools; do not repeat "
-        "research that the evidence above already supports."
+        "Address each unresolved gap. For every gap, decide where its "
+        "evidence is most likely to be, and prefer authoritative and "
+        "current sources for that gap: use search_documents when existing "
+        "or local sources are likely to contain the evidence; use "
+        "search_web when the evidence is likely external, missing, or "
+        "current; use ingest_url when a useful web source needs "
+        "full-document retrieval. Do not re-research claims the evidence "
+        "above already supports. Report what you found for each gap with "
+        "citations, and state plainly which gaps you could not resolve."
     )
 
 
