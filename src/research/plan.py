@@ -134,9 +134,11 @@ async def plan_research(question: str) -> ResearchPlan:
         model=MODEL,
         system_prompt=SYSTEM_PROMPT,
         tools=[],
-        # Structured output is delivered through an extra SDK turn, so a
-        # cap of 1 can cut it off; 3 leaves room. Still one model call.
-        max_turns=3,
+        # Structured output is delivered through an extra SDK turn, and
+        # the model sometimes needs a second attempt at it (a cap of 3
+        # was exhausted in 2 of 8 evaluator trials); 5 leaves room.
+        # Still one model call.
+        max_turns=5,
         output_format={"type": "json_schema", "schema": PLAN_SCHEMA},
         setting_sources=[],
         env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
