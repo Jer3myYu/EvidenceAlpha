@@ -35,6 +35,9 @@ dependencies = [
     # Phase 6.2 decision (2026-09-02): pydantic for the evaluator's
     # validated structured output.
     "pydantic>=2",
+    # Phase 7 decision (2026-09-02): the SQLite checkpointer for
+    # resumable workflow runs; the in-memory one ships with langgraph.
+    "langgraph-checkpoint-sqlite>=3.1,<4",
 ]
 
 [project.optional-dependencies]

@@ -40,8 +40,12 @@ ROUNDS = [
 ]
 
 
-def fake_graph(verdicts: list[bool], fail_at: tuple[str, int] | None = None):
-    """A checkpointed graph of fakes.
+def fake_graph(
+    verdicts: list[bool],
+    fail_at: tuple[str, int] | None = None,
+    checkpointer=None,
+):
+    """A checkpointed graph of fakes, in memory unless one is given.
 
     ``fail_at=("research", 2)`` makes the second call of that node raise,
     once; the retry after a resume succeeds.
@@ -95,7 +99,7 @@ def fake_graph(verdicts: list[bool], fail_at: tuple[str, int] | None = None):
         research=fake_research,
         evaluate=fake_evaluate,
         finish=fake_finish,
-        checkpointer=InMemorySaver(serde=persist.SERIALIZER),
+        checkpointer=checkpointer or InMemorySaver(serde=persist.SERIALIZER),
     )
     return graph, calls
 
@@ -180,3 +184,31 @@ def test_threads_are_isolated_and_unknown_ids_fail():
 def test_source_record_restores_the_tuple_invariant():
     record = sources.SourceRecord("S1", "t", None, "a.txt", ["documents"])
     assert record.seen_via == ("documents",)
+
+
+def test_sqlite_checkpoint_survives_closing_and_reopening(tmp_path):
+    path = str(tmp_path / "workflow.db")
+
+    async def first_process() -> None:
+        async with persist.open_checkpointer(path) as saver:
+            graph, unused_calls = fake_graph([True], checkpointer=saver)
+            await graph.ainvoke(
+                {"question": "Where is Acme?"}, persist.thread_config("t6")
+            )
+
+    async def second_process():
+        async with persist.open_checkpointer(path) as saver:
+            graph, calls = fake_graph([True], checkpointer=saver)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                snapshot = await persist.load_state(graph, "t6")
+            return snapshot, calls
+
+    asyncio.run(first_process())
+    snapshot, calls = asyncio.run(second_process())
+
+    assert not calls
+    assert snapshot.next == ()
+    assert snapshot.values["final_answer"] == "final"
+    assert snapshot.values["research_plan"] == PLAN
+    assert snapshot.values["sources"]["S1"].seen_via == ("documents",)

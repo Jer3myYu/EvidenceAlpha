@@ -4,16 +4,25 @@ Usage::
 
     set -a; source .env; set +a
     .venv/bin/python scripts/workflow.py "What risks does Acme disclose?"
+    .venv/bin/python scripts/workflow.py --resume 3f9c2a1b
 
 Compare with ``scripts/agent.py``, which runs the same planner and agent
 without the graph and prints each tool call as it happens. Here the
 graph streams: a short trace line per completed node while it runs,
 then the final state in full.
+
+Every run is checkpointed to ``data/workflow.db`` under a thread id,
+printed first. A run that was interrupted resumes with ``--resume`` at
+the node that did not finish; a completed run reopens with the same
+flag and prints its state without calling any model. One thread id is
+one question: a new question always starts a new thread.
 """
 
+import argparse
 import asyncio
 import sys
 
+from research import persist
 from research import trace
 from research import web
 from research import workflow
@@ -25,32 +34,90 @@ def show(title: str, body: str) -> None:
     print(f"\n{title}\n{rule}\n{body}")
 
 
-async def main() -> None:
-    """Stream the graph, trace each node, then print the final state."""
-    if len(sys.argv) != 2:
-        sys.exit('usage: python scripts/workflow.py "<question>"')
-    try:
-        web.api_key()
-    except RuntimeError as error:
-        sys.exit(str(error))
-    question = sys.argv[1]
-    show("USER QUESTION", question)
+def parse_args() -> argparse.Namespace:
+    """A question for a new thread, or ``--resume`` with an existing id."""
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", maxsplit=1)[0]
+    )
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("question", nargs="?", help="start a new thread")
+    target.add_argument(
+        "--resume", metavar="THREAD_ID", help="resume or reopen a thread"
+    )
+    return parser.parse_args()
 
-    show("TRACE", "")
+
+async def stream(graph, payload, thread_id: str, research_round: int):
+    """Stream the graph on a thread, trace each node, return the state."""
     state: workflow.ResearchState = {}
-    research_round = 0
-    async for mode, chunk in workflow.build_graph().astream(
-        {"question": question}, stream_mode=["updates", "values"]
-    ):
-        if mode == "values":
-            state = chunk  # The last one is the final, merged state.
-            continue
-        for node, update in chunk.items():
-            if node == "research":
-                research_round = update["research_round"]
-            for line in trace.render_update(node, update, research_round):
-                print(line)
+    config = persist.thread_config(thread_id)
+    try:
+        async for mode, chunk in graph.astream(
+            payload,
+            config,
+            stream_mode=["updates", "values"],
+            durability="sync",  # Checkpoint before the next node starts.
+        ):
+            if mode == "values":
+                state = chunk  # The last one is the final, merged state.
+                continue
+            for node, update in chunk.items():
+                if node == "research":
+                    research_round = update["research_round"]
+                for line in trace.render_update(node, update, research_round):
+                    print(line)
+    except asyncio.CancelledError:
+        print(
+            f"\nInterrupted. The last completed node is saved; continue "
+            f"with:\n  scripts/workflow.py --resume {thread_id}"
+        )
+        raise
+    return state
 
+
+async def main() -> None:
+    """Start, resume, or reopen a thread, then print the final state."""
+    args = parse_args()
+    async with persist.open_checkpointer() as checkpointer:
+        graph = workflow.build_graph(checkpointer=checkpointer)
+        if args.resume is None:
+            thread_id = persist.new_thread_id()
+            show(
+                "THREAD", f"{thread_id}  (--resume {thread_id} if interrupted)"
+            )
+            show("USER QUESTION", args.question)
+            snapshot = None
+        else:
+            thread_id = args.resume
+            try:
+                snapshot = await persist.load_state(graph, thread_id)
+            except LookupError as error:
+                sys.exit(str(error))
+            show("THREAD", thread_id)
+            show("USER QUESTION", snapshot.values["question"])
+
+        if snapshot is not None and not snapshot.next:
+            show("TRACE", "completed earlier; reopened without any model call")
+            state = snapshot.values
+        else:
+            try:
+                web.api_key()
+            except RuntimeError as error:
+                sys.exit(str(error))
+            show("TRACE", "")
+            if snapshot is None:
+                payload, research_round = {"question": args.question}, 0
+            else:
+                pending = ", ".join(snapshot.next)
+                print(f"RESUMING AT: {pending}")
+                payload = None
+                research_round = snapshot.values.get("research_round", 0)
+            state = await stream(graph, payload, thread_id, research_round)
+    show_state(state)
+
+
+def show_state(state: workflow.ResearchState) -> None:
+    """Print the final state, section by section."""
     plan = state["research_plan"]
     show("TREE-OF-THOUGHT TRIGGER", "yes" if plan.use_tot else "no")
     if plan.use_tot:
@@ -96,4 +163,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
