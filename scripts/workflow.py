@@ -7,12 +7,14 @@ Usage::
 
 Compare with ``scripts/agent.py``, which runs the same planner and agent
 without the graph and prints each tool call as it happens. Here the
-graph runs to completion first, then the final state is printed.
+graph streams: a short trace line per completed node while it runs,
+then the final state in full.
 """
 
 import asyncio
 import sys
 
+from research import trace
 from research import web
 from research import workflow
 
@@ -24,7 +26,7 @@ def show(title: str, body: str) -> None:
 
 
 async def main() -> None:
-    """Run the graph once and print every field of the final state."""
+    """Stream the graph, trace each node, then print the final state."""
     if len(sys.argv) != 2:
         sys.exit('usage: python scripts/workflow.py "<question>"')
     try:
@@ -34,7 +36,20 @@ async def main() -> None:
     question = sys.argv[1]
     show("USER QUESTION", question)
 
-    state = await workflow.build_graph().ainvoke({"question": question})
+    show("TRACE", "")
+    state: workflow.ResearchState = {}
+    research_round = 0
+    async for mode, chunk in workflow.build_graph().astream(
+        {"question": question}, stream_mode=["updates", "values"]
+    ):
+        if mode == "values":
+            state = chunk  # The last one is the final, merged state.
+            continue
+        for node, update in chunk.items():
+            if node == "research":
+                research_round = update["research_round"]
+            for line in trace.render_update(node, update, research_round):
+                print(line)
 
     plan = state["research_plan"]
     show("TREE-OF-THOUGHT TRIGGER", "yes" if plan.use_tot else "no")
