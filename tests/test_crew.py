@@ -14,6 +14,9 @@ import pydantic
 from research import crew
 from research import evaluate
 from research import plan
+from research import sources
+from research import synthesize
+from research import verify
 
 # CrewAI's framing around a no-tools agent, pinned with the package.
 SYSTEM_FRAME = "You are {name}. {backstory}\nYour personal goal is: {goal}"
@@ -197,3 +200,93 @@ def test_evaluate_sends_the_existing_prompt_and_returns_the_verdict():
     assert user == USER_FRAME.format(
         description=expected, expected="The structured evaluation."
     )
+
+
+def test_reporter_and_verifier_carry_the_system_prompts_verbatim():
+    assert crew.REPORTER.backstory == synthesize.SYSTEM_PROMPT
+    assert crew.REPORTER.output is None
+    assert crew.VERIFIER.backstory == verify.SYSTEM_PROMPT
+    assert crew.VERIFIER.output is verify.Verification
+
+
+def test_report_sends_the_synthesis_prompt_with_draft_and_findings():
+    research_plan = plan.ResearchPlan(
+        use_tot=False, candidates=[], selected="", reason="One path."
+    )
+    observations = ["[S1] source: a.txt (distance 0.1000)\nAcme makes arms."]
+    fake = FakeLLM(model="fake", reply=crew.FINAL_ANSWER + "Arms [S1].")
+    result = run(
+        crew.report(
+            "What does Acme make?",
+            research_plan,
+            ["answer 1"],
+            observations,
+            "Arms [D1].",
+            "Verification notes:\n1. [D1] is a round-local label.",
+            fake,
+        )
+    )
+    assert result == "Arms [S1]."
+    messages, response_model = fake.seen[0]
+    assert response_model is None
+    system, user = crew.split_messages(messages)
+    assert system == SYSTEM_FRAME.format(
+        name="Report writer",
+        backstory=synthesize.SYSTEM_PROMPT,
+        goal=crew.REPORTER.goal,
+    )
+    expected = synthesize.build_prompt(
+        "What does Acme make?",
+        research_plan,
+        ["answer 1"],
+        observations,
+        "Arms [D1].",
+        "Verification notes:\n1. [D1] is a round-local label.",
+    )
+    assert user == USER_FRAME.format(
+        description=expected,
+        expected="The answer as plain prose, citing [S#] labels only.",
+    )
+    assert synthesize.REVISION_INSTRUCTION in user
+
+
+def test_verify_sends_answer_sources_and_evidence_only():
+    registry = {
+        "S1": sources.SourceRecord("S1", "a.txt", None, "a.txt", ("documents",))
+    }
+    observations = ["[S1] source: a.txt (distance 0.1000)\nAcme makes arms."]
+    verification = verify.Verification(
+        claims=[
+            verify.ClaimCheck(
+                claim="Acme makes arms.",
+                cited_sources=["S1"],
+                verdict="supported",
+                reason="Observation 1 states it.",
+            )
+        ],
+        conflicts=[],
+        source_ratings=[],
+    )
+    fake = FakeLLM(model="fake", reply=verification)
+    result = run(
+        crew.verify(
+            "What does Acme make?", "Arms [S1].", observations, registry, fake
+        )
+    )
+    assert result is verification
+    messages, response_model = fake.seen[0]
+    assert response_model is verify.Verification
+    system, user = crew.split_messages(messages)
+    assert system == SYSTEM_FRAME.format(
+        name="Answer verifier",
+        backstory=verify.SYSTEM_PROMPT,
+        goal=crew.VERIFIER.goal,
+    )
+    expected = verify.build_prompt(
+        "What does Acme make?", "Arms [S1].", observations, registry
+    )
+    assert user == USER_FRAME.format(
+        description=expected, expected="The structured verification."
+    )
+    assert "Research plan" not in user
+    assert "Round answers" not in user

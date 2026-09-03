@@ -32,6 +32,9 @@ import pydantic
 
 from research import evaluate as evaluate_module
 from research import plan as plan_module
+from research import sources as sources_module
+from research import synthesize as synthesize_module
+from research import verify as verify_module
 
 # CrewAI reports usage to its vendor and, on a first run, asks on stdin
 # whether to upload traces. Both are switched off before the package is
@@ -290,4 +293,56 @@ async def evaluate(
     )
     return await run_task(
         EVALUATOR, description, "The structured evaluation.", llm
+    )
+
+
+REPORTER = Role(
+    "Report writer",
+    "Write the final answer from the evidence, citing only the [S#] "
+    "labels the observations carry.",
+    synthesize_module.SYSTEM_PROMPT,
+)
+VERIFIER = Role(
+    "Answer verifier",
+    "Check every claim, citation, and conflict in the answer against the "
+    "evidence alone.",
+    verify_module.SYSTEM_PROMPT,
+    verify_module.Verification,
+)
+
+
+async def report(
+    question: str,
+    research_plan: plan_module.ResearchPlan,
+    answers: list[str],
+    evidence: list[str],
+    draft: str | None = None,
+    findings: str | None = None,
+    llm: crewai.BaseLLM | None = None,
+) -> str:
+    """The reporter's task: ``synthesize.build_prompt``, revision included."""
+    description = synthesize_module.build_prompt(
+        question, research_plan, answers, evidence, draft, findings
+    )
+    return await run_task(
+        REPORTER,
+        description,
+        "The answer as plain prose, citing [S#] labels only.",
+        llm,
+    )
+
+
+async def verify(
+    question: str,
+    answer: str,
+    evidence: list[str],
+    sources: dict[str, sources_module.SourceRecord],
+    llm: crewai.BaseLLM | None = None,
+) -> verify_module.Verification:
+    """The verifier's task: ``verify.build_prompt``; no plan, no rounds."""
+    description = verify_module.build_prompt(
+        question, answer, evidence, sources
+    )
+    return await run_task(
+        VERIFIER, description, "The structured verification.", llm
     )

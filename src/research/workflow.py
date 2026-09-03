@@ -63,7 +63,6 @@ from research import agent
 from research import crew
 from research import plan as plan_module
 from research import sources as sources_module
-from research import synthesize as synthesize_module
 from research import verify as verify_module
 
 # Round 1 is the initial research, round 2 the one follow-up.
@@ -209,7 +208,7 @@ async def finish_node(state: ResearchState) -> dict[str, Any]:
             state["citation_issues"], verification
         )
         revision_round = state["revision_round"] + 1
-    answer = await synthesize_module.synthesize(
+    answer = await crew.report(
         state["question"],
         state["research_plan"],
         state["answers"],
@@ -233,7 +232,7 @@ async def verify_node(state: ResearchState) -> dict[str, Any]:
     citation_issues = verify_module.check_citations(
         state["synthesis"], state["sources"]
     )
-    verification = await verify_module.verify_answer(
+    verification = await crew.verify(
         state["question"],
         state["synthesis"],
         state["evidence"],
