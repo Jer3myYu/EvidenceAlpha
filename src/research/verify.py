@@ -12,8 +12,9 @@ afterwards. This module checks it, in two layers that never mix:
   observations, and the source list; never the plan, the round answers,
   or the synthesis prompt.
 
-``list_issues`` turns both layers into the problems that matter. The
-workflow (``research.workflow``) decides what to do with them.
+``list_issues`` turns both layers into the problems that matter, and
+``format_verification_notes`` discloses them at the end of the answer.
+The workflow (``research.workflow``) decides what else to do with them.
 """
 
 import re
@@ -269,3 +270,29 @@ def list_issues(
                 f"{conflict.description}"
             )
     return issues
+
+
+def format_verification_notes(
+    citation_issues: list[str], verification: Verification
+) -> str:
+    """Render the remaining problems as a numbered block for the answer.
+
+    Like ``workflow.format_unresolved_gaps``: the wording is
+    ``list_issues``'s, the only changes are numbering and whitespace.
+
+    Args:
+      citation_issues: From ``check_citations``.
+      verification: The verifier's result.
+
+    Returns:
+      The block under a fixed heading, or an empty string when the
+      answer is clean.
+    """
+    issues = list_issues(citation_issues, verification)
+    if not issues:
+        return ""
+    normalised = (" ".join(issue.split()) for issue in issues)
+    lines = "\n".join(
+        f"{number}. {issue}" for number, issue in enumerate(normalised, start=1)
+    )
+    return f"Verification notes:\n{lines}"

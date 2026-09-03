@@ -106,12 +106,13 @@ def fake_nodes(
     async def fake_verify(state: workflow.ResearchState) -> dict[str, Any]:
         calls.append("verify")
         seen["verify"] = dict(state)
-        return {
-            "citation_issues": verify.check_citations(
-                state["synthesis"], state["sources"]
-            ),
-            "verification": results.pop(0) if results else CLEAN,
-        }
+        issues = verify.check_citations(state["synthesis"], state["sources"])
+        verification = results.pop(0) if results else CLEAN
+        notes = verify.format_verification_notes(issues, verification)
+        update = {"citation_issues": issues, "verification": verification}
+        if notes:
+            update["final_answer"] = state["final_answer"] + "\n\n" + notes
+        return update
 
     graph = workflow.build_graph(
         plan=fake_plan,
@@ -265,7 +266,8 @@ def test_verify_runs_after_finish_on_the_synthesis_and_the_registry():
     state = run(graph)
 
     assert calls[-2:] == ["finish", "verify"]
-    assert seen["verify"]["synthesis"] == state["final_answer"]
+    assert seen["verify"]["synthesis"] == seen["verify"]["final_answer"]
+    assert state["final_answer"].startswith("Acme [S1]; peas [S3]; bad [D1]")
     assert set(seen["verify"]["sources"]) == {"S1", "S2", "S3"}
     assert state["citation_issues"] == [
         "[D1] is a round-local label, not a source.",
@@ -273,6 +275,46 @@ def test_verify_runs_after_finish_on_the_synthesis_and_the_registry():
     ]
     clean, _, _ = fake_nodes([True], synthesis="Acme [S1].")
     assert run(clean)["citation_issues"] == []
+
+
+UNSUPPORTED = verify.Verification(
+    claims=[
+        verify.ClaimCheck(
+            claim="Acme makes arms.",
+            cited_sources=["S1"],
+            verdict="supported",
+            reason="Observation 1 states it.",
+        ),
+        verify.ClaimCheck(
+            claim="Acme earns $50 million.",
+            cited_sources=["S1"],
+            verdict="unsupported",
+            reason="No observation mentions revenue.",
+        ),
+    ],
+    conflicts=[],
+    source_ratings=[],
+)
+
+
+def test_problems_are_disclosed_after_the_gaps_and_a_clean_answer_is_bare():
+    graph, _, _ = fake_nodes(
+        [False, False],
+        synthesis="Acme [S1] earns [D2].",
+        verifications=[UNSUPPORTED],
+    )
+
+    state = run(graph)
+
+    assert state["final_answer"] == (
+        "Acme [S1] earns [D2].\n\n"
+        "Verification notes:\n"
+        "1. [D2] is a round-local label, not a source.\n"
+        '2. Unsupported claim: "Acme earns $50 million." '
+        "No observation mentions revenue."
+    )
+    clean, _, _ = fake_nodes([True], synthesis="Acme [S1].")
+    assert run(clean)["final_answer"] == "Acme [S1]."
 
 
 def test_verifier_prompt_shows_answer_sources_and_evidence_only():

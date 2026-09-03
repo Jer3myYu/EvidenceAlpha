@@ -151,3 +151,23 @@ def test_verification_schema_is_small_closed_and_enumerated():
         verify.ClaimCheck(
             claim="x", cited_sources=[], verdict="maybe", reason="r"
         )
+
+
+def test_verification_notes_number_the_issues_and_vanish_when_clean():
+    assert verify.format_verification_notes([], verification()) == ""
+    assert (
+        verify.format_verification_notes([], verification([check("supported")]))
+        == ""
+    )
+
+    block = verify.format_verification_notes(
+        ["[D1] is a round-local label, not a source."],
+        verification([check("unsupported", "Acme  employs\n 520 people.")]),
+    )
+
+    assert block == (
+        "Verification notes:\n"
+        "1. [D1] is a round-local label, not a source.\n"
+        '2. Unsupported claim: "Acme employs 520 people." '
+        "Observation 1 states about 400."
+    )
