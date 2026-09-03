@@ -4,12 +4,14 @@ The graph streams one ``{node: update}`` per completed node
 (``stream_mode="updates"``). ``render_update`` turns one such update
 into the lines a person wants to see while the run is in progress:
 the node's result and, where it follows from the update alone, the
-next action. It reads counts, the verdict, the gap sentences, and the
-route; prompts, observations, answers, and state never pass through it.
+next action. It reads counts, verdicts, the gap and issue sentences,
+and the route; prompts, observations, answers, and state never pass
+through it.
 """
 
 from typing import Any
 
+from research import verify
 from research import workflow
 
 
@@ -60,10 +62,18 @@ def render_update(
     if node == "finish":
         return ["FINISH"]
     if node == "verify":
-        issues = update["citation_issues"]
-        if not issues:
-            return ["VERIFY: no citation issues"]
-        lines = [f"VERIFY: {len(issues)} citation issues", "ISSUES:"]
-        lines.extend(f"- {issue}" for issue in issues)
+        verification = update["verification"]
+        verdicts = [check.verdict for check in verification.claims]
+        counts = ", ".join(
+            f"{verdicts.count(verdict)} {verdict}"
+            for verdict in ("supported", "unsupported", "contradicted")
+            if verdict in verdicts
+        )
+        summary = f"{len(verdicts)} claims" + (f": {counts}" if counts else "")
+        lines = [f"VERIFY: {summary}"]
+        issues = verify.list_issues(update["citation_issues"], verification)
+        if issues:
+            lines.append("ISSUES:")
+            lines.extend(f"- {issue}" for issue in issues)
         return lines
     return []

@@ -39,6 +39,22 @@ ROUNDS = [
     ),
     (["[W1] Site - https://x.example/p\nSnippet."], "answer 2"),
 ]
+VERIFIED = verify.Verification(
+    claims=[
+        verify.ClaimCheck(
+            claim="Acme makes arms.",
+            cited_sources=["S1"],
+            verdict="supported",
+            reason="Observation 1 states it.",
+        )
+    ],
+    conflicts=[],
+    source_ratings=[
+        verify.SourceRating(
+            source_id="S1", quality="primary", reason="Company document."
+        )
+    ],
+)
 
 
 def fake_graph(
@@ -100,7 +116,8 @@ def fake_graph(
         return {
             "citation_issues": verify.check_citations(
                 state["synthesis"], state["sources"]
-            )
+            ),
+            "verification": VERIFIED,
         }
 
     graph = workflow.build_graph(
@@ -210,6 +227,10 @@ def test_completed_thread_reopens_without_running_any_node():
     assert snapshot.values["research_plan"] == PLAN
     assert isinstance(snapshot.values["research_plan"], plan.ResearchPlan)
     assert isinstance(snapshot.values["sources"]["S1"], sources.SourceRecord)
+    reloaded = snapshot.values["verification"]
+    assert isinstance(reloaded, verify.Verification)
+    assert reloaded == VERIFIED
+    assert reloaded.claims[0].verdict == "supported"
 
 
 def test_threads_are_isolated_and_unknown_ids_fail():
@@ -254,5 +275,6 @@ def test_sqlite_checkpoint_survives_closing_and_reopening(tmp_path):
     assert snapshot.next == ()
     assert snapshot.values["final_answer"] == "final [S1]"
     assert snapshot.values["citation_issues"] == []
+    assert snapshot.values["verification"] == VERIFIED
     assert snapshot.values["research_plan"] == PLAN
     assert snapshot.values["sources"]["S1"].seen_via == ("documents",)

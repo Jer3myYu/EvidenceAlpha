@@ -152,16 +152,47 @@ def show_state(state: workflow.ResearchState) -> None:
     show("EVIDENCE EVALUATION", f"sufficient: {verdict}\ngaps:{gaps}")
     show("RESEARCH ROUNDS", str(state["research_round"]))
     show("FINAL ANSWER", state["final_answer"])
-    issues = "".join(f"\n- {issue}" for issue in state["citation_issues"])
-    show("VERIFICATION", "citation issues:" + (issues or " none"))
+    show("VERIFICATION", format_verification(state))
+    ratings = {
+        rating.source_id: rating
+        for rating in state["verification"].source_ratings
+    }
     sources = []
     for record in state["sources"].values():
         seen_via = ", ".join(record.seen_via)
         location = record.canonical_url or record.local_document_id
-        sources.append(
-            f"{record.source_id}  {record.title}  {location}  via {seen_via}"
-        )
+        line = f"{record.source_id}  {record.title}  {location}  via {seen_via}"
+        rating = ratings.get(record.source_id)
+        if rating:
+            line += f"\n    quality: {rating.quality}. {rating.reason}"
+        sources.append(line)
     show("SOURCES", "\n".join(sources) or "none (no source seen)")
+
+
+def format_verification(state: workflow.ResearchState) -> str:
+    """Render citation issues, claim checks, and conflicts."""
+    verification = state["verification"]
+    issues = "".join(f"\n- {issue}" for issue in state["citation_issues"])
+    claims = ""
+    for number, check in enumerate(verification.claims, 1):
+        cited = ", ".join(check.cited_sources) or "no citation"
+        claims += (
+            f'\n{number}. {check.verdict} ({cited}): "{check.claim}" '
+            f"{check.reason}"
+        )
+    conflicts = ""
+    for conflict in verification.conflicts:
+        labels = ", ".join(conflict.sources)
+        status = (
+            "disclosed" if conflict.disclosed_in_answer else "not disclosed"
+        )
+        conflicts += f"\n- {labels}: {conflict.description} ({status})"
+    none = " none"
+    return (
+        f"citation issues:{issues or none}\n"
+        f"claims:{claims or none}\n"
+        f"conflicts:{conflicts or none}"
+    )
 
 
 if __name__ == "__main__":

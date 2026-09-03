@@ -23,14 +23,18 @@ from langgraph.checkpoint.sqlite import aio
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
 
-# The default serializer rebuilds dataclasses by importing them, and from
-# a future version refuses classes that are not listed. These are the
-# three that live in ResearchState.
+# The default serializer rebuilds dataclasses and pydantic models by
+# importing them, and refuses classes that are not listed. These are the
+# ones that live in ResearchState.
 SERIALIZER = jsonplus.JsonPlusSerializer(
     allowed_msgpack_modules=[
         ("research.plan", "Candidate"),
         ("research.plan", "ResearchPlan"),
         ("research.sources", "SourceRecord"),
+        ("research.verify", "ClaimCheck"),
+        ("research.verify", "Conflict"),
+        ("research.verify", "SourceRating"),
+        ("research.verify", "Verification"),
     ]
 )
 

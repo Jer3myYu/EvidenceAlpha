@@ -5,6 +5,7 @@ from typing import Any
 
 from research import plan
 from research import trace
+from research import verify
 from research import workflow
 
 PLAN = plan.ResearchPlan(
@@ -18,6 +19,16 @@ TOT_PLAN = plan.ResearchPlan(
     selected="A",
     reason="Best fit.",
 )
+CLEAN = verify.Verification(claims=[], conflicts=[], source_ratings=[])
+
+
+def claim(verdict: str) -> verify.ClaimCheck:
+    return verify.ClaimCheck(
+        claim="Acme employs 520 people.",
+        cited_sources=["S1"],
+        verdict=verdict,
+        reason="Observation 1 says 400.",
+    )
 
 
 def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
@@ -53,7 +64,7 @@ def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
     async def fake_verify(
         unused_state: workflow.ResearchState,
     ) -> dict[str, Any]:
-        return {"citation_issues": []}
+        return {"citation_issues": [], "verification": CLEAN}
 
     graph = workflow.build_graph(
         plan=fake_plan,
@@ -91,7 +102,7 @@ def test_one_round_run_traces_plan_research_verdict_route_and_finish():
         "EVALUATE: sufficient",
         "ROUTE: finish",
         "FINISH",
-        "VERIFY: no citation issues",
+        "VERIFY: 0 claims",
     ]
 
 
@@ -120,7 +131,7 @@ def test_two_round_run_traces_the_gap_the_route_and_the_second_round():
         "EVALUATE: sufficient",
         "ROUTE: finish",
         "FINISH",
-        "VERIFY: no citation issues",
+        "VERIFY: 0 claims",
     ]
 
 
@@ -148,13 +159,41 @@ def test_verdict_gaps_route_and_plan_lines_render_exactly():
         "RESEARCH ROUND 1",
     ]
     assert trace.render_update("finish", {"final_answer": "x"}, 2) == ["FINISH"]
+    mixed = verify.Verification(
+        claims=[claim("supported"), claim("supported"), claim("contradicted")],
+        conflicts=[
+            verify.Conflict(
+                sources=["S1", "S2"],
+                description="Founding years differ.",
+                disclosed_in_answer=False,
+            )
+        ],
+        source_ratings=[
+            verify.SourceRating(source_id="S2", quality="weak", reason="Blog.")
+        ],
+    )
     assert trace.render_update(
-        "verify", {"citation_issues": ["[D1] is a round-local label."]}, 1
+        "verify",
+        {
+            "citation_issues": ["[D1] is a round-local label."],
+            "verification": mixed,
+        },
+        1,
     ) == [
-        "VERIFY: 1 citation issues",
+        "VERIFY: 3 claims: 2 supported, 1 contradicted",
         "ISSUES:",
         "- [D1] is a round-local label.",
+        '- Contradicted claim: "Acme employs 520 people." Observation 1 '
+        "says 400.",
+        "- Conflicting evidence not disclosed ([S1], [S2]): Founding years "
+        "differ.",
     ]
+    clean = verify.Verification(
+        claims=[claim("supported")], conflicts=[], source_ratings=[]
+    )
+    assert trace.render_update(
+        "verify", {"citation_issues": [], "verification": clean}, 1
+    ) == ["VERIFY: 1 claims: 1 supported"]
 
 
 def test_no_third_round_is_ever_traced():
@@ -165,7 +204,7 @@ def test_no_third_round_is_ever_traced():
         "- gap after round 2",
         "ROUTE: finish",
         "FINISH",
-        "VERIFY: no citation issues",
+        "VERIFY: 0 claims",
     ]
     assert "RESEARCH ROUND 3" not in lines
     assert lines.count("ROUTE: research") == 1

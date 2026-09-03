@@ -31,8 +31,9 @@ graph is exactly the Phase 6 graph.
 
 Phase 8 adds ``verify`` after ``finish``: the synthesised answer is
 checked independently of the call that wrote it (``research.verify``).
-8.1 checks citations deterministically; the model judgement, the
-disclosure, and one bounded revision follow in 8.2-8.4.
+Citations are checked deterministically, then one structured call
+judges claims, conflicts, and source quality. The disclosure and one
+bounded revision follow in 8.3-8.4.
 """
 
 import operator
@@ -73,6 +74,7 @@ class ResearchState(TypedDict, total=False):
       synthesis: The synthesis text alone, what verification checks.
       final_answer: The answer returned by the workflow.
       citation_issues: Invalid citations found in ``synthesis``.
+      verification: The verifier's judgement of ``synthesis``.
     """
 
     question: str
@@ -86,6 +88,7 @@ class ResearchState(TypedDict, total=False):
     synthesis: str
     final_answer: str
     citation_issues: list[str]
+    verification: verify_module.Verification
 
 
 NodeFunction = Callable[[ResearchState], Awaitable[dict[str, Any]]]
@@ -183,12 +186,17 @@ async def finish_node(state: ResearchState) -> dict[str, Any]:
 
 
 async def verify_node(state: ResearchState) -> dict[str, Any]:
-    """Check the synthesised answer's citations against the registry."""
-    return {
-        "citation_issues": verify_module.check_citations(
-            state["synthesis"], state["sources"]
-        )
-    }
+    """Check the synthesis: citations in Python, then the verifier call."""
+    citation_issues = verify_module.check_citations(
+        state["synthesis"], state["sources"]
+    )
+    verification = await verify_module.verify_answer(
+        state["question"],
+        state["synthesis"],
+        state["evidence"],
+        state["sources"],
+    )
+    return {"citation_issues": citation_issues, "verification": verification}
 
 
 def build_graph(
@@ -207,7 +215,7 @@ def build_graph(
         ``sources`` and ``research_round``.
       evaluate: Node filling ``evidence_sufficient`` and ``evidence_gaps``.
       finish: Node filling ``synthesis`` and ``final_answer``.
-      verify: Node filling ``citation_issues``.
+      verify: Node filling ``citation_issues`` and ``verification``.
       checkpointer: Where LangGraph saves the state after each node.
         ``None`` (the default) keeps every run in memory and anonymous.
 

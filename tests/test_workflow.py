@@ -51,17 +51,24 @@ STABLE = [
         "[S3] source: b.md (distance 0.2000)\nBeta sells peas.",
     ],
 ]
+CLEAN = verify.Verification(claims=[], conflicts=[], source_ratings=[])
 
 
-def fake_nodes(verdicts: list[bool], synthesis: str = "final"):
+def fake_nodes(
+    verdicts: list[bool],
+    synthesis: str = "final",
+    verifications: list[verify.Verification] | None = None,
+):
     """Build fake nodes that record calls and the state each one saw.
 
     ``synthesis`` is what the fake finish writes; the fake verify runs
-    the real citation check on it.
+    the real citation check on it and returns the next of
+    ``verifications`` (clean by default) in place of the model call.
     """
     calls: list[str] = []
     seen: dict[str, dict[str, Any]] = {}  # last state each node saw
     pending = list(verdicts)
+    results = list(verifications or [])
 
     async def fake_plan(state: workflow.ResearchState) -> dict[str, Any]:
         calls.append("plan")
@@ -102,7 +109,8 @@ def fake_nodes(verdicts: list[bool], synthesis: str = "final"):
         return {
             "citation_issues": verify.check_citations(
                 state["synthesis"], state["sources"]
-            )
+            ),
+            "verification": results.pop(0) if results else CLEAN,
         }
 
     graph = workflow.build_graph(
@@ -265,6 +273,37 @@ def test_verify_runs_after_finish_on_the_synthesis_and_the_registry():
     ]
     clean, _, _ = fake_nodes([True], synthesis="Acme [S1].")
     assert run(clean)["citation_issues"] == []
+
+
+def test_verifier_prompt_shows_answer_sources_and_evidence_only():
+    graph, _, seen = fake_nodes([False, True], synthesis="Acme [S1].")
+    run(graph)
+    state = seen["verify"]
+
+    prompt = verify.build_prompt(
+        state["question"],
+        state["synthesis"],
+        state["evidence"],
+        state["sources"],
+    )
+
+    headings = [
+        "Question:",
+        "Answer to verify:",
+        "Sources:",
+        "Tool observations (evidence):",
+    ]
+    positions = [prompt.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+    assert "Acme [S1]." in prompt
+    assert "[S1] a.txt - a.txt (local); via documents" in prompt
+    assert "[S2] Site - https://x.example/p; via ingest, web" in prompt
+    observations = prompt[prompt.index("Tool observations (evidence):") :]
+    assert "--- observation 4 ---\n" + STABLE[1][1] in observations
+    assert "[D" not in observations and "[W" not in observations
+    # Independence: no plan, no round answers.
+    assert "Research plan" not in prompt
+    assert "answer 1" not in prompt and "Round answers" not in prompt
 
 
 def test_graph_topology_has_the_evaluate_loop():
