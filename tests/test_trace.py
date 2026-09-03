@@ -31,9 +31,13 @@ def claim(verdict: str) -> verify.ClaimCheck:
     )
 
 
-def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
+def traced_run(
+    verdicts: list[bool],
+    verifications: list[verify.Verification] | None = None,
+) -> tuple[list[str], list[str]]:
     """Stream the graph with fakes; return (node sequence, trace lines)."""
     pending = list(verdicts)
+    results = list(verifications or [])
 
     async def fake_plan(unused_state: workflow.ResearchState) -> dict[str, Any]:
         return {"research_plan": PLAN}
@@ -56,15 +60,21 @@ def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
         gaps = [] if sufficient else [f"gap after round {completed}"]
         return {"evidence_sufficient": sufficient, "evidence_gaps": gaps}
 
-    async def fake_finish(
-        unused_state: workflow.ResearchState,
-    ) -> dict[str, Any]:
-        return {"synthesis": "final", "final_answer": "final"}
+    async def fake_finish(state: workflow.ResearchState) -> dict[str, Any]:
+        revision = 0
+        if state.get("verification") is not None:
+            revision = state["revision_round"] + 1
+        return {
+            "synthesis": "final",
+            "final_answer": "final",
+            "revision_round": revision,
+        }
 
     async def fake_verify(
         unused_state: workflow.ResearchState,
     ) -> dict[str, Any]:
-        return {"citation_issues": [], "verification": CLEAN}
+        verification = results.pop(0) if results else CLEAN
+        return {"citation_issues": [], "verification": verification}
 
     graph = workflow.build_graph(
         plan=fake_plan,
@@ -77,7 +87,7 @@ def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
     async def collect() -> tuple[list[str], list[str]]:
         nodes: list[str] = []
         lines: list[str] = []
-        research_round = 0
+        research_round = revision_round = 0
         async for chunk in graph.astream(
             {"question": "q"}, stream_mode="updates"
         ):
@@ -85,7 +95,13 @@ def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
                 nodes.append(node)
                 if node == "research":
                     research_round = update["research_round"]
-                lines.extend(trace.render_update(node, update, research_round))
+                if node == "finish":
+                    revision_round = update["revision_round"]
+                lines.extend(
+                    trace.render_update(
+                        node, update, research_round, revision_round
+                    )
+                )
         return nodes, lines
 
     return asyncio.run(collect())
@@ -103,6 +119,7 @@ def test_one_round_run_traces_plan_research_verdict_route_and_finish():
         "ROUTE: finish",
         "FINISH",
         "VERIFY: 0 claims",
+        "ROUTE: end",
     ]
 
 
@@ -132,7 +149,45 @@ def test_two_round_run_traces_the_gap_the_route_and_the_second_round():
         "ROUTE: finish",
         "FINISH",
         "VERIFY: 0 claims",
+        "ROUTE: end",
     ]
+
+
+def test_revision_is_traced_once_and_the_second_verify_ends():
+    problem = verify.Verification(
+        claims=[claim("unsupported")], conflicts=[], source_ratings=[]
+    )
+    issue = (
+        '- Unsupported claim: "Acme employs 520 people." Observation 1 '
+        "says 400."
+    )
+
+    nodes, lines = traced_run([True], verifications=[problem, problem])
+
+    assert nodes == [
+        "plan",
+        "research",
+        "evaluate",
+        "finish",
+        "verify",
+        "finish",
+        "verify",
+    ]
+    assert lines[-11:] == [
+        "FINISH",
+        "VERIFY: 1 claims: 1 unsupported",
+        "ISSUES:",
+        issue,
+        "ROUTE: revise",
+        "REVISION: 1",
+        "FINISH: revision 1",
+        "VERIFY: 1 claims: 1 unsupported",
+        "ISSUES:",
+        issue,
+        "ROUTE: end",
+    ]
+    assert lines.count("ROUTE: revise") == 1
+    assert "REVISION: 2" not in lines
 
 
 def test_verdict_gaps_route_and_plan_lines_render_exactly():
@@ -158,7 +213,12 @@ def test_verdict_gaps_route_and_plan_lines_render_exactly():
         "PLAN: approach A selected",
         "RESEARCH ROUND 1",
     ]
-    assert trace.render_update("finish", {"final_answer": "x"}, 2) == ["FINISH"]
+    assert trace.render_update(
+        "finish", {"final_answer": "x", "revision_round": 0}, 2
+    ) == ["FINISH"]
+    assert trace.render_update(
+        "finish", {"final_answer": "x", "revision_round": 1}, 2
+    ) == ["FINISH: revision 1"]
     mixed = verify.Verification(
         claims=[claim("supported"), claim("supported"), claim("contradicted")],
         conflicts=[
@@ -187,24 +247,36 @@ def test_verdict_gaps_route_and_plan_lines_render_exactly():
         "says 400.",
         "- Conflicting evidence not disclosed ([S1], [S2]): Founding years "
         "differ.",
+        "ROUTE: revise",
+        "REVISION: 1",
     ]
+    assert trace.render_update(
+        "verify",
+        {
+            "citation_issues": ["[D1] is a round-local label."],
+            "verification": mixed,
+        },
+        1,
+        revision_round=1,
+    )[-1:] == ["ROUTE: end"]
     clean = verify.Verification(
         claims=[claim("supported")], conflicts=[], source_ratings=[]
     )
     assert trace.render_update(
         "verify", {"citation_issues": [], "verification": clean}, 1
-    ) == ["VERIFY: 1 claims: 1 supported"]
+    ) == ["VERIFY: 1 claims: 1 supported", "ROUTE: end"]
 
 
 def test_no_third_round_is_ever_traced():
     nodes, lines = traced_run([False, False])
 
     assert nodes.count("research") == 2
-    assert lines[-4:] == [
+    assert lines[-5:] == [
         "- gap after round 2",
         "ROUTE: finish",
         "FINISH",
         "VERIFY: 0 claims",
+        "ROUTE: end",
     ]
     assert "RESEARCH ROUND 3" not in lines
     assert lines.count("ROUTE: research") == 1

@@ -47,7 +47,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def stream(graph, payload, thread_id: str, research_round: int):
+async def stream(
+    graph, payload, thread_id: str, research_round: int, revision_round: int
+):
     """Stream the graph on a thread, trace each node, return the state."""
     state: workflow.ResearchState = {}
     config = persist.thread_config(thread_id)
@@ -64,7 +66,11 @@ async def stream(graph, payload, thread_id: str, research_round: int):
             for node, update in chunk.items():
                 if node == "research":
                     research_round = update["research_round"]
-                for line in trace.render_update(node, update, research_round):
+                if node == "finish":
+                    revision_round = update["revision_round"]
+                for line in trace.render_update(
+                    node, update, research_round, revision_round
+                ):
                     print(line)
     except asyncio.CancelledError:
         print(
@@ -106,13 +112,18 @@ async def main() -> None:
                 sys.exit(str(error))
             show("TRACE", "")
             if snapshot is None:
-                payload, research_round = {"question": args.question}, 0
+                payload, values = {"question": args.question}, {}
             else:
                 pending = ", ".join(snapshot.next)
                 print(f"RESUMING AT: {pending}")
-                payload = None
-                research_round = snapshot.values.get("research_round", 0)
-            state = await stream(graph, payload, thread_id, research_round)
+                payload, values = None, snapshot.values
+            state = await stream(
+                graph,
+                payload,
+                thread_id,
+                values.get("research_round", 0),
+                values.get("revision_round", 0),
+            )
     show_state(state)
 
 
@@ -151,6 +162,7 @@ def show_state(state: workflow.ResearchState) -> None:
     )
     show("EVIDENCE EVALUATION", f"sufficient: {verdict}\ngaps:{gaps}")
     show("RESEARCH ROUNDS", str(state["research_round"]))
+    show("REVISIONS", str(state["revision_round"]))
     show("FINAL ANSWER", state["final_answer"])
     show("VERIFICATION", format_verification(state))
     ratings = {

@@ -16,7 +16,10 @@ from research import workflow
 
 
 def render_update(
-    node: str, update: dict[str, Any], research_round: int
+    node: str,
+    update: dict[str, Any],
+    research_round: int,
+    revision_round: int = 0,
 ) -> list[str]:
     """Trace lines for one completed node.
 
@@ -26,6 +29,8 @@ def render_update(
       update: What the node returned.
       research_round: Rounds completed so far, from the latest research
         update; the evaluate lines need it to render the route.
+      revision_round: Revisions completed so far, from the latest finish
+        update; the verify lines need it to render the route.
 
     Returns:
       The lines to print, in order. Empty for an unknown node.
@@ -60,7 +65,8 @@ def render_update(
             lines.append(f"RESEARCH ROUND {research_round + 1}")
         return lines
     if node == "finish":
-        return ["FINISH"]
+        revision = update["revision_round"]
+        return [f"FINISH: revision {revision}" if revision else "FINISH"]
     if node == "verify":
         verification = update["verification"]
         verdicts = [check.verdict for check in verification.claims]
@@ -75,5 +81,15 @@ def render_update(
         if issues:
             lines.append("ISSUES:")
             lines.extend(f"- {issue}" for issue in issues)
+        route = workflow.route_after_verify(
+            {
+                "citation_issues": update["citation_issues"],
+                "verification": verification,
+                "revision_round": revision_round,
+            }
+        )
+        lines.append(f"ROUTE: {route}")
+        if route == "revise":
+            lines.append(f"REVISION: {revision_round + 1}")
         return lines
     return []

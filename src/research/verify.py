@@ -26,8 +26,6 @@ import pydantic
 from research import agent
 from research import sources as sources_module
 
-EVIDENCE_GAP = agent.EVIDENCE_GAP
-
 # A citation is one or more labels inside one pair of brackets, as the
 # synthesis writes them: [S1], [S1, S2]; [S1][S2] is two citations.
 # Any other bracketed text is prose and is left alone.
@@ -91,7 +89,7 @@ or closely paraphrase the claim, list the labels the answer cites for it
 - contradicted: an observation states the opposite or an incompatible
   value.
 reason is one sentence naming the observation that decides it. The
-fixed sentence "{EVIDENCE_GAP}" is not a claim. A statement that some
+fixed sentence "{agent.EVIDENCE_GAP}" is not a claim. A statement that some
 evidence is missing is a claim about the observations, and it is
 supported when they indeed lack that evidence.
 

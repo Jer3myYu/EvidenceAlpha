@@ -32,9 +32,17 @@ graph is exactly the Phase 6 graph.
 Phase 8 adds ``verify`` after ``finish``: the synthesised answer is
 checked independently of the call that wrote it (``research.verify``).
 Citations are checked deterministically, then one structured call
-judges claims, conflicts, and source quality. Remaining problems are
-disclosed at the end of the answer in Python, like the gaps. One
-bounded revision follows in 8.4.
+judges claims, conflicts, and source quality. When that finds a
+problem, ``finish`` runs once more as a revision with the findings and
+``verify`` checks the result; the second verification always ends the
+run. Problems that remain are disclosed at the end of the answer in
+Python, like the gaps::
+
+    finish -> verify -+- clean, or revision_round == 1 ---------> END
+                ^     +- problems and revision_round == 0 -+
+                +-----------------------------------------+
+
+Verification never starts another research round.
 """
 
 import operator
@@ -54,6 +62,8 @@ from research import verify as verify_module
 
 # Round 1 is the initial research, round 2 the one follow-up.
 MAX_RESEARCH_ROUNDS = 2
+# One revision of the synthesis when verification finds a problem.
+MAX_REVISIONS = 1
 
 
 class ResearchState(TypedDict, total=False):
@@ -76,6 +86,7 @@ class ResearchState(TypedDict, total=False):
       final_answer: The answer returned by the workflow: the synthesis,
         then the unresolved gaps, then the verification notes, each
         block only when it applies.
+      revision_round: How many revisions of the synthesis have run.
       citation_issues: Invalid citations found in ``synthesis``.
       verification: The verifier's judgement of ``synthesis``.
     """
@@ -90,6 +101,7 @@ class ResearchState(TypedDict, total=False):
     evidence_gaps: list[str]
     synthesis: str
     final_answer: str
+    revision_round: int
     citation_issues: list[str]
     verification: verify_module.Verification
 
@@ -175,17 +187,39 @@ def format_unresolved_gaps(gaps: list[str]) -> str:
 
 
 async def finish_node(state: ResearchState) -> dict[str, Any]:
-    """Synthesise one answer from every round, then disclose open gaps."""
+    """Synthesise one answer from every round, then disclose open gaps.
+
+    After a verification, the same call revises the previous synthesis
+    with the verifier's findings instead; the evidence stays the
+    observations.
+    """
+    verification = state.get("verification")
+    if verification is None:
+        draft = findings = None
+        revision_round = 0
+    else:
+        draft = state["synthesis"]
+        findings = verify_module.format_verification_notes(
+            state["citation_issues"], verification
+        )
+        revision_round = state["revision_round"] + 1
     answer = await synthesize_module.synthesize(
         state["question"],
         state["research_plan"],
         state["answers"],
         state["evidence"],
+        draft,
+        findings,
     )
+    final_answer = answer
     block = format_unresolved_gaps(state["evidence_gaps"])
-    if state["evidence_sufficient"] or not block:
-        return {"synthesis": answer, "final_answer": answer}
-    return {"synthesis": answer, "final_answer": f"{answer}\n\n{block}"}
+    if block and not state["evidence_sufficient"]:
+        final_answer = f"{answer}\n\n{block}"
+    return {
+        "synthesis": answer,
+        "final_answer": final_answer,
+        "revision_round": revision_round,
+    }
 
 
 async def verify_node(state: ResearchState) -> dict[str, Any]:
@@ -208,6 +242,16 @@ async def verify_node(state: ResearchState) -> dict[str, Any]:
     return update
 
 
+def route_after_verify(state: ResearchState) -> str:
+    """Return ``"revise"`` or ``"end"`` from the latest verification."""
+    problems = verify_module.list_issues(
+        state["citation_issues"], state["verification"]
+    )
+    if not problems or state["revision_round"] >= MAX_REVISIONS:
+        return "end"
+    return "revise"
+
+
 def build_graph(
     plan: NodeFunction = plan_node,
     research: NodeFunction = research_node,
@@ -216,14 +260,15 @@ def build_graph(
     verify: NodeFunction = verify_node,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
-    """Compile the graph with the evaluate loop and the verify step.
+    """Compile the graph with the evaluate loop and the verify loop.
 
     Args:
       plan: Node filling ``research_plan``.
       research: Node adding ``evidence`` and ``answers`` and setting
         ``sources`` and ``research_round``.
       evaluate: Node filling ``evidence_sufficient`` and ``evidence_gaps``.
-      finish: Node filling ``synthesis`` and ``final_answer``.
+      finish: Node filling ``synthesis``, ``final_answer``, and
+        ``revision_round``.
       verify: Node filling ``citation_issues`` and ``verification`` and
         appending the verification notes to ``final_answer``.
       checkpointer: Where LangGraph saves the state after each node.
@@ -249,5 +294,7 @@ def build_graph(
         {"finish": "finish", "research": "research"},
     )
     graph.add_edge("finish", "verify")
-    graph.add_edge("verify", END)
+    graph.add_conditional_edges(
+        "verify", route_after_verify, {"revise": "finish", "end": END}
+    )
     return graph.compile(checkpointer=checkpointer)

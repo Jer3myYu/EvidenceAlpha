@@ -61,15 +61,18 @@ def fake_graph(
     verdicts: list[bool],
     fail_at: tuple[str, int] | None = None,
     checkpointer=None,
+    verifications: list[verify.Verification] | None = None,
 ):
     """A checkpointed graph of fakes, in memory unless one is given.
 
     ``fail_at=("research", 2)`` makes the second call of that node raise,
-    once; the retry after a resume succeeds.
+    once; the retry after a resume succeeds. The fake verify returns the
+    next of ``verifications``, ``VERIFIED`` (clean) when exhausted.
     """
     calls: list[str] = []
     pending = list(verdicts)
     failures = [fail_at] if fail_at else []
+    results = list(verifications or [])
 
     def enter(node: str) -> None:
         calls.append(node)
@@ -105,20 +108,27 @@ def fake_graph(
             "evidence_gaps": [] if sufficient else ["gap"],
         }
 
-    async def fake_finish(
-        unused_state: workflow.ResearchState,
-    ) -> dict[str, Any]:
+    async def fake_finish(state: workflow.ResearchState) -> dict[str, Any]:
         enter("finish")
-        return {"synthesis": "final [S1]", "final_answer": "final [S1]"}
+        if state.get("verification") is None:
+            text, revision = "final [S1]", 0
+        else:
+            text, revision = "revised [S1]", state["revision_round"] + 1
+        return {
+            "synthesis": text,
+            "final_answer": text,
+            "revision_round": revision,
+        }
 
     async def fake_verify(state: workflow.ResearchState) -> dict[str, Any]:
         enter("verify")
-        return {
-            "citation_issues": verify.check_citations(
-                state["synthesis"], state["sources"]
-            ),
-            "verification": VERIFIED,
-        }
+        issues = verify.check_citations(state["synthesis"], state["sources"])
+        verification = results.pop(0) if results else VERIFIED
+        notes = verify.format_verification_notes(issues, verification)
+        update = {"citation_issues": issues, "verification": verification}
+        if notes:
+            update["final_answer"] = state["final_answer"] + "\n\n" + notes
+        return update
 
     graph = workflow.build_graph(
         plan=fake_plan,
@@ -212,6 +222,37 @@ def test_interrupted_verify_resumes_at_verify_only():
     assert load(graph, "t7").next == ()
 
 
+def test_interrupted_revision_resumes_and_still_revises_only_once():
+    unsupported = VERIFIED.model_copy(
+        update={
+            "claims": [
+                VERIFIED.claims[0].model_copy(update={"verdict": "unsupported"})
+            ]
+        }
+    )
+    graph, calls = fake_graph(
+        [True], fail_at=("verify", 2), verifications=[unsupported]
+    )
+
+    with pytest.raises(RuntimeError, match="verify interrupted"):
+        run(graph, "t8")
+    snapshot = load(graph, "t8")
+
+    assert snapshot.next == ("verify",)
+    assert snapshot.values["revision_round"] == 1
+    assert snapshot.values["synthesis"] == "revised [S1]"
+    assert snapshot.values["verification"] == unsupported  # From draft 1.
+
+    state = run(graph, "t8", question=None)
+
+    assert calls[-5:] == ["finish", "verify", "finish", "verify", "verify"]
+    assert calls.count("finish") == 2
+    assert state["revision_round"] == 1
+    assert state["verification"] == VERIFIED
+    assert state["final_answer"] == "revised [S1]"
+    assert load(graph, "t8").next == ()
+
+
 def test_completed_thread_reopens_without_running_any_node():
     graph, calls = fake_graph([True])
     final = run(graph, "t3")
@@ -274,6 +315,7 @@ def test_sqlite_checkpoint_survives_closing_and_reopening(tmp_path):
     assert not calls
     assert snapshot.next == ()
     assert snapshot.values["final_answer"] == "final [S1]"
+    assert snapshot.values["revision_round"] == 0
     assert snapshot.values["citation_issues"] == []
     assert snapshot.values["verification"] == VERIFIED
     assert snapshot.values["research_plan"] == PLAN

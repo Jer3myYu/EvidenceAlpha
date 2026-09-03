@@ -58,11 +58,13 @@ def fake_nodes(
     verdicts: list[bool],
     synthesis: str = "final",
     verifications: list[verify.Verification] | None = None,
+    revised: str = "revised",
 ):
     """Build fake nodes that record calls and the state each one saw.
 
-    ``synthesis`` is what the fake finish writes; the fake verify runs
-    the real citation check on it and returns the next of
+    ``synthesis`` is what the fake finish writes first and ``revised``
+    what it writes when asked to revise; the fake verify runs the real
+    citation check on the synthesis and returns the next of
     ``verifications`` (clean by default) in place of the model call.
     """
     calls: list[str] = []
@@ -101,7 +103,19 @@ def fake_nodes(
     async def fake_finish(state: workflow.ResearchState) -> dict[str, Any]:
         calls.append("finish")
         seen["finish"] = dict(state)
-        return {"synthesis": synthesis, "final_answer": synthesis}
+        if state.get("verification") is None:
+            text, revision = synthesis, 0
+        else:
+            text, revision = revised, state["revision_round"] + 1
+        final = text
+        block = workflow.format_unresolved_gaps(state["evidence_gaps"])
+        if block and not state["evidence_sufficient"]:
+            final = f"{text}\n\n{block}"
+        return {
+            "synthesis": text,
+            "final_answer": final,
+            "revision_round": revision,
+        }
 
     async def fake_verify(state: workflow.ResearchState) -> dict[str, Any]:
         calls.append("verify")
@@ -259,15 +273,16 @@ def test_router_never_allows_a_third_round():
 
 
 def test_verify_runs_after_finish_on_the_synthesis_and_the_registry():
+    flawed = "Acme [S1]; peas [S3]; bad [D1] [S9]."
     graph, calls, seen = fake_nodes(
-        [False, True], synthesis="Acme [S1]; peas [S3]; bad [D1] [S9]."
+        [False, True], synthesis=flawed, revised=flawed
     )
 
     state = run(graph)
 
     assert calls[-2:] == ["finish", "verify"]
-    assert seen["verify"]["synthesis"] == seen["verify"]["final_answer"]
-    assert state["final_answer"].startswith("Acme [S1]; peas [S3]; bad [D1]")
+    assert seen["verify"]["synthesis"] == flawed
+    assert state["final_answer"].startswith(flawed)
     assert set(seen["verify"]["sources"]) == {"S1", "S2", "S3"}
     assert state["citation_issues"] == [
         "[D1] is a round-local label, not a source.",
@@ -297,24 +312,150 @@ UNSUPPORTED = verify.Verification(
 )
 
 
-def test_problems_are_disclosed_after_the_gaps_and_a_clean_answer_is_bare():
-    graph, _, _ = fake_nodes(
-        [False, False],
-        synthesis="Acme [S1] earns [D2].",
-        verifications=[UNSUPPORTED],
+def contradicted() -> verify.Verification:
+    return verify.Verification(
+        claims=[
+            verify.ClaimCheck(
+                claim="Acme was founded in 2013.",
+                cited_sources=["S1"],
+                verdict="contradicted",
+                reason="Observation 1 states 2011.",
+            )
+        ],
+        conflicts=[],
+        source_ratings=[],
+    )
+
+
+WEAK_ONLY = verify.Verification(
+    claims=[
+        verify.ClaimCheck(
+            claim="Acme makes arms.",
+            cited_sources=["S1"],
+            verdict="supported",
+            reason="Observation 1 states it.",
+        )
+    ],
+    conflicts=[],
+    source_ratings=[
+        verify.SourceRating(source_id="S1", quality="weak", reason="Unknown.")
+    ],
+)
+
+
+def test_clean_verification_ends_the_run_with_a_bare_answer():
+    graph, calls, _ = fake_nodes([True], synthesis="Acme [S1].")
+
+    state = run(graph)
+
+    assert calls[-3:] == ["evaluate", "finish", "verify"]
+    assert state["revision_round"] == 0
+    assert state["final_answer"] == "Acme [S1]."
+
+
+def test_problems_cause_exactly_one_revision_from_the_findings():
+    graph, calls, seen = fake_nodes(
+        [True], synthesis="Acme [S1] earns [D2].", verifications=[UNSUPPORTED]
     )
 
     state = run(graph)
 
-    assert state["final_answer"] == (
-        "Acme [S1] earns [D2].\n\n"
-        "Verification notes:\n"
-        "1. [D2] is a round-local label, not a source.\n"
-        '2. Unsupported claim: "Acme earns $50 million." '
-        "No observation mentions revenue."
+    assert calls[-4:] == ["finish", "verify", "finish", "verify"]
+    assert calls.count("finish") == 2
+    assert state["revision_round"] == 1
+    # The revision saw the draft and the findings; the evidence is still
+    # the observations only.
+    revision = seen["finish"]
+    assert revision["synthesis"] == "Acme [S1] earns [D2]."
+    assert revision["verification"] == UNSUPPORTED
+    assert revision["citation_issues"] == [
+        "[D2] is a round-local label, not a source."
+    ]
+    assert revision["evidence"] == STABLE[0]
+    # A clean second verification leaves no notes from the first one.
+    assert state["final_answer"] == "revised"
+    assert state["verification"] == CLEAN
+    assert state["citation_issues"] == []
+
+
+def test_problems_after_the_revision_end_with_notes_from_the_last_check():
+    graph, calls, _ = fake_nodes(
+        [False, False],
+        synthesis="Acme [S1] earns [D2].",
+        verifications=[UNSUPPORTED, contradicted()],
+        revised="Acme [S1] was founded in 2013 [W1].",
     )
-    clean, _, _ = fake_nodes([True], synthesis="Acme [S1].")
-    assert run(clean)["final_answer"] == "Acme [S1]."
+
+    state = run(graph)
+
+    assert calls[-4:] == ["finish", "verify", "finish", "verify"]
+    assert state["revision_round"] == 1
+    assert state["final_answer"] == (
+        "Acme [S1] was founded in 2013 [W1].\n\n"
+        "Unresolved evidence gaps:\n"
+        "1. gap after round 2\n\n"
+        "Verification notes:\n"
+        "1. [W1] is a round-local label, not a source.\n"
+        '2. Contradicted claim: "Acme was founded in 2013." '
+        "Observation 1 states 2011."
+    )
+    assert "[D2]" not in state["final_answer"]
+
+
+def test_source_quality_alone_never_causes_a_revision():
+    graph, calls, _ = fake_nodes(
+        [True], synthesis="Acme [S1].", verifications=[WEAK_ONLY]
+    )
+
+    state = run(graph)
+
+    assert calls.count("finish") == 1
+    assert state["revision_round"] == 0
+    assert state["final_answer"] == "Acme [S1]."
+
+
+def test_router_revises_once_at_most():
+    problem = {"citation_issues": ["[D1] is bad."], "verification": CLEAN}
+    clean = {"citation_issues": [], "verification": WEAK_ONLY}
+
+    assert workflow.route_after_verify({**problem, "revision_round": 0}) == (
+        "revise"
+    )
+    assert workflow.route_after_verify({**problem, "revision_round": 1}) == (
+        "end"
+    )
+    assert workflow.route_after_verify({**clean, "revision_round": 0}) == "end"
+    assert workflow.MAX_REVISIONS == 1
+
+
+def test_revision_prompt_carries_draft_and_findings_after_the_evidence():
+    findings = verify.format_verification_notes(
+        ["[D2] is a round-local label, not a source."], UNSUPPORTED
+    )
+    prompt = synthesize.build_prompt(
+        "Where is Acme based?",
+        PLAN,
+        ["answer 1"],
+        STABLE[0],
+        draft="Acme [S1] earns [D2].",
+        findings=findings,
+    )
+
+    headings = [
+        "Tool observations (evidence):",
+        "Previous draft:\nAcme [S1] earns [D2].",
+        "Verification findings on the previous draft:\n" + findings,
+        synthesize.REVISION_INSTRUCTION,
+    ]
+    positions = [prompt.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+    assert prompt.endswith(synthesize.REVISION_INSTRUCTION)
+    assert "The findings are not evidence; the observations are." in prompt
+    assert "Add no new facts." in prompt
+    first = synthesize.build_prompt(
+        "Where is Acme based?", PLAN, ["answer 1"], STABLE[0]
+    )
+    assert "Previous draft" not in first and "findings" not in first
 
 
 def test_verifier_prompt_shows_answer_sources_and_evidence_only():
@@ -361,6 +502,7 @@ def test_graph_topology_has_the_evaluate_loop():
         ("evaluate", "finish"),
         ("evaluate", "research"),
         ("finish", "verify"),
+        ("verify", "finish"),
         ("verify", END),
     }
 

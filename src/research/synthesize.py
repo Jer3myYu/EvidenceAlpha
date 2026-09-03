@@ -4,6 +4,10 @@ The synthesis sees all tool observations (the evidence) and each round's
 answer (context only), and writes one grounded answer. It never
 researches or calls tools; unresolved gaps are disclosed by the
 workflow in Python, not by this prompt.
+
+Given a previous draft and the verifier's findings on it, the same call
+revises the draft instead: the smallest correction per finding, from the
+same observations, adding nothing (Phase 8.4).
 """
 
 import claude_agent_sdk
@@ -32,11 +36,25 @@ Write plain prose.
 """
 
 
+REVISION_INSTRUCTION = (
+    "Revise the previous draft with the smallest correction that resolves "
+    "each finding: remove or qualify an unsupported claim; correct a "
+    "contradicted claim only when the observations support the "
+    "correction, otherwise remove or qualify it; replace or remove an "
+    "invalid citation using only the [S#] labels the observations carry; "
+    "state each undisclosed conflict explicitly instead of choosing a "
+    "side. Add no new facts. The findings are not evidence; the "
+    "observations are. Keep everything the findings do not touch as it is."
+)
+
+
 def build_prompt(
     question: str,
     research_plan: plan_module.ResearchPlan,
     answers: list[str],
     evidence: list[str],
+    draft: str | None = None,
+    findings: str | None = None,
 ) -> str:
     """Lay out question, plan, round answers, and observations as one message.
 
@@ -46,6 +64,8 @@ def build_prompt(
         shown, or "none" for a single-path question.
       answers: One answer per research round, in order.
       evidence: Every tool observation from every round, in order.
+      draft: For a revision, the previous synthesis, verbatim.
+      findings: For a revision, the verifier's problems with ``draft``.
 
     Returns:
       The prompt text, exactly as it will be sent.
@@ -60,11 +80,19 @@ def build_prompt(
         f"--- round {number} answer ---\n{answer}"
         for number, answer in enumerate(answers, start=1)
     )
-    return (
+    prompt = (
         f"Question:\n{question}\n\n"
         f"Research plan:\n{plan_text}\n\n"
         f"Round answers (context, not evidence):\n{answers_text}\n\n"
         f"Tool observations (evidence):\n{agent.format_observations(evidence)}"
+    )
+    if draft is None:
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        f"Previous draft:\n{draft}\n\n"
+        f"Verification findings on the previous draft:\n{findings}\n\n"
+        f"{REVISION_INSTRUCTION}"
     )
 
 
@@ -73,6 +101,8 @@ async def synthesize(
     research_plan: plan_module.ResearchPlan,
     answers: list[str],
     evidence: list[str],
+    draft: str | None = None,
+    findings: str | None = None,
 ) -> str:
     """Run the synthesis call and return the final answer text.
 
@@ -81,6 +111,8 @@ async def synthesize(
       research_plan: The planning result for the question.
       answers: One answer per research round.
       evidence: Every tool observation from every round.
+      draft: For a revision, the previous synthesis.
+      findings: For a revision, the verifier's problems with ``draft``.
 
     Returns:
       The synthesised answer, or the fixed evidence-gap sentence.
@@ -96,7 +128,9 @@ async def synthesize(
         setting_sources=[],
         env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
     )
-    prompt = build_prompt(question, research_plan, answers, evidence)
+    prompt = build_prompt(
+        question, research_plan, answers, evidence, draft, findings
+    )
     result = None
     async for message in claude_agent_sdk.query(prompt=prompt, options=options):
         if isinstance(message, claude_agent_sdk.ResultMessage):
