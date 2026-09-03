@@ -96,10 +96,13 @@ def test_parse_plan_reads_candidates_selection_and_reason():
 def test_candidate_schema_allows_only_candidate_fields():
     # parse_plan builds Candidate(**item), so any key the schema lets the
     # model emit must be a Candidate field, and no other key may pass.
-    item = plan.PLAN_SCHEMA["properties"]["candidates"]["items"]
+    items = plan.PLAN_SCHEMA["properties"]["candidates"]["items"]
+    item = plan.PLAN_SCHEMA["$defs"]["CandidateOutput"]
     fields = {field.name for field in dataclasses.fields(plan.Candidate)}
 
+    assert items == {"$ref": "#/$defs/CandidateOutput"}
     assert set(item["properties"]) == fields
+    assert set(item["required"]) == fields
     assert item["additionalProperties"] is False
 
 

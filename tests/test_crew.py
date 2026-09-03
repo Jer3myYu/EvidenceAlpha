@@ -13,6 +13,7 @@ import pydantic
 
 from research import crew
 from research import evaluate
+from research import plan
 
 # CrewAI's framing around a no-tools agent, pinned with the package.
 SYSTEM_FRAME = "You are {name}. {backstory}\nYour personal goal is: {goal}"
@@ -121,3 +122,78 @@ def test_run_task_leaves_braces_in_the_description_alone():
     run(crew.run_task(role, description, "One line.", fake))
     _, user = crew.split_messages(fake.seen[0][0])
     assert description in user
+
+
+def test_planner_and_evaluator_carry_the_system_prompts_verbatim():
+    assert crew.PLANNER.backstory == plan.SYSTEM_PROMPT
+    assert crew.PLANNER.output is plan.PlanOutput
+    assert crew.EVALUATOR.backstory == evaluate.SYSTEM_PROMPT
+    assert crew.EVALUATOR.output is evaluate.EvidenceEvaluation
+
+
+def test_plan_sends_the_bare_question_and_returns_the_dataclass():
+    wire = plan.PlanOutput(
+        use_tot=True,
+        candidates=[
+            plan.CandidateOutput(
+                label="A",
+                approach="Filings first",
+                scope="strong",
+                evidence="strong",
+                coverage="medium",
+            )
+        ],
+        selected="A",
+        reason="Best fit.",
+    )
+    fake = FakeLLM(model="fake", reply=wire)
+    result = run(crew.plan("Research industry X.", fake))
+    assert result == plan.ResearchPlan(
+        use_tot=True,
+        candidates=[
+            plan.Candidate("A", "Filings first", "strong", "strong", "medium")
+        ],
+        selected="A",
+        reason="Best fit.",
+    )
+    messages, response_model = fake.seen[0]
+    assert response_model is plan.PlanOutput
+    _, user = crew.split_messages(messages)
+    assert user == USER_FRAME.format(
+        description="Research industry X.",
+        expected="The structured research plan.",
+    )
+
+
+def test_evaluate_sends_the_existing_prompt_and_returns_the_verdict():
+    research_plan = plan.ResearchPlan(
+        use_tot=False, candidates=[], selected="", reason="One path."
+    )
+    observations = ["[S1] source: a.txt (distance 0.1000)\nAcme makes arms."]
+    verdict = evaluate.EvidenceEvaluation.model_validate(
+        {
+            "question_answerable_from_observations": False,
+            "missing_evidence": ["No 2025 revenue figure."],
+        }
+    )
+    fake = FakeLLM(model="fake", reply=verdict)
+    result = run(
+        crew.evaluate(
+            "Revenue 2025?", research_plan, "Nothing found.", observations, fake
+        )
+    )
+    assert result is verdict
+    messages, response_model = fake.seen[0]
+    assert response_model is evaluate.EvidenceEvaluation
+    system, user = crew.split_messages(messages)
+    assert system == SYSTEM_FRAME.format(
+        name="Evidence evaluator",
+        backstory=evaluate.SYSTEM_PROMPT,
+        goal=crew.EVALUATOR.goal,
+    )
+    expected = evaluate.build_prompt(
+        "Revenue 2025?", research_plan, "Nothing found.", observations
+    )
+    assert user == USER_FRAME.format(
+        description=expected, expected="The structured evaluation."
+    )

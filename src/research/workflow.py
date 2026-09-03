@@ -43,6 +43,12 @@ Python, like the gaps::
                 +-----------------------------------------+
 
 Verification never starts another research round.
+
+Phase 9 changes no edge, state, or router: the single-call nodes run
+their model call as a CrewAI crew of one agent and one task
+(``research.crew``), each agent carrying the stage's existing system
+prompt and each task the stage's existing prompt text. The research
+node still calls the Claude Agent SDK Research Agent directly.
 """
 
 import operator
@@ -54,7 +60,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from research import agent
-from research import evaluate as evaluate_module
+from research import crew
 from research import plan as plan_module
 from research import sources as sources_module
 from research import synthesize as synthesize_module
@@ -111,7 +117,7 @@ NodeFunction = Callable[[ResearchState], Awaitable[dict[str, Any]]]
 
 async def plan_node(state: ResearchState) -> dict[str, Any]:
     """Run the existing planning call on the question."""
-    return {"research_plan": await plan_module.plan_research(state["question"])}
+    return {"research_plan": await crew.plan(state["question"])}
 
 
 async def research_node(state: ResearchState) -> dict[str, Any]:
@@ -142,7 +148,7 @@ async def research_node(state: ResearchState) -> dict[str, Any]:
 
 async def evaluate_node(state: ResearchState) -> dict[str, Any]:
     """Evaluate all accumulated evidence against the latest answer."""
-    verdict = await evaluate_module.evaluate_evidence(
+    verdict = await crew.evaluate(
         state["question"],
         state["research_plan"],
         state["answers"][-1],

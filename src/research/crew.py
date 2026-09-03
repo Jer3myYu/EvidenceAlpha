@@ -30,6 +30,9 @@ from typing import Any
 import claude_agent_sdk
 import pydantic
 
+from research import evaluate as evaluate_module
+from research import plan as plan_module
+
 # CrewAI reports usage to its vendor and, on a first run, asks on stdin
 # whether to upload traces. Both are switched off before the package is
 # imported, so no script or test can forget it.
@@ -220,7 +223,11 @@ async def run_task(
     )
     task_settings: dict[str, Any] = {}
     if role.output is not None:
+        # output_pydantic types the task's output; response_model hands
+        # the same model to the LLM call and, being set, keeps CrewAI
+        # from pasting the JSON schema into the task prompt.
         task_settings["output_pydantic"] = role.output
+        task_settings["response_model"] = role.output
     task = crewai.Task(
         description=description,
         expected_output=expected_output,
@@ -242,3 +249,45 @@ async def run_task(
             f"{role.name} task returned no {role.output.__name__}."
         )
     return task_output.pydantic
+
+
+PLANNER = Role(
+    "Research planner",
+    "Decide whether the question needs a choice between research "
+    "structures and, if it does, choose one.",
+    plan_module.SYSTEM_PROMPT,
+    plan_module.PlanOutput,
+)
+EVALUATOR = Role(
+    "Evidence evaluator",
+    "Judge whether the collected evidence answers the question and name "
+    "exactly what is missing.",
+    evaluate_module.SYSTEM_PROMPT,
+    evaluate_module.EvidenceEvaluation,
+)
+
+
+async def plan(
+    question: str, llm: crewai.BaseLLM | None = None
+) -> plan_module.ResearchPlan:
+    """The planner's task: the question alone, as ``plan_research`` sends it."""
+    output = await run_task(
+        PLANNER, question, "The structured research plan.", llm
+    )
+    return plan_module.parse_plan(output.model_dump())
+
+
+async def evaluate(
+    question: str,
+    research_plan: plan_module.ResearchPlan,
+    answer: str,
+    observations: list[str],
+    llm: crewai.BaseLLM | None = None,
+) -> evaluate_module.EvidenceEvaluation:
+    """The evaluator's task: ``evaluate.build_prompt`` as the description."""
+    description = evaluate_module.build_prompt(
+        question, research_plan, answer, observations
+    )
+    return await run_task(
+        EVALUATOR, description, "The structured evaluation.", llm
+    )

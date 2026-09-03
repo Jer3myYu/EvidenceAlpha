@@ -6,49 +6,54 @@ three candidate approaches rated on three criteria and picks one; the
 agent then follows the chosen approach. If it does not, the plan says so
 and the agent runs unchanged. Depth is one, candidates three, survivor
 one. This is a visible planning artifact, not hidden reasoning.
+
+``PlanOutput`` is the wire shape of the call; ``ResearchPlan`` and
+``Candidate`` are the dataclasses kept in workflow state.
 """
 
 import dataclasses
-from typing import Any
+from typing import Any, Literal
 
 import claude_agent_sdk
+import pydantic
 
 MODEL = "claude-sonnet-5"
 
-RATING = {"type": "string", "enum": ["strong", "medium", "weak"]}
+Rating = Literal["strong", "medium", "weak"]
 
-PLAN_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "use_tot": {"type": "boolean"},
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string"},
-                    "approach": {"type": "string"},
-                    "scope": RATING,
-                    "evidence": RATING,
-                    "coverage": RATING,
-                },
-                "required": [
-                    "label",
-                    "approach",
-                    "scope",
-                    "evidence",
-                    "coverage",
-                ],
-                # Candidate(**item) accepts exactly these keys; an extra
-                # one from the model (seen: "approach_detail") crashed it.
-                "additionalProperties": False,
-            },
-        },
-        "selected": {"type": "string"},
-        "reason": {"type": "string"},
-    },
-    "required": ["use_tot", "candidates", "selected", "reason"],
-}
+
+class CandidateOutput(pydantic.BaseModel):
+    """One candidate as the planning call returns it on the wire."""
+
+    # Candidate(**item) accepts exactly these keys; an extra one from
+    # the model (seen: "approach_detail") crashed it before extras were
+    # forbidden.
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    label: str
+    approach: str
+    scope: Rating
+    evidence: Rating
+    coverage: Rating
+
+
+class PlanOutput(pydantic.BaseModel):
+    """The planning call's structured output on the wire.
+
+    ``parse_plan`` turns its dictionary form into the ``ResearchPlan``
+    dataclass that lives in workflow state.
+    """
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    use_tot: bool
+    candidates: list[CandidateOutput]
+    selected: str
+    reason: str
+
+
+# The JSON schema the planning call requests, derived from the model.
+PLAN_SCHEMA = PlanOutput.model_json_schema()
 
 SYSTEM_PROMPT = """\
 You plan research for an investment-research assistant. Decide whether
