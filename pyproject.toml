@@ -12,7 +12,10 @@ dependencies = [
     "langchain-core>=0.3",
     "langchain-community>=0.3",
     "langchain-text-splitters>=0.3",
-    "langchain-chroma>=0.2",
+    # Phase 9 decision (2026-09-03): crewai pins chromadb~=1.1.0 in every
+    # 1.x release, and langchain-chroma>=1.1 needs chromadb>=1.3.5, so the
+    # Chroma adapter is held at 1.0.x (chromadb>=1.0.20).
+    "langchain-chroma>=1.0,<1.1",
     "langchain-huggingface>=0.1",
     # PyMuPDFLoader needs the pymupdf package itself.
     "pymupdf>=1.24",
@@ -38,6 +41,10 @@ dependencies = [
     # Phase 7 decision (2026-09-02): the SQLite checkpointer for
     # resumable workflow runs; the in-memory one ships with langgraph.
     "langgraph-checkpoint-sqlite>=3.1,<4",
+    # Phase 9 decision (2026-09-03): CrewAI for the named single-call
+    # roles inside the graph nodes. Pinned exactly: releases are weekly
+    # and move their pins (also pydantic<2.13, mcp~=1.28, otel~=1.42).
+    "crewai==1.15.18",
 ]
 
 [project.optional-dependencies]
@@ -58,3 +65,5 @@ target-version = ["py311", "py312"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# CrewAI 1.15 warns about its own deprecated fields on every crew run.
+filterwarnings = ["ignore::DeprecationWarning:crewai"]
