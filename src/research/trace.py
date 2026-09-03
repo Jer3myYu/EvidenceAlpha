@@ -20,7 +20,7 @@ def render_update(
 
     Args:
       node: The node that completed: ``plan``, ``research``,
-        ``evaluate``, or ``finish``.
+        ``evaluate``, ``finish``, or ``verify``.
       update: What the node returned.
       research_round: Rounds completed so far, from the latest research
         update; the evaluate lines need it to render the route.
@@ -59,4 +59,11 @@ def render_update(
         return lines
     if node == "finish":
         return ["FINISH"]
+    if node == "verify":
+        issues = update["citation_issues"]
+        if not issues:
+            return ["VERIFY: no citation issues"]
+        lines = [f"VERIFY: {len(issues)} citation issues", "ISSUES:"]
+        lines.extend(f"- {issue}" for issue in issues)
+        return lines
     return []

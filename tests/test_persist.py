@@ -15,6 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from research import persist
 from research import plan
 from research import sources
+from research import verify
 from research import workflow
 
 PLAN = plan.ResearchPlan(
@@ -92,13 +93,22 @@ def fake_graph(
         unused_state: workflow.ResearchState,
     ) -> dict[str, Any]:
         enter("finish")
-        return {"final_answer": "final"}
+        return {"synthesis": "final [S1]", "final_answer": "final [S1]"}
+
+    async def fake_verify(state: workflow.ResearchState) -> dict[str, Any]:
+        enter("verify")
+        return {
+            "citation_issues": verify.check_citations(
+                state["synthesis"], state["sources"]
+            )
+        }
 
     graph = workflow.build_graph(
         plan=fake_plan,
         research=fake_research,
         evaluate=fake_evaluate,
         finish=fake_finish,
+        verify=fake_verify,
         checkpointer=checkpointer or InMemorySaver(serde=persist.SERIALIZER),
     )
     return graph, calls
@@ -127,8 +137,16 @@ def test_interrupted_run_resumes_at_the_failed_node_only():
 
     state = run(graph, "t1", question=None)
 
-    assert calls == ["plan", "research", "evaluate", "evaluate", "finish"]
-    assert state["final_answer"] == "final"
+    assert calls == [
+        "plan",
+        "research",
+        "evaluate",
+        "evaluate",
+        "finish",
+        "verify",
+    ]
+    assert state["final_answer"] == "final [S1]"
+    assert state["citation_issues"] == []
     assert state["answers"] == ["answer 1"]  # Not doubled by the resume.
     assert load(graph, "t1").next == ()
 
@@ -146,10 +164,35 @@ def test_resume_into_a_second_round_uses_the_reloaded_registry():
 
     state = run(graph, "t2", question=None)
 
-    assert calls[-4:] == ["research", "research", "evaluate", "finish"]
+    assert calls[-5:] == [
+        "research",
+        "research",
+        "evaluate",
+        "finish",
+        "verify",
+    ]
     assert state["research_round"] == 2
     assert state["sources"]["S2"].seen_via == ("ingest", "web")
     assert state["evidence"][-1].startswith("[S2] Site - https://x.example/p")
+
+
+def test_interrupted_verify_resumes_at_verify_only():
+    graph, calls = fake_graph([True], fail_at=("verify", 1))
+
+    with pytest.raises(RuntimeError, match="verify interrupted"):
+        run(graph, "t7")
+    snapshot = load(graph, "t7")
+
+    assert snapshot.next == ("verify",)
+    assert snapshot.values["synthesis"] == "final [S1]"
+    assert "citation_issues" not in snapshot.values
+
+    state = run(graph, "t7", question=None)
+
+    assert calls[-3:] == ["finish", "verify", "verify"]
+    assert calls.count("finish") == 1
+    assert state["citation_issues"] == []
+    assert load(graph, "t7").next == ()
 
 
 def test_completed_thread_reopens_without_running_any_node():
@@ -209,6 +252,7 @@ def test_sqlite_checkpoint_survives_closing_and_reopening(tmp_path):
 
     assert not calls
     assert snapshot.next == ()
-    assert snapshot.values["final_answer"] == "final"
+    assert snapshot.values["final_answer"] == "final [S1]"
+    assert snapshot.values["citation_issues"] == []
     assert snapshot.values["research_plan"] == PLAN
     assert snapshot.values["sources"]["S1"].seen_via == ("documents",)

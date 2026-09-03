@@ -152,6 +152,8 @@ def show_state(state: workflow.ResearchState) -> None:
     show("EVIDENCE EVALUATION", f"sufficient: {verdict}\ngaps:{gaps}")
     show("RESEARCH ROUNDS", str(state["research_round"]))
     show("FINAL ANSWER", state["final_answer"])
+    issues = "".join(f"\n- {issue}" for issue in state["citation_issues"])
+    show("VERIFICATION", "citation issues:" + (issues or " none"))
     sources = []
     for record in state["sources"].values():
         seen_via = ", ".join(record.seen_via)

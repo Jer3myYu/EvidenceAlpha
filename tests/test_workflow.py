@@ -1,4 +1,4 @@
-"""Phase 6 workflow tests: routing, accumulation, and the finish pieces.
+"""Phase 6 workflow tests: routing, accumulation, finish, and verify.
 
 No model calls: the graph tests pass fake nodes to ``build_graph``; the
 pure functions are tested directly.
@@ -14,6 +14,7 @@ from research import evaluate
 from research import plan
 from research import sources
 from research import synthesize
+from research import verify
 from research import workflow
 
 PLAN = plan.ResearchPlan(
@@ -52,8 +53,12 @@ STABLE = [
 ]
 
 
-def fake_nodes(verdicts: list[bool]):
-    """Build fake nodes that record calls and the state each one saw."""
+def fake_nodes(verdicts: list[bool], synthesis: str = "final"):
+    """Build fake nodes that record calls and the state each one saw.
+
+    ``synthesis`` is what the fake finish writes; the fake verify runs
+    the real citation check on it.
+    """
     calls: list[str] = []
     seen: dict[str, dict[str, Any]] = {}  # last state each node saw
     pending = list(verdicts)
@@ -89,13 +94,23 @@ def fake_nodes(verdicts: list[bool]):
     async def fake_finish(state: workflow.ResearchState) -> dict[str, Any]:
         calls.append("finish")
         seen["finish"] = dict(state)
-        return {"final_answer": "final"}
+        return {"synthesis": synthesis, "final_answer": synthesis}
+
+    async def fake_verify(state: workflow.ResearchState) -> dict[str, Any]:
+        calls.append("verify")
+        seen["verify"] = dict(state)
+        return {
+            "citation_issues": verify.check_citations(
+                state["synthesis"], state["sources"]
+            )
+        }
 
     graph = workflow.build_graph(
         plan=fake_plan,
         research=fake_research,
         evaluate=fake_evaluate,
         finish=fake_finish,
+        verify=fake_verify,
     )
     return graph, calls, seen
 
@@ -109,7 +124,7 @@ def test_sufficient_after_round_one_goes_straight_to_finish():
 
     state = run(graph)
 
-    assert calls == ["plan", "research", "evaluate", "finish"]
+    assert calls == ["plan", "research", "evaluate", "finish", "verify"]
     assert state["research_round"] == 1
     assert state["evidence"] == STABLE[0]
     assert state["answers"] == ["answer 1"]
@@ -130,6 +145,7 @@ def test_insufficient_then_sufficient_runs_a_second_round_and_accumulates():
         "research",
         "evaluate",
         "finish",
+        "verify",
     ]
     assert state["research_round"] == 2
     assert state["evidence"] == STABLE[0] + STABLE[1]
@@ -149,7 +165,7 @@ def test_insufficient_twice_stops_after_the_second_round():
     state = run(graph)
 
     assert calls.count("research") == 2
-    assert calls[-3:] == ["research", "evaluate", "finish"]
+    assert calls[-4:] == ["research", "evaluate", "finish", "verify"]
     assert state["research_round"] == 2
     assert state["evidence_sufficient"] is False
     assert state["evidence_gaps"] == ["gap after round 2"]
@@ -233,6 +249,24 @@ def test_router_never_allows_a_third_round():
     )
 
 
+def test_verify_runs_after_finish_on_the_synthesis_and_the_registry():
+    graph, calls, seen = fake_nodes(
+        [False, True], synthesis="Acme [S1]; peas [S3]; bad [D1] [S9]."
+    )
+
+    state = run(graph)
+
+    assert calls[-2:] == ["finish", "verify"]
+    assert seen["verify"]["synthesis"] == state["final_answer"]
+    assert set(seen["verify"]["sources"]) == {"S1", "S2", "S3"}
+    assert state["citation_issues"] == [
+        "[D1] is a round-local label, not a source.",
+        "[S9] is not a known source.",
+    ]
+    clean, _, _ = fake_nodes([True], synthesis="Acme [S1].")
+    assert run(clean)["citation_issues"] == []
+
+
 def test_graph_topology_has_the_evaluate_loop():
     edges = {
         (edge.source, edge.target)
@@ -245,7 +279,8 @@ def test_graph_topology_has_the_evaluate_loop():
         ("research", "evaluate"),
         ("evaluate", "finish"),
         ("evaluate", "research"),
-        ("finish", END),
+        ("finish", "verify"),
+        ("verify", END),
     }
 
 

@@ -48,13 +48,19 @@ def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
     async def fake_finish(
         unused_state: workflow.ResearchState,
     ) -> dict[str, Any]:
-        return {"final_answer": "final"}
+        return {"synthesis": "final", "final_answer": "final"}
+
+    async def fake_verify(
+        unused_state: workflow.ResearchState,
+    ) -> dict[str, Any]:
+        return {"citation_issues": []}
 
     graph = workflow.build_graph(
         plan=fake_plan,
         research=fake_research,
         evaluate=fake_evaluate,
         finish=fake_finish,
+        verify=fake_verify,
     )
 
     async def collect() -> tuple[list[str], list[str]]:
@@ -77,7 +83,7 @@ def traced_run(verdicts: list[bool]) -> tuple[list[str], list[str]]:
 def test_one_round_run_traces_plan_research_verdict_route_and_finish():
     nodes, lines = traced_run([True])
 
-    assert nodes == ["plan", "research", "evaluate", "finish"]
+    assert nodes == ["plan", "research", "evaluate", "finish", "verify"]
     assert lines == [
         "PLAN: no tree-of-thought",
         "RESEARCH ROUND 1",
@@ -85,6 +91,7 @@ def test_one_round_run_traces_plan_research_verdict_route_and_finish():
         "EVALUATE: sufficient",
         "ROUTE: finish",
         "FINISH",
+        "VERIFY: no citation issues",
     ]
 
 
@@ -98,6 +105,7 @@ def test_two_round_run_traces_the_gap_the_route_and_the_second_round():
         "research",
         "evaluate",
         "finish",
+        "verify",
     ]
     assert lines == [
         "PLAN: no tree-of-thought",
@@ -112,6 +120,7 @@ def test_two_round_run_traces_the_gap_the_route_and_the_second_round():
         "EVALUATE: sufficient",
         "ROUTE: finish",
         "FINISH",
+        "VERIFY: no citation issues",
     ]
 
 
@@ -139,12 +148,24 @@ def test_verdict_gaps_route_and_plan_lines_render_exactly():
         "RESEARCH ROUND 1",
     ]
     assert trace.render_update("finish", {"final_answer": "x"}, 2) == ["FINISH"]
+    assert trace.render_update(
+        "verify", {"citation_issues": ["[D1] is a round-local label."]}, 1
+    ) == [
+        "VERIFY: 1 citation issues",
+        "ISSUES:",
+        "- [D1] is a round-local label.",
+    ]
 
 
 def test_no_third_round_is_ever_traced():
     nodes, lines = traced_run([False, False])
 
     assert nodes.count("research") == 2
-    assert lines[-3:] == ["- gap after round 2", "ROUTE: finish", "FINISH"]
+    assert lines[-4:] == [
+        "- gap after round 2",
+        "ROUTE: finish",
+        "FINISH",
+        "VERIFY: no citation issues",
+    ]
     assert "RESEARCH ROUND 3" not in lines
     assert lines.count("ROUTE: research") == 1

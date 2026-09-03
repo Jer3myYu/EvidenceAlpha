@@ -28,6 +28,11 @@ the state after every completed node under the caller's thread id
 (``research.persist``), so an interrupted run resumes at the node that
 did not finish and a completed run can be reopened. Without it the
 graph is exactly the Phase 6 graph.
+
+Phase 8 adds ``verify`` after ``finish``: the synthesised answer is
+checked independently of the call that wrote it (``research.verify``).
+8.1 checks citations deterministically; the model judgement, the
+disclosure, and one bounded revision follow in 8.2-8.4.
 """
 
 import operator
@@ -43,6 +48,7 @@ from research import evaluate as evaluate_module
 from research import plan as plan_module
 from research import sources as sources_module
 from research import synthesize as synthesize_module
+from research import verify as verify_module
 
 # Round 1 is the initial research, round 2 the one follow-up.
 MAX_RESEARCH_ROUNDS = 2
@@ -64,7 +70,9 @@ class ResearchState(TypedDict, total=False):
       research_round: How many research rounds have completed.
       evidence_sufficient: The latest evaluator verdict.
       evidence_gaps: The latest evaluator gaps; empty if sufficient.
+      synthesis: The synthesis text alone, what verification checks.
       final_answer: The answer returned by the workflow.
+      citation_issues: Invalid citations found in ``synthesis``.
     """
 
     question: str
@@ -75,7 +83,9 @@ class ResearchState(TypedDict, total=False):
     research_round: int
     evidence_sufficient: bool
     evidence_gaps: list[str]
+    synthesis: str
     final_answer: str
+    citation_issues: list[str]
 
 
 NodeFunction = Callable[[ResearchState], Awaitable[dict[str, Any]]]
@@ -168,8 +178,17 @@ async def finish_node(state: ResearchState) -> dict[str, Any]:
     )
     block = format_unresolved_gaps(state["evidence_gaps"])
     if state["evidence_sufficient"] or not block:
-        return {"final_answer": answer}
-    return {"final_answer": f"{answer}\n\n{block}"}
+        return {"synthesis": answer, "final_answer": answer}
+    return {"synthesis": answer, "final_answer": f"{answer}\n\n{block}"}
+
+
+async def verify_node(state: ResearchState) -> dict[str, Any]:
+    """Check the synthesised answer's citations against the registry."""
+    return {
+        "citation_issues": verify_module.check_citations(
+            state["synthesis"], state["sources"]
+        )
+    }
 
 
 def build_graph(
@@ -177,16 +196,18 @@ def build_graph(
     research: NodeFunction = research_node,
     evaluate: NodeFunction = evaluate_node,
     finish: NodeFunction = finish_node,
+    verify: NodeFunction = verify_node,
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
-    """Compile the graph with the evaluate -> research / finish loop.
+    """Compile the graph with the evaluate loop and the verify step.
 
     Args:
       plan: Node filling ``research_plan``.
       research: Node adding ``evidence`` and ``answers`` and setting
         ``sources`` and ``research_round``.
       evaluate: Node filling ``evidence_sufficient`` and ``evidence_gaps``.
-      finish: Node filling ``final_answer``.
+      finish: Node filling ``synthesis`` and ``final_answer``.
+      verify: Node filling ``citation_issues``.
       checkpointer: Where LangGraph saves the state after each node.
         ``None`` (the default) keeps every run in memory and anonymous.
 
@@ -200,6 +221,7 @@ def build_graph(
     graph.add_node("research", research)
     graph.add_node("evaluate", evaluate)
     graph.add_node("finish", finish)
+    graph.add_node("verify", verify)
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "research")
     graph.add_edge("research", "evaluate")
@@ -208,5 +230,6 @@ def build_graph(
         route_after_evaluate,
         {"finish": "finish", "research": "research"},
     )
-    graph.add_edge("finish", END)
+    graph.add_edge("finish", "verify")
+    graph.add_edge("verify", END)
     return graph.compile(checkpointer=checkpointer)
