@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EvidenceAlpha Workflow Studio</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2430; --muted: #66707d;
+    --line: #dde2e8; --accent: #2457c5; --accent-soft: #e6eefc;
+    --ok: #1f8a4c; --ok-soft: #e3f4ea; --warn: #b26a00; --warn-soft: #fff1dc;
+    --bad: #b3261e; --bad-soft: #fde7e5; --run: #7a3fc4; --run-soft: #efe6fb;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 var(--sans); color: var(--ink); background: var(--bg); }
+  button, input, select { font: inherit; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 5px 11px; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.5 var(--mono); }
+  code { font-family: var(--mono); font-size: 12px; background: var(--accent-soft); padding: 0 4px; border-radius: 3px; }
+  h1, h2, h3, h4 { margin: 0; font-weight: 600; }
+  a { color: var(--accent); }
+
+  header.top { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header.top .brand { font-size: 16px; font-weight: 700; }
+  header.top .brand span { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  header.top nav button { margin-left: 6px; }
+  header.top nav button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+  section.view { padding: 16px 20px 40px; }
+
+  /* Architecture */
+  .arch-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .card .head { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+  .card .body { padding: 12px 14px; }
+  #arch-svg { width: 100%; height: auto; display: block; }
+  #arch-svg .box { cursor: pointer; }
+  #arch-svg .box rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; rx: 8; }
+  #arch-svg .box:hover rect, #arch-svg .box.selected rect { stroke: var(--accent); stroke-width: 2; }
+  #arch-svg .box text { font: 12px var(--sans); fill: var(--ink); pointer-events: none; }
+  #arch-svg .box text.sub { font-size: 10px; fill: var(--muted); }
+  #arch-svg .band { fill: none; stroke: var(--line); stroke-dasharray: 4 4; rx: 12; }
+  #arch-svg .band-label { font: 600 11px var(--sans); fill: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+  #arch-svg .edge { fill: none; stroke: #9aa5b1; stroke-width: 1.4; marker-end: url(#arrow); }
+  #arch-svg .edge.hot { stroke: var(--accent); stroke-width: 2.2; }
+  #arch-svg .edge-label { font: 10px var(--sans); fill: var(--muted); }
+  .fill-lg rect { fill: #eef3fd !important; } .fill-crew rect { fill: #f3eefb !important; }
+  .fill-sdk rect { fill: #e8f6ee !important; } .fill-tool rect { fill: #fff6e6 !important; }
+  .fill-store rect { fill: #f1f1f1 !important; }
+  .explain h3 { font-size: 15px; margin-bottom: 4px; }
+  .explain .path { font: 12px var(--mono); color: var(--muted); margin-bottom: 8px; }
+  .explain p { margin: 0 0 8px; }
+  .explain ul { margin: 0 0 8px; padding-left: 18px; }
+  .explain li { margin-bottom: 3px; }
+  table.keys { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.keys th, table.keys td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.keys th { color: var(--muted); font-weight: 600; font-size: 12px; }
+
+  /* Run */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 14px; }
+  .toolbar form { display: flex; gap: 6px; flex: 1 1 420px; }
+  .toolbar input[type=text] { flex: 1; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; }
+  .toolbar select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; max-width: 420px; }
+  .stepper { display: flex; gap: 4px; align-items: center; }
+  .stepper span { min-width: 90px; text-align: center; color: var(--muted); font-size: 13px; }
+  .run-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 420px; gap: 14px; align-items: start; }
+  @media (max-width: 1250px) { .run-grid { grid-template-columns: 260px minmax(0, 1fr); } .run-grid > .right { grid-column: 1 / -1; } }
+  .left .card, .right .card { position: sticky; top: 60px; }
+  #graph-svg { width: 100%; height: auto; display: block; }
+  #graph-svg .node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; rx: 9; }
+  #graph-svg .node text { font: 600 12px var(--sans); fill: var(--ink); pointer-events: none; }
+  #graph-svg .node.done rect { fill: var(--ok-soft); stroke: var(--ok); }
+  #graph-svg .node.active rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2.5; }
+  #graph-svg .node.running rect { fill: var(--run-soft); stroke: var(--run); stroke-width: 2.5; stroke-dasharray: 5 3; animation: pulse 1.2s infinite; }
+  #graph-svg .node { cursor: pointer; }
+  @keyframes pulse { 50% { opacity: .55; } }
+  #graph-svg .edge { fill: none; stroke: #b6bfc9; stroke-width: 1.5; marker-end: url(#garrow); }
+  #graph-svg .edge.taken { stroke: var(--accent); stroke-width: 2.6; }
+  #graph-svg .elabel { font: 10px var(--sans); fill: var(--muted); }
+  #graph-svg .elabel.taken { fill: var(--accent); font-weight: 600; }
+  .meta { font-size: 12px; color: var(--muted); }
+  .meta b { color: var(--ink); }
+  .meta .q { margin-top: 6px; color: var(--ink); white-space: pre-wrap; max-height: 120px; overflow: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin-right: 3px; border: 1px solid; }
+
+  /* Cards */
+  #cards { display: flex; flex-direction: column; gap: 12px; }
+  .step { border-left: 4px solid var(--line); cursor: pointer; }
+  .step.selected { border-left-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .step.running { border-left-color: var(--run); }
+  .step .head .n { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px; }
+  .step .head h3 { font-size: 14px; }
+  .step .head .who { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid transparent; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.bad { background: var(--bad-soft); color: var(--bad); }
+  .badge.info { background: var(--accent-soft); color: var(--accent); }
+  .badge.run { background: var(--run-soft); color: var(--run); }
+  .kv { font-size: 12px; color: var(--muted); margin: 2px 0; }
+  .kv b { color: var(--ink); font-weight: 600; }
+  table.cands { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
+  table.cands th, table.cands td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.cands th { color: var(--muted); font-size: 12px; }
+  table.cands tr.chosen td { background: var(--ok-soft); }
+  table.cands td.rating { white-space: nowrap; }
+  .chip { display: inline-block; padding: 0 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .chip.strong { background: var(--ok-soft); color: var(--ok); }
+  .chip.medium { background: var(--warn-soft); color: var(--warn); }
+  .chip.weak { background: var(--bad-soft); color: var(--bad); }
+  .chip.supported { background: var(--ok-soft); color: var(--ok); }
+  .chip.unsupported { background: var(--warn-soft); color: var(--warn); }
+  .chip.contradicted { background: var(--bad-soft); color: var(--bad); }
+  .chip.primary { background: var(--ok-soft); color: var(--ok); }
+  .chip.secondary { background: var(--accent-soft); color: var(--accent); }
+  details { border: 1px solid var(--line); border-radius: 6px; margin: 6px 0; background: #fbfcfd; }
+  details summary { cursor: pointer; padding: 6px 10px; font-size: 12px; color: var(--muted); user-select: none; }
+  details summary b { color: var(--ink); }
+  details .inner { padding: 8px 10px; border-top: 1px solid var(--line); }
+  .prose { white-space: pre-wrap; font-size: 13px; line-height: 1.55; }
+  .prose .cite { background: var(--accent-soft); color: var(--accent); border-radius: 3px; padding: 0 3px; font: 600 11px var(--mono); }
+  .route { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: var(--accent-soft); font-size: 13px; }
+  .route b { color: var(--accent); }
+  .trace { font: 12px/1.5 var(--mono); color: var(--muted); background: #fbfcfd; border: 1px dashed var(--line); border-radius: 6px; padding: 6px 10px; margin-top: 8px; }
+  .transcript .turn { border-left: 3px solid var(--line); padding: 4px 10px; margin: 6px 0; }
+  .transcript .turn.tool_use { border-left-color: var(--run); }
+  .transcript .turn.tool_result { border-left-color: var(--warn); }
+  .transcript .turn.assistant_text { border-left-color: var(--ok); }
+  .transcript .turn .t { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .gaps li, .issues li { margin-bottom: 4px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 30px 10px; text-align: center; }
+
+  /* Right panel */
+  .tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 10px; color: var(--muted); }
+  .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  #panel { padding: 12px 14px; max-height: calc(100vh - 140px); overflow: auto; }
+  .size { font: 11px var(--mono); color: var(--muted); }
+  .ctx-part { margin-bottom: 10px; }
+  .ctx-part .lbl { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .ctx-part pre { background: #fbfcfd; border: 1px solid var(--line); border-radius: 6px; padding: 8px; max-height: 320px; overflow: auto; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; display: flex; margin: 6px 0 10px; }
+  .bar i { display: block; height: 100%; }
+  .statekey { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .statekey .k { font: 600 12px var(--mono); }
+  .statekey .k.changed { color: var(--accent); }
+  .statekey .v { font: 11px/1.4 var(--mono); color: var(--muted); white-space: pre-wrap; max-height: 160px; overflow: auto; }
+  .status { font-size: 12px; margin-left: 8px; }
+  .status.error { color: var(--bad); }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">EvidenceAlpha <span>Workflow Studio</span></div>
+  <nav>
+    <button data-view="arch" class="active">Architecture</button>
+    <button data-view="run">Run</button>
+  </nav>
+</header>
+
+<section id="view-arch" class="view">
+  <div class="arch-grid">
+    <div class="card">
+      <div class="head"><h2 style="font-size:14px">How the system is put together</h2><span class="meta">click any box</span></div>
+      <div class="body"><svg id="arch-svg" viewBox="0 0 1000 640" role="img" aria-label="Architecture diagram"></svg></div>
+    </div>
+    <div class="card"><div class="head"><h2 style="font-size:14px">Explainer</h2></div><div class="body explain" id="arch-panel"></div></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="head"><h2 style="font-size:14px">ResearchState: who writes each key</h2><span class="meta">the coordination between nodes is this state, mediated by LangGraph; no node talks to another</span></div>
+    <div class="body"><table class="keys" id="keys-table"></table></div>
+  </div>
+</section>
+
+<section id="view-run" class="view" hidden>
+  <div class="toolbar">
+    <form id="live-form">
+      <input type="text" id="question" placeholder="Ask a research question and watch the real run…" autocomplete="off">
+      <button class="primary" id="run-btn" type="submit">Run live</button>
+    </form>
+    <div>
+      <select id="threads"><option value="">Loading recorded threads…</option></select>
+      <button id="load-btn" type="button">Replay</button>
+    </div>
+    <div class="stepper">
+      <button id="first" title="first step">⏮</button>
+      <button id="prev" title="previous step">◀</button>
+      <span id="step-label">no run</span>
+      <button id="next" title="next step">▶</button>
+      <button id="last" title="last step">⏭</button>
+    </div>
+    <span id="status" class="status"></span>
+  </div>
+  <div class="run-grid">
+    <aside class="left">
+      <div class="card">
+        <div class="head"><h2 style="font-size:14px">Graph</h2></div>
+        <div class="body">
+          <svg id="graph-svg" viewBox="0 0 270 330" role="img" aria-label="Workflow graph"></svg>
+          <div class="legend">
+            <span><i style="background:var(--ok-soft);border-color:var(--ok)"></i>done</span>
+            <span><i style="background:var(--accent-soft);border-color:var(--accent)"></i>selected</span>
+            <span><i style="background:var(--run-soft);border-color:var(--run)"></i>running</span>
+          </div>
+          <div class="meta" id="run-meta" style="margin-top:10px">Start a live run or replay a recorded thread.</div>
+        </div>
+      </div>
+    </aside>
+    <main id="cards"><div class="empty">Nothing to show yet.</div></main>
+    <aside class="right">
+      <div class="card">
+        <div class="tabs">
+          <button data-tab="context" class="active">Context window</button>
+          <button data-tab="output">Output</button>
+          <button data-tab="state">State</button>
+          <button data-tab="explain">Explain</button>
+        </div>
+        <div id="panel"><div class="empty">Select a step.</div></div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<script>
+'use strict';
+// ---------- helpers ----------
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const cite = s => esc(s).replace(/\[(S\d+(?:,\s*S\d+)*)\]/g, '<span class="cite">[$1]</span>');
+const tokens = s => Math.round((s || '').length / 4);
+const size = s => `${(s || '').length.toLocaleString()} chars · ≈${tokens(s).toLocaleString()} tokens`;
+const chip = v => `<span class="chip ${esc(v)}">${esc(v)}</span>`;
+const svgEl = (tag, attrs = {}, text) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+
+// ---------- explainers ----------
+const EXPLAIN = {
+  langgraph: { title: 'LangGraph: the orchestration layer', path: 'src/research/workflow.py', html: `
+    <p>LangGraph owns <b>workflow-level</b> decisions only: which node runs next and what state moves between nodes. The nodes are plain async functions injected through <code>build_graph</code>, so tests pass fakes.</p>
+    <ul><li><b>Two loops, both capped.</b> evaluate → research once (<code>MAX_RESEARCH_ROUNDS = 2</code>); verify → finish once (<code>MAX_REVISIONS = 1</code>). Verification never starts a research round.</li>
+    <li><b>Routers are pure functions</b> of state: <code>route_after_evaluate</code>, <code>route_after_verify</code>.</li>
+    <li><b>Reducers.</b> <code>evidence</code> and <code>answers</code> use <code>operator.add</code>: a node returns only its new items and LangGraph appends.</li></ul>` },
+  state: { title: 'ResearchState: LangGraph-mediated coordination', path: 'workflow.ResearchState (TypedDict, total=False)', html: `
+    <p>Each node fills only the keys it owns. This state, and nothing else, is how the CrewAI roles and the Research Agent coordinate. It is not CrewAI delegation, not agent-to-agent messaging, not Google's A2A protocol.</p>
+    <p>See the key table below the diagram for the owner of each key.</p>` },
+  checkpoint: { title: 'SQLite checkpointer: persistence and resumability', path: 'src/research/persist.py · data/workflow.db', html: `
+    <p>After every completed node LangGraph saves the merged state under a <b>thread id</b> (8 hex chars). One thread is exactly one question. <code>durability="sync"</code> writes the checkpoint before the next node starts.</p>
+    <ul><li>Interrupted run → <code>scripts/workflow.py --resume &lt;id&gt;</code> continues at the node that did not finish.</li>
+    <li>Completed run → reopened with no model call. That is what <b>Replay</b> in this studio does: it walks the checkpoint history step by step.</li>
+    <li>The serializer only accepts this project's state classes (no pickle fallback).</li></ul>` },
+  crew: { title: 'CrewAI: bounded role execution', path: 'src/research/crew.py', html: `
+    <p>Four single-call stages run as a <b>crew of one agent and one task</b>, built inside the node and discarded when it returns. Nothing of CrewAI enters the state or the checkpoint.</p>
+    <ul><li><code>Role</code> = name, goal, backstory (the stage's existing system prompt, verbatim), output model.</li>
+    <li><code>run_task</code>: <code>allow_delegation=False</code>, <code>max_iter=1</code>, <code>max_retry_limit=0</code>, no memory, no console.</li>
+    <li>CrewAI adds only its framing: "You are {role}. {backstory}\\nYour personal goal is: {goal}" and "Current Task: … expected criteria … Provide your complete response:". The Context window tab shows it exactly.</li>
+    <li>Not used: delegation, hierarchy, Flow, memory, persistence, remote A2A.</li></ul>` },
+  planner: { title: 'PLANNER role: lightweight Tree-of-Thought', path: 'crew.PLANNER · plan.SYSTEM_PROMPT · plan.PlanOutput', html: `
+    <p>One structured call decides whether the question has several plausible <b>research structures</b>. If yes (<code>use_tot</code>), it returns exactly three candidates A/B/C, each rated strong/medium/weak on <b>scope</b>, <b>evidence</b>, and <b>coverage</b>, and selects one with a one-sentence reason. Depth 1, three candidates, one survivor: a visible planning artifact, not hidden reasoning.</p>
+    <p>For a fact lookup <code>use_tot</code> is false and the agent runs on the bare question.</p>` },
+  evaluator: { title: 'EVALUATOR role', path: 'crew.EVALUATOR · evaluate.SYSTEM_PROMPT · evaluate.EvidenceEvaluation', html: `
+    <p>Judges whether all accumulated evidence answers the question given the latest round's answer. Returns <code>sufficient</code> and a list of gap sentences. The gaps become the <b>task</b> of the follow-up research round, and are disclosed at the end of the answer if never resolved.</p>` },
+  reporter: { title: 'REPORTER role', path: 'crew.REPORTER · synthesize.SYSTEM_PROMPT', html: `
+    <p>Writes one answer from every round's answer and every observation, citing only the <code>[S#]</code> labels the observations carry. Plain text, no schema. On a revision the same call receives the previous draft and the verifier's findings with <code>REVISION_INSTRUCTION</code>.</p>` },
+  verifier: { title: 'VERIFIER role', path: 'crew.VERIFIER · verify.SYSTEM_PROMPT · verify.Verification', html: `
+    <p>Independent of the call that wrote the answer. Sees only the question, the synthesis, the <code>[S#]</code> observations, and the source list. Returns claim checks (supported / unsupported / contradicted), conflicts between sources (and whether the answer disclosed them), and source quality ratings. Before it runs, Python checks every citation deterministically.</p>
+    <p>Only invalid citations, unsupported or contradicted claims, and undisclosed conflicts count as <b>issues</b>; a source rating never does.</p>` },
+  claudellm: { title: 'ClaudeLLM: the CrewAI → SDK adapter', path: 'crew.ClaudeLLM(crewai.BaseLLM)', html: `
+    <p>CrewAI hands the adapter a message list; it sends the system message as the SDK <code>system_prompt</code> and the user message as the prompt. With a <code>response_model</code> it requests structured output (<code>max_turns=5</code>, still one model call) and returns the validated model; otherwise <code>max_turns=1</code> and the text comes back as <code>Final Answer: …</code>, which CrewAI strips.</p>
+    <p>CrewAI's executor calls the synchronous <code>call</code> from a worker thread, so the adapter runs the SDK call on a private event loop.</p>` },
+  sdk: { title: 'Claude Agent SDK: the model runtime', path: 'claude-agent-sdk 0.2.151 · claude-sonnet-5', html: `
+    <p>Every model call goes through the SDK on the local subscription login (no API key). Each call is isolated: <code>setting_sources=[]</code>, auto-memory off, no CLAUDE.md. The four roles use it for a single call; the Research Agent uses it for a full tool loop.</p>` },
+  agent: { title: 'Research Agent: the tool loop', path: 'src/research/agent.py · max_turns=12', html: `
+    <p>The one place the model decides <b>tool-level</b> things: which tool, in what order, when to answer. Called directly by the research node (no crew). Tools are registered through the SDK's in-process MCP server (<code>create_sdk_mcp_server</code>): no external process or config.</p>
+    <ul><li>Round 1 prompt: the question plus the selected approach, if any.</li>
+    <li>Round 2 prompt: the same, plus all evidence so far and the evaluator's numbered gaps as the task.</li>
+    <li>Observations come back labelled <code>[D#]</code> / <code>[W#]</code>; before they enter state, <code>sources.normalize_observations</code> rewrites them to stable <code>[S#]</code> ids, one id per underlying source.</li></ul>` },
+  search_documents: { title: 'search_documents', path: 'agent.search_documents → rag.retrieve', html: `<p>Similarity search over the local Chroma collection; returns the top k (default 5) passages as <code>[D#] source: … (distance …)</code> blocks. An empty result is normal: the collection is small.</p>` },
+  search_web: { title: 'search_web', path: 'agent.search_web → web.search_web (Tavily)', html: `<p>Tavily search; returns title, URL, and an extract per result as <code>[W#]</code>. Web results are <b>discovery evidence</b>: short extracts, not full sources.</p>` },
+  ingest_url: { title: 'ingest_url', path: 'agent.ingest_url → acquire.ingest_url', html: `<p>Downloads one HTML page (WebBaseLoader) or digital PDF (requests + PyMuPDFLoader), chunks it 500/50, embeds it, and adds it to Chroma with the URL as source. Afterwards <code>search_documents</code> can cite its full text. The agent is told to ingest one source, two at most.</p>` },
+  chroma: { title: 'Chroma: the RAG store', path: 'src/rag/ · data/chroma/ · all-MiniLM-L6-v2', html: `<p>Persistent Chroma via langchain-chroma. Ingest: <code>.txt</code>/<code>.md</code> via TextLoader, <code>.pdf</code> via PyMuPDFLoader (digital only, no OCR), RecursiveCharacterTextSplitter 500/50, local MiniLM embeddings. The store grows as the agent ingests sources.</p>` },
+  tavily: { title: 'Tavily', path: 'src/research/web.py · TAVILY_API_KEY in .env', html: `<p>The web search provider. The only external API key in the system.</p>` },
+};
+const NODE_EXPLAIN = {
+  plan: `<p><b>plan_node</b> runs the PLANNER crew on the bare question and stores the <code>ResearchPlan</code>. If <code>use_tot</code> is true you see three alternatives with ratings and the selected one; the research prompt will carry that approach.</p><p>Look at the Context window: the system prompt tells the model when Tree-of-Thought is warranted; the output schema (<code>PlanOutput</code>, extras forbidden) is what the SDK's structured output validates.</p>`,
+  research: `<p><b>research_node</b> builds the round's message (round 1: question + approach; round 2: + evidence so far + gaps as the task) and calls the SDK Research Agent directly. The agent loops over its three tools until it answers, then every observation is relabelled to stable <code>[S#]</code> ids and appended to state.</p><p>Live runs show each tool call as it happens (the custom stream). Replays show the observations the checkpoint kept, which are exactly the tool results.</p>`,
+  evaluate: `<p><b>evaluate_node</b> runs the EVALUATOR crew over all evidence and the latest answer. The router then decides: sufficient → finish; insufficient and fewer than 2 rounds → research again with the gaps as the task; insufficient at the cap → finish anyway, and the gaps are disclosed under the answer.</p>`,
+  finish: `<p><b>finish_node</b> runs the REPORTER crew over every round's answer and every observation. <code>synthesis</code> is the text alone (what verification checks); <code>final_answer</code> adds the unresolved-gap block if the loop ended insufficient.</p><p>When a <code>verification</code> already exists in state, this is a <b>revision</b>: the prompt carries the previous draft and the verifier's findings, and <code>revision_round</code> increments.</p>`,
+  verify: `<p><b>verify_node</b> first checks citations in Python (<code>check_citations</code>: only <code>[S#]</code> ids that exist are valid), then runs the VERIFIER crew. The router: no issues, or a revision already done → END; issues and <code>revision_round == 0</code> → finish once more. Remaining issues are appended to <code>final_answer</code> as notes.</p>`,
+};
+const STATE_KEYS = [
+  ['question', 'input', 'replace', 'The user\'s question; set once by START.'],
+  ['research_plan', 'plan', 'replace', 'ResearchPlan: use_tot, candidates, selected, reason.'],
+  ['evidence', 'research', 'operator.add', 'Every tool observation, all rounds, relabelled [S#]. A round returns only its new items.'],
+  ['sources', 'research', 'replace (whole)', 'Registry S# → SourceRecord (title, canonical_url, local_document_id, seen_via).'],
+  ['answers', 'research', 'operator.add', 'One agent answer per round.'],
+  ['research_round', 'research', 'replace', 'Rounds completed (cap 2).'],
+  ['evidence_sufficient', 'evaluate', 'replace', 'Latest verdict.'],
+  ['evidence_gaps', 'evaluate', 'replace', 'Latest gap sentences; empty when sufficient.'],
+  ['synthesis', 'finish', 'replace', 'The reporter\'s text alone: what verification checks.'],
+  ['final_answer', 'finish, verify', 'replace', 'synthesis + unresolved gaps + verification notes, each only when it applies.'],
+  ['revision_round', 'finish', 'replace', 'Revisions run (cap 1).'],
+  ['citation_issues', 'verify', 'replace', 'Invalid citations found by the pure check.'],
+  ['verification', 'verify', 'replace', 'Verification: claims, conflicts, source_ratings.'],
+];
+
+// ---------- architecture diagram ----------
+const ARCH_BOXES = [
+  // orchestration band
+  { id: 'plan_n', x: 40, y: 48, w: 110, h: 40, label: 'plan', sub: 'node', cls: 'fill-lg', ex: 'langgraph' },
+  { id: 'research_n', x: 200, y: 48, w: 110, h: 40, label: 'research', sub: 'node', cls: 'fill-lg', ex: 'langgraph' },
+  { id: 'evaluate_n', x: 360, y: 48, w: 110, h: 40, label: 'evaluate', sub: 'node + router', cls: 'fill-lg', ex: 'langgraph' },
+  { id: 'finish_n', x: 520, y: 48, w: 110, h: 40, label: 'finish', sub: 'node', cls: 'fill-lg', ex: 'langgraph' },
+  { id: 'verify_n', x: 680, y: 48, w: 110, h: 40, label: 'verify', sub: 'node + router', cls: 'fill-lg', ex: 'langgraph' },
+  { id: 'state', x: 40, y: 112, w: 750, h: 34, label: 'ResearchState — question · research_plan · evidence(+) · sources · answers(+) · research_round · evidence_sufficient · evidence_gaps · synthesis · final_answer · revision_round · citation_issues · verification', sub: '', cls: 'fill-lg', ex: 'state', small: true },
+  { id: 'checkpoint', x: 830, y: 48, w: 150, h: 98, label: 'SQLite checkpointer', sub: 'persist.py · data/workflow.db · one thread = one question', cls: 'fill-store', ex: 'checkpoint' },
+  // roles band
+  { id: 'planner', x: 40, y: 200, w: 110, h: 54, label: 'PLANNER', sub: 'crew of one · PlanOutput', cls: 'fill-crew', ex: 'planner' },
+  { id: 'evaluator', x: 360, y: 200, w: 110, h: 54, label: 'EVALUATOR', sub: 'crew of one · EvidenceEvaluation', cls: 'fill-crew', ex: 'evaluator' },
+  { id: 'reporter', x: 520, y: 200, w: 110, h: 54, label: 'REPORTER', sub: 'crew of one · plain text', cls: 'fill-crew', ex: 'reporter' },
+  { id: 'verifier', x: 680, y: 200, w: 110, h: 54, label: 'VERIFIER', sub: 'crew of one · Verification', cls: 'fill-crew', ex: 'verifier' },
+  { id: 'claudellm', x: 830, y: 200, w: 150, h: 54, label: 'ClaudeLLM', sub: 'BaseLLM adapter → one SDK call', cls: 'fill-crew', ex: 'claudellm' },
+  // sdk band
+  { id: 'agent', x: 180, y: 318, w: 150, h: 62, label: 'Research Agent', sub: 'agent.py · tool loop · max_turns 12 · in-process MCP server', cls: 'fill-sdk', ex: 'agent' },
+  { id: 'sdk', x: 520, y: 318, w: 460, h: 62, label: 'Claude Agent SDK · claude-sonnet-5', sub: 'local subscription login · setting_sources=[] · auto-memory off · structured output via json_schema', cls: 'fill-sdk', ex: 'sdk' },
+  // tools band
+  { id: 'search_documents', x: 40, y: 452, w: 130, h: 44, label: 'search_documents', sub: 'top-k passages [D#]', cls: 'fill-tool', ex: 'search_documents' },
+  { id: 'search_web', x: 200, y: 452, w: 130, h: 44, label: 'search_web', sub: 'Tavily results [W#]', cls: 'fill-tool', ex: 'search_web' },
+  { id: 'ingest_url', x: 360, y: 452, w: 130, h: 44, label: 'ingest_url', sub: 'HTML / PDF → chunks', cls: 'fill-tool', ex: 'ingest_url' },
+  { id: 'chroma', x: 560, y: 540, w: 200, h: 54, label: 'Chroma (data/chroma)', sub: 'all-MiniLM-L6-v2 · 500/50 chunks · grows on ingest', cls: 'fill-store', ex: 'chroma' },
+  { id: 'tavily', x: 200, y: 548, w: 130, h: 40, label: 'Tavily', sub: 'web search API', cls: 'fill-store', ex: 'tavily' },
+];
+const ARCH_BANDS = [
+  { y: 14, h: 146, label: 'Orchestration · LangGraph · src/research/workflow.py' },
+  { y: 172, h: 96, label: 'Roles · CrewAI · src/research/crew.py' },
+  { y: 284, h: 110, label: 'Model & tool loop · Claude Agent SDK' },
+  { y: 410, h: 210, label: 'Tools & stores · src/rag · web.py · acquire.py' },
+];
+const ARCH_EDGES = [
+  ['plan_n', 'planner'], ['evaluate_n', 'evaluator'], ['finish_n', 'reporter'], ['verify_n', 'verifier'],
+  ['research_n', 'agent'],
+  ['planner', 'claudellm', 'h'], ['evaluator', 'claudellm', 'h'], ['reporter', 'claudellm', 'h'], ['verifier', 'claudellm', 'h'],
+  ['claudellm', 'sdk'], ['agent', 'sdk', 'h'],
+  ['agent', 'search_documents'], ['agent', 'search_web'], ['agent', 'ingest_url'],
+  ['search_documents', 'chroma'], ['ingest_url', 'chroma'], ['search_web', 'tavily'],
+  ['state', 'checkpoint', 'h'],
+];
+function drawArch() {
+  const svg = $('#arch-svg');
+  svg.innerHTML = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9aa5b1"/></marker></defs>';
+  for (const b of ARCH_BANDS) {
+    svg.appendChild(svgEl('rect', { class: 'band', x: 14, y: b.y, width: 972, height: b.h }));
+    svg.appendChild(svgEl('text', { class: 'band-label', x: 24, y: b.y + 14 }, b.label));
+  }
+  const byId = Object.fromEntries(ARCH_BOXES.map(b => [b.id, b]));
+  for (const [from, to, dir] of ARCH_EDGES) {
+    const a = byId[from], b = byId[to];
+    let d;
+    if (dir === 'h') {
+      const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2;
+      const x1 = a.x + a.w, x2 = b.x;
+      const mid = x1 + (x2 - x1) * 0.5;
+      d = `M${x1} ${y1} L${mid} ${y1} L${mid} ${y2} L${x2} ${y2}`;
+    } else {
+      const x1 = a.x + a.w / 2, x2 = b.x + b.w / 2;
+      const y1 = a.y + a.h, y2 = b.y;
+      const mid = y1 + (y2 - y1) * 0.5;
+      d = `M${x1} ${y1} L${x1} ${mid} L${x2} ${mid} L${x2} ${y2}`;
+    }
+    svg.appendChild(svgEl('path', { class: 'edge', d, 'data-from': from, 'data-to': to }));
+  }
+  for (const b of ARCH_BOXES) {
+    const g = svgEl('g', { class: `box ${b.cls}`, 'data-id': b.id });
+    g.appendChild(svgEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h }));
+    if (b.small) {
+      g.appendChild(svgEl('text', { x: b.x + 10, y: b.y + 21, style: 'font-size:10.5px' }, b.label));
+    } else {
+      g.appendChild(svgEl('text', { x: b.x + b.w / 2, y: b.y + (b.sub ? 18 : b.h / 2 + 4), 'text-anchor': 'middle', style: 'font-weight:600' }, b.label));
+      if (b.sub) wrapText(g, b.sub, b.x + b.w / 2, b.y + 32, b.w - 12, 11);
+    }
+    g.addEventListener('click', () => selectArch(b));
+    svg.appendChild(g);
+  }
+  selectArch(byId.plan_n);
+}
+function wrapText(g, text, cx, y, maxW, lh) {
+  const words = text.split(' '); let line = '', lines = [];
+  const perChar = 5.2;
+  for (const w of words) { const t = line ? line + ' ' + w : w; if (t.length * perChar > maxW && line) { lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line);
+  lines.slice(0, 3).forEach((l, i) => g.appendChild(svgEl('text', { class: 'sub', x: cx, y: y + i * lh, 'text-anchor': 'middle' }, l)));
+}
+function selectArch(b) {
+  $$('#arch-svg .box').forEach(g => g.classList.toggle('selected', g.dataset.id === b.id));
+  $$('#arch-svg .edge').forEach(e => e.classList.toggle('hot', e.dataset.from === b.id || e.dataset.to === b.id));
+  const ex = EXPLAIN[b.ex];
+  $('#arch-panel').innerHTML = `<h3>${esc(ex.title)}</h3><div class="path">${esc(ex.path)}</div>${ex.html}`;
+}
+function drawKeys() {
+  $('#keys-table').innerHTML = '<tr><th>key</th><th>written by</th><th>reducer</th><th>meaning</th></tr>' +
+    STATE_KEYS.map(([k, o, r, m]) => `<tr><td><code>${k}</code></td><td>${esc(o)}</td><td>${esc(r)}</td><td>${esc(m)}</td></tr>`).join('');
+}
+
+// ---------- run view: graph ----------
+const GNODES = { plan: [20, 20], research: [20, 80], evaluate: [20, 140], finish: [20, 200], verify: [20, 260], end: [180, 260] };
+const GW = 120, GH = 34;
+const GEDGES = [
+  { from: 'plan', to: 'research', label: '' },
+  { from: 'research', to: 'evaluate', label: '' },
+  { from: 'evaluate', to: 'finish', label: 'sufficient, or round cap' },
+  { from: 'evaluate', to: 'research', label: 'insufficient & round < 2', loop: 'left' },
+  { from: 'finish', to: 'verify', label: '' },
+  { from: 'verify', to: 'end', label: 'clean, or revised once', side: true },
+  { from: 'verify', to: 'finish', label: 'issues & revision 0', loop: 'left' },
+];
+function edgePath(e) {
+  const [ax, ay] = GNODES[e.from], [bx, by] = GNODES[e.to];
+  if (e.side) return { d: `M${ax + GW} ${ay + GH / 2} L${bx} ${by + GH / 2}`, lx: ax + GW + 4, ly: ay + GH / 2 - 8, anchor: 'start' };
+  if (e.loop === 'left') { const x = ax - 12; return { d: `M${ax} ${ay + GH / 2} L${x} ${ay + GH / 2} L${x} ${by + GH / 2} L${bx} ${by + GH / 2}`, lx: ax + GW + 10, ly: (ay + by) / 2 + GH / 2 + 4, anchor: 'start' }; }
+  return { d: `M${ax + GW / 2} ${ay + GH} L${bx + GW / 2} ${by}`, lx: ax + GW / 2 + 10, ly: ay + GH + 17, anchor: 'start' };
+}
+function drawGraph() {
+  const svg = $('#graph-svg');
+  svg.innerHTML = '<defs><marker id="garrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#b6bfc9"/></marker></defs>';
+  for (const e of GEDGES) {
+    const p = edgePath(e);
+    svg.appendChild(svgEl('path', { class: 'edge', d: p.d, 'data-edge': `${e.from}>${e.to}` }));
+    if (e.label) svg.appendChild(svgEl('text', { class: 'elabel', x: p.lx, y: p.ly, 'text-anchor': p.anchor, 'data-edge': `${e.from}>${e.to}` }, e.label));
+  }
+  for (const [id, [x, y]] of Object.entries(GNODES)) {
+    const g = svgEl('g', { class: 'node', 'data-node': id });
+    g.appendChild(svgEl('rect', { x, y, width: id === 'end' ? 70 : GW, height: GH }));
+    g.appendChild(svgEl('text', { x: x + (id === 'end' ? 35 : GW / 2), y: y + GH / 2 + 4, 'text-anchor': 'middle' }, id === 'end' ? 'END' : id));
+    g.addEventListener('click', () => { const i = lastIndexOfNode(id); if (i >= 0) select(i); });
+    svg.appendChild(g);
+  }
+}
+function lastIndexOfNode(id) { for (let i = Math.min(cursor, events.length - 1); i >= 0; i--) if (events[i].node === id) return i; for (let i = events.length - 1; i >= 0; i--) if (events[i].node === id) return i; return -1; }
+
+// ---------- run state ----------
+let events = [];       // node events (and pending/error)
+let cursor = -1;       // selected step
+let follow = true;     // live: auto-select newest
+let running = null;    // node currently running (live) or null
+let liveTools = [];    // tool events for the running research node
+let meta = { thread_id: '', question: '', mode: '' };
+let tab = 'context';
+let source = null;
+
+function setStatus(text, error) { const s = $('#status'); s.textContent = text; s.classList.toggle('error', !!error); }
+function reset(mode) { events = []; cursor = -1; follow = true; running = null; liveTools = []; meta = { thread_id: '', question: '', mode }; render(); }
+
+function render() {
+  renderMeta(); renderCards(); renderGraph(); renderPanel(); renderStepper();
+}
+function renderStepper() {
+  const n = events.length;
+  $('#step-label').textContent = n ? `step ${cursor + 1} / ${n}` : 'no run';
+  $('#first').disabled = $('#prev').disabled = cursor <= 0;
+  $('#next').disabled = $('#last').disabled = cursor >= n - 1;
+}
+function renderMeta() {
+  const m = $('#run-meta');
+  if (!meta.mode) { m.textContent = 'Start a live run or replay a recorded thread.'; return; }
+  const state = running ? `<span class="badge run">running: ${esc(running)}</span>` : (events.length && events[events.length - 1].type === 'node' && events[events.length - 1].next === 'end' ? '<span class="badge ok">completed</span>' : (events.length ? '<span class="badge warn">interrupted</span>' : '<span class="badge info">starting</span>'));
+  m.innerHTML = `<div><b>${esc(meta.mode)}</b> · thread <code>${esc(meta.thread_id || '…')}</code> ${state}</div><div class="q">${esc(meta.question)}</div>`;
+}
+function renderGraph() {
+  const done = new Set(events.filter(e => e.type === 'node').map(e => e.node));
+  const cur = cursor >= 0 ? events[cursor] : null;
+  $$('#graph-svg .node').forEach(g => {
+    const id = g.dataset.node;
+    g.classList.toggle('done', done.has(id) || (id === 'end' && events.some(e => e.next === 'end')));
+    g.classList.toggle('active', !!cur && cur.node === id);
+    g.classList.toggle('running', running === id);
+  });
+  const taken = cur && cur.type === 'node' ? `${cur.node}>${cur.next}` : '';
+  $$('#graph-svg [data-edge]').forEach(el => el.classList.toggle('taken', el.dataset.edge === taken));
+}
+function select(i) { cursor = i; follow = i === events.length - 1; render(); const c = $(`#cards [data-i="${i}"]`); if (c) c.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+
+// ---------- cards ----------
+function renderCards() {
+  const host = $('#cards');
+  if (!events.length && !running) { host.innerHTML = '<div class="empty">Nothing to show yet.</div>'; return; }
+  let html = '';
+  events.slice(0, cursor + 1).forEach((e, i) => { html += cardFor(e, i); });
+  if (running && cursor === events.length - 1) html += runningCard();
+  host.innerHTML = html;
+  $$('#cards .step[data-i]').forEach(c => c.addEventListener('click', ev => { if (ev.target.closest('details, a')) return; select(+c.dataset.i); }));
+}
+function head(i, title, who, badges = '') {
+  return `<div class="head"><span class="n">${i + 1}</span><h3>${title}</h3>${badges}<span class="who">${esc(who)}</span></div>`;
+}
+function cardFor(e, i) {
+  const sel = i === cursor ? ' selected' : '';
+  if (e.type === 'pending') return `<div class="card step${sel}" data-i="${i}"><div class="head"><span class="n">${i + 1}</span><h3>Interrupted before <code>${esc(e.node)}</code></h3><span class="who">resume with scripts/workflow.py --resume ${esc(meta.thread_id)}</span></div></div>`;
+  if (e.type === 'error') return `<div class="card step${sel}" data-i="${i}" style="border-left-color:var(--bad)"><div class="head"><span class="n">${i + 1}</span><h3>Run stopped</h3></div><div class="body"><pre>${esc(e.message)}</pre><div class="kv">The last completed node is checkpointed; resume with <code>scripts/workflow.py --resume ${esc(e.thread_id || meta.thread_id)}</code>.</div></div></div>`;
+  const s = e.state, u = e.update, who = e.context.who;
+  let body = '';
+  if (e.node === 'plan') {
+    const p = u.research_plan; const chosen = p.candidates.find(c => c.label === p.selected);
+    body += `<div class="kv">Tree-of-Thought trigger: ${p.use_tot ? '<span class="badge ok">yes</span>' : '<span class="badge info">no: one clear path</span>'}</div>`;
+    if (p.use_tot) {
+      body += `<table class="cands"><tr><th></th><th>approach</th><th>scope</th><th>evidence</th><th>coverage</th></tr>` +
+        p.candidates.map(c => `<tr class="${c.label === p.selected ? 'chosen' : ''}"><td><b>${esc(c.label)}</b></td><td>${esc(c.approach)}</td><td class="rating">${chip(c.scope)}</td><td class="rating">${chip(c.evidence)}</td><td class="rating">${chip(c.coverage)}</td></tr>`).join('') + '</table>';
+      body += `<div class="kv"><b>Selected:</b> ${esc(p.selected)}${chosen ? ' — ' + esc(chosen.approach) : ''}</div>`;
+    }
+    body += `<div class="kv"><b>Reason:</b> ${esc(p.reason)}</div>`;
+    body += `<div class="route">→ <b>research</b> round 1${chosen ? ', with approach ' + esc(chosen.label) + ' attached to the prompt' : ', on the bare question'}</div>`;
+    return `<div class="card step${sel}" data-i="${i}">${head(i, 'plan · Tree-of-Thought', who)}<div class="body">${body}${traceBlock(e)}</div></div>`;
+  }
+  if (e.node === 'research') {
+    const round = u.research_round;
+    const obs = u.evidence, ans = u.answers[0] || '';
+    const gap = ans.startsWith('The available evidence does not sufficiently support');
+    body += `<div class="kv">Round <b>${round}</b> · ${obs.length} observation${obs.length === 1 ? '' : 's'} · sources known: <b>${Object.keys(u.sources).length}</b> ${gap ? '<span class="badge warn">evidence gap declared</span>' : ''}</div>`;
+    if (e.tools) body += `<details open><summary><b>Tool loop, as it happened</b> · ${e.tools.filter(t => t.event === 'tool_use').length} tool calls</summary><div class="inner transcript">${transcript(e.tools)}</div></details>`;
+    body += `<details><summary><b>Observations</b> as stored in state (relabelled [S#])</summary><div class="inner">` +
+      obs.map((o, k) => `<details><summary>${k + 1}. ${esc(o.split('\n')[0]).slice(0, 110)}</summary><div class="inner"><pre>${cite(o)}</pre></div></details>`).join('') + '</div></details>';
+    body += `<details open><summary><b>Round ${round} answer</b> · ${size(ans)}</summary><div class="inner prose">${cite(ans)}</div></details>`;
+    body += `<div class="route">→ <b>evaluate</b> all ${s.evidence.length} observations against this answer</div>`;
+    return `<div class="card step${sel}" data-i="${i}">${head(i, `research · round ${round}`, who)}<div class="body">${body}${traceBlock(e)}</div></div>`;
+  }
+  if (e.node === 'evaluate') {
+    const ok = u.evidence_sufficient;
+    body += `<div class="kv">Verdict: ${ok ? '<span class="badge ok">sufficient</span>' : '<span class="badge warn">insufficient</span>'}</div>`;
+    if (u.evidence_gaps.length) body += `<ol class="gaps">${u.evidence_gaps.map(g => `<li>${esc(g)}</li>`).join('')}</ol>`;
+    let why;
+    if (ok) why = 'sufficient → <b>finish</b>';
+    else if (e.next === 'research') why = `insufficient and research_round ${s.research_round} &lt; 2 → <b>research</b> again, with these gaps as the task`;
+    else why = `insufficient but research_round ${s.research_round} reached the cap → <b>finish</b>; the gaps will be disclosed under the answer`;
+    body += `<div class="route">→ ${why}</div>`;
+    return `<div class="card step${sel}" data-i="${i}">${head(i, 'evaluate', who)}<div class="body">${body}${traceBlock(e)}</div></div>`;
+  }
+  if (e.node === 'finish') {
+    const rev = u.revision_round;
+    body += `<div class="kv">${rev ? `<span class="badge warn">revision ${rev}</span> the reporter received the previous draft and the verifier's findings` : '<span class="badge info">first synthesis</span> from ' + s.answers.length + ' round answer(s) and ' + s.evidence.length + ' observations'}</div>`;
+    body += `<details open><summary><b>Synthesis</b> · ${size(u.synthesis)}</summary><div class="inner prose">${cite(u.synthesis)}</div></details>`;
+    if (u.final_answer !== u.synthesis) body += `<details><summary><b>Appended to final_answer</b>: unresolved evidence gaps</summary><div class="inner prose">${esc(u.final_answer.slice(u.synthesis.length).trim())}</div></details>`;
+    body += `<div class="route">→ <b>verify</b> the synthesis independently</div>`;
+    return `<div class="card step${sel}" data-i="${i}">${head(i, rev ? `finish · revision ${rev}` : 'finish · synthesis', who)}<div class="body">${body}${traceBlock(e)}</div></div>`;
+  }
+  if (e.node === 'verify') {
+    const v = u.verification; const counts = {};
+    v.claims.forEach(c => counts[c.verdict] = (counts[c.verdict] || 0) + 1);
+    body += `<div class="kv">${v.claims.length} claims: ${Object.entries(counts).map(([k, n]) => `${chip(k)} ${n}`).join(' ')} · citation issues: <b>${u.citation_issues.length}</b> · conflicts: <b>${v.conflicts.length}</b> (${v.conflicts.filter(c => !c.disclosed_in_answer).length} undisclosed)</div>`;
+    if (u.citation_issues.length) body += `<details open><summary><b>Citation issues</b> (pure Python check)</summary><div class="inner"><ul class="issues">${u.citation_issues.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div></details>`;
+    const bad = v.claims.filter(c => c.verdict !== 'supported');
+    body += `<details ${bad.length ? 'open' : ''}><summary><b>Claim checks</b> · ${bad.length} not supported</summary><div class="inner"><table class="cands"><tr><th>verdict</th><th>claim</th><th>cited</th><th>reason</th></tr>` +
+      [...bad, ...v.claims.filter(c => c.verdict === 'supported')].map(c => `<tr><td>${chip(c.verdict)}</td><td>${esc(c.claim)}</td><td>${c.cited_sources.map(x => `<span class="cite">[${esc(x)}]</span>`).join(' ') || '—'}</td><td>${esc(c.reason)}</td></tr>`).join('') + '</table></div></details>';
+    if (v.conflicts.length) body += `<details open><summary><b>Conflicts between sources</b></summary><div class="inner"><ul class="issues">${v.conflicts.map(c => `<li>${c.sources.map(x => `<span class="cite">[${esc(x)}]</span>`).join(' ')} ${esc(c.description)} ${c.disclosed_in_answer ? '<span class="badge ok">disclosed</span>' : '<span class="badge bad">not disclosed</span>'}</li>`).join('')}</ul></div></details>`;
+    if (v.source_ratings.length) body += `<details><summary><b>Source quality</b> (report only, never an issue)</summary><div class="inner"><table class="cands"><tr><th>source</th><th>quality</th><th>reason</th></tr>${v.source_ratings.map(r => `<tr><td><span class="cite">[${esc(r.source_id)}]</span> ${esc((s.sources[r.source_id] || {}).title || '')}</td><td>${chip(r.quality)}</td><td>${esc(r.reason)}</td></tr>`).join('')}</table></div></details>`;
+    const issues = e.trace.filter(l => l.startsWith('- '));
+    let why;
+    if (e.next === 'finish') why = `${issues.length} issue(s) and revision_round == 0 → <b>finish</b> once more as a revision`;
+    else if (issues.length) why = `${issues.length} issue(s) remain but the one revision is spent → <b>END</b>; the issues are appended to final_answer as notes`;
+    else why = 'no issues → <b>END</b>';
+    body += `<div class="route">→ ${why}</div>`;
+    if (e.next === 'end') body += `<details open><summary><b>Final answer</b> · ${size(s.final_answer)}</summary><div class="inner prose">${cite(s.final_answer)}</div></details>`;
+    return `<div class="card step${sel}" data-i="${i}">${head(i, `verify${s.revision_round ? ' · after revision ' + s.revision_round : ''}`, who)}<div class="body">${body}${traceBlock(e)}</div></div>`;
+  }
+  return '';
+}
+function traceBlock(e) { return `<div class="trace">${e.trace.map(esc).join('<br>')}</div>`; }
+function transcript(tools) {
+  return tools.map(t => {
+    if (t.event === 'tool_use') return `<div class="turn tool_use"><div class="t">tool call · ${esc(t.tool)}</div><pre>${esc(JSON.stringify(t.input, null, 1))}</pre></div>`;
+    if (t.event === 'tool_result') return `<div class="turn tool_result"><div class="t">observation · ${size(t.text)}</div><details><summary>${esc(t.text.split('\n')[0]).slice(0, 120)}</summary><div class="inner"><pre>${esc(t.text)}</pre></div></details></div>`;
+    return `<div class="turn assistant_text"><div class="t">agent text</div><div class="prose">${cite(t.text)}</div></div>`;
+  }).join('');
+}
+function runningCard() {
+  const n = events.length;
+  let inner = '';
+  if (running === 'research' && liveTools.length) inner = `<div class="transcript">${transcript(liveTools)}</div>`;
+  else inner = `<div class="kv">${running === 'research' ? 'the agent is choosing its first tool…' : 'one model call in progress…'}</div>`;
+  return `<div class="card step running"><div class="head"><span class="n">${n + 1}</span><h3>${esc(running)}</h3><span class="badge run">running</span></div><div class="body">${inner}</div></div>`;
+}
+
+// ---------- right panel ----------
+function renderPanel() {
+  const host = $('#panel');
+  const e = cursor >= 0 ? events[cursor] : null;
+  if (!e || e.type !== 'node') { host.innerHTML = '<div class="empty">Select a step.</div>'; return; }
+  if (tab === 'context') host.innerHTML = contextPanel(e);
+  else if (tab === 'output') host.innerHTML = outputPanel(e);
+  else if (tab === 'state') host.innerHTML = statePanel(e);
+  else host.innerHTML = `<div class="explain"><h3>${esc(e.node)}</h3>${NODE_EXPLAIN[e.node]}<div class="path" style="margin-top:8px">CLI trace for this step</div><div class="trace">${e.trace.map(esc).join('<br>')}</div></div>`;
+}
+function part(label, text, open) {
+  return `<div class="ctx-part"><div class="lbl"><span>${label}</span><span class="size">${size(text)}</span></div><details ${open ? 'open' : ''}><summary>show</summary><div class="inner"><pre>${esc(text)}</pre></div></details></div>`;
+}
+function contextPanel(e) {
+  const c = e.context;
+  const parts = [['system', c.system], ['user', c.user]];
+  const total = parts.reduce((a, [, t]) => a + (t || '').length, 0);
+  let html = `<div class="kv"><b>${esc(c.who)}</b></div><div class="kv">model <code>${esc(c.model)}</code>${c.max_turns ? ` · tool loop, max_turns ${c.max_turns} · tools: ${c.tools.map(t => `<code>${t}</code>`).join(' ')}` : (c.schema ? ` · structured output <code>${esc(c.schema.title)}</code>` : ' · plain text output')}</div>`;
+  html += `<div class="kv" style="margin-top:6px">Input context · <span class="size">${size(c.system + c.user)}</span></div><div class="bar" title="system vs user share">${parts.map(([l, t], i) => `<i style="width:${100 * (t || '').length / Math.max(total, 1)}%;background:${i ? 'var(--accent)' : 'var(--run)'}"></i>`).join('')}</div>`;
+  html += part('System prompt' + (c.schema || !c.max_turns ? ' (CrewAI framing around the role backstory)' : ''), c.system, false);
+  html += part(c.max_turns ? 'User message (the round\'s prompt)' : 'User message (CrewAI task framing around the prompt builder)', c.user, true);
+  if (c.schema) html += part('Output schema (JSON schema requested from the SDK)', JSON.stringify(c.schema, null, 2), false);
+  if (e.node === 'research') {
+    if (e.tools) html += `<div class="ctx-part"><div class="lbl"><span>Tool loop (live transcript)</span><span class="size">${e.tools.filter(t => t.event === 'tool_use').length} calls</span></div><div class="transcript">${transcript(e.tools)}</div></div>`;
+    else html += `<div class="ctx-part"><div class="lbl"><span>Tool loop</span></div><div class="kv">Replay: the checkpoint keeps the tool results (below) but not the tool inputs. Run live to see each call as it happens.</div>${e.update.evidence.map((o, k) => `<details><summary>observation ${k + 1} · ${size(o)}</summary><div class="inner"><pre>${cite(o)}</pre></div></details>`).join('')}</div>`;
+  }
+  html += `<div class="ctx-part"><div class="lbl"><span>Model output</span></div>${outputPanel(e, true)}</div>`;
+  return html;
+}
+function outputPanel(e, compact) {
+  const u = e.update;
+  if (e.node === 'finish') return part('synthesis (the reporter\'s text)', u.synthesis, !compact);
+  if (e.node === 'research') return part(`round ${u.research_round} answer`, u.answers[0], !compact);
+  const key = e.node === 'plan' ? 'research_plan' : e.node === 'verify' ? 'verification' : null;
+  const obj = key ? u[key] : { sufficient: u.evidence_sufficient, missing_evidence: u.evidence_gaps };
+  return part(`${key || 'EvidenceEvaluation'} (validated structured output)`, JSON.stringify(obj, null, 2), !compact);
+}
+function statePanel(e) {
+  const changed = new Set(Object.keys(e.update));
+  return `<div class="kv">State after this node · keys in <span style="color:var(--accent)">blue</span> were written by it</div>` +
+    STATE_KEYS.map(([k]) => {
+      if (!(k in e.state)) return `<div class="statekey"><span class="k" style="color:var(--line)">${k}</span> <span class="size">not set yet</span></div>`;
+      const v = e.state[k]; const text = typeof v === 'string' ? v : JSON.stringify(v, null, 1);
+      return `<div class="statekey"><span class="k ${changed.has(k) ? 'changed' : ''}">${k}</span> <span class="size">${Array.isArray(v) ? v.length + ' items · ' : ''}${size(text)}</span><details><summary>show</summary><div class="inner"><div class="v">${esc(text.length > 20000 ? text.slice(0, 20000) + '\n… (truncated)' : text)}</div></div></details></div>`;
+    }).join('');
+}
+
+// ---------- replay ----------
+async function loadThreads() {
+  const sel = $('#threads');
+  try {
+    const r = await fetch('/api/threads'); const list = await r.json();
+    sel.innerHTML = list.length ? list.map(t => `<option value="${esc(t.thread_id)}">${esc(t.thread_id)} ${t.completed ? '✓' : '⏸'} ${esc(t.question.replace(/\s+/g, ' ').slice(0, 70))}</option>`).join('') : '<option value="">no recorded threads</option>';
+  } catch (err) { sel.innerHTML = '<option value="">could not load threads</option>'; }
+}
+async function replay(threadId) {
+  if (!threadId) return;
+  closeSource(); reset('replay'); setStatus('loading…');
+  const r = await fetch(`/api/threads/${encodeURIComponent(threadId)}`);
+  const data = await r.json();
+  if (!r.ok) { setStatus(data.error, true); return; }
+  meta = { thread_id: data.thread_id, question: data.question, mode: 'replay' };
+  events = data.events; cursor = 0; follow = false; setStatus(`${events.length} steps; use ▶ to step`);
+  render();
+}
+
+// ---------- live ----------
+function closeSource() { if (source) { source.close(); source = null; } $('#run-btn').disabled = false; }
+function runLive(question) {
+  closeSource(); reset('live'); meta.question = question; setStatus('starting…'); $('#run-btn').disabled = true;
+  running = 'plan'; render();
+  source = new EventSource(`/api/run?question=${encodeURIComponent(question)}`);
+  source.onmessage = ev => {
+    const e = JSON.parse(ev.data);
+    if (e.type === 'thread') { meta.thread_id = e.thread_id; setStatus('running'); }
+    else if (e.type === 'tool_use' || e.type === 'tool_result' || e.type === 'assistant_text') { liveTools.push(e); }
+    else if (e.type === 'node') {
+      if (e.node === 'research') { e.tools = liveTools; }
+      liveTools = [];
+      events.push(e);
+      running = e.next === 'end' ? null : e.next;
+      if (follow) cursor = events.length - 1;
+      if (e.next === 'end') { setStatus('completed'); }
+    }
+    else if (e.type === 'error') { events.push(e); running = null; if (follow) cursor = events.length - 1; setStatus('run stopped', true); closeSource(); }
+    else if (e.type === 'end') { running = null; closeSource(); loadThreads(); }
+    render();
+  };
+  source.onerror = () => { if (source) { setStatus('connection lost; the run continues in the server and is resumable', true); running = null; closeSource(); render(); } };
+}
+
+// ---------- wiring ----------
+$$('header nav button').forEach(b => b.addEventListener('click', () => {
+  $$('header nav button').forEach(x => x.classList.toggle('active', x === b));
+  $('#view-arch').hidden = b.dataset.view !== 'arch'; $('#view-run').hidden = b.dataset.view !== 'run';
+}));
+$$('.tabs button').forEach(b => b.addEventListener('click', () => { tab = b.dataset.tab; $$('.tabs button').forEach(x => x.classList.toggle('active', x === b)); renderPanel(); }));
+$('#live-form').addEventListener('submit', ev => { ev.preventDefault(); const q = $('#question').value.trim(); if (q) runLive(q); });
+$('#load-btn').addEventListener('click', () => replay($('#threads').value));
+$('#first').addEventListener('click', () => select(0));
+$('#prev').addEventListener('click', () => select(Math.max(0, cursor - 1)));
+$('#next').addEventListener('click', () => select(Math.min(events.length - 1, cursor + 1)));
+$('#last').addEventListener('click', () => select(events.length - 1));
+document.addEventListener('keydown', ev => { if (ev.target.tagName === 'INPUT' || $('#view-run').hidden) return; if (ev.key === 'ArrowRight') $('#next').click(); if (ev.key === 'ArrowLeft') $('#prev').click(); });
+
+drawArch(); drawKeys(); drawGraph(); loadThreads(); render();
+</script>
+</body>
+</html>

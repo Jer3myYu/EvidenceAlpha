@@ -45,6 +45,12 @@ dependencies = [
     # roles inside the graph nodes. Pinned exactly: releases are weekly
     # and move their pins (also pydantic<2.13, mcp~=1.28, otel~=1.42).
     "crewai==1.15.18",
+    # Studio decision (2026-09-05): a small ASGI server for the local
+    # workflow studio page (scripts/studio.py). Both already arrive with
+    # crewai and mcp; declared so the studio does not rest on a
+    # transitive install.
+    "starlette>=1.0,<2",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +70,8 @@ target-version = ["py311", "py312"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tests/test_studio.py imports the studio module from scripts/.
+pythonpath = ["scripts"]
 addopts = "-q"
 # CrewAI 1.15 warns about its own deprecated fields on every crew run.
 filterwarnings = ["ignore::DeprecationWarning:crewai"]

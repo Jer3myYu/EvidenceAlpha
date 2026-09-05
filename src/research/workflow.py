@@ -49,12 +49,18 @@ their model call as a CrewAI crew of one agent and one task
 (``research.crew``), each agent carrying the stage's existing system
 prompt and each task the stage's existing prompt text. The research
 node still calls the Claude Agent SDK Research Agent directly.
+
+The research node also forwards the agent's tool calls, observations,
+and text to LangGraph's custom stream as they happen, so a caller that
+streams ``"custom"`` (``scripts/studio.py``) can show the tool loop
+live. The CLI does not subscribe and sees nothing new.
 """
 
 import operator
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, TypedDict
 
+from langgraph import config as langgraph_config
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -133,7 +139,11 @@ async def research_node(state: ResearchState) -> dict[str, Any]:
             state["evidence"],
             state["evidence_gaps"],
         )
-    result = await agent.research(prompt)
+    # The tool loop goes to whoever subscribed to the graph's custom
+    # stream; with no subscriber the writer does nothing.
+    result = await agent.research(
+        prompt, on_event=langgraph_config.get_stream_writer()
+    )
     evidence, sources = sources_module.normalize_observations(
         result.observations, state.get("sources", {})
     )

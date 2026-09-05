@@ -19,6 +19,7 @@ mechanism for local Python tools.
 """
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 import claude_agent_sdk
@@ -275,11 +276,46 @@ def followup_prompt(
     )
 
 
-async def research(prompt: str) -> ResearchResult:
+def tool_events(message: Any) -> list[dict[str, Any]]:
+    """Describe what one SDK message shows of the agent's tool loop.
+
+    Args:
+      message: Any message from ``claude_agent_sdk.query``.
+
+    Returns:
+      Zero or more events, in the message's order. ``tool_use`` carries
+      the tool's short name and input, ``tool_result`` the observation
+      text, ``assistant_text`` the text Claude wrote between tool calls
+      or as its answer. Other messages give no event.
+    """
+    events: list[dict[str, Any]] = []
+    if isinstance(message, claude_agent_sdk.AssistantMessage):
+        for block in message.content:
+            if isinstance(block, claude_agent_sdk.ToolUseBlock):
+                tool = block.name.removeprefix("mcp__research__")
+                events.append(
+                    {"event": "tool_use", "tool": tool, "input": block.input}
+                )
+            elif isinstance(block, claude_agent_sdk.TextBlock):
+                events.append({"event": "assistant_text", "text": block.text})
+    elif isinstance(message, claude_agent_sdk.UserMessage):
+        for block in message.content:
+            if isinstance(block, claude_agent_sdk.ToolResultBlock):
+                text = _observation_text(block)
+                events.append({"event": "tool_result", "text": text})
+    return events
+
+
+async def research(
+    prompt: str, on_event: Callable[[dict[str, Any]], Any] | None = None
+) -> ResearchResult:
     """Run the agent once and return its answer with the evidence it saw.
 
     Args:
       prompt: The finished user message, normally from ``research_prompt``.
+      on_event: Called with each ``tool_events`` event as it happens, so
+        a caller can show the tool loop while it runs. ``None`` shows
+        nothing; the result is the same either way.
 
     Returns:
       The answer and the tool observations in the order Claude received
@@ -291,6 +327,9 @@ async def research(prompt: str) -> ResearchResult:
     observations: list[str] = []
     result = None
     async for message in claude_agent_sdk.query(prompt=prompt, options=OPTIONS):
+        if on_event is not None:
+            for event in tool_events(message):
+                on_event(event)
         if isinstance(message, claude_agent_sdk.UserMessage):
             for block in message.content:
                 if isinstance(block, claude_agent_sdk.ToolResultBlock):
