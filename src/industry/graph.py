@@ -384,14 +384,17 @@ def _material_open_issues(
 REVIEW_BATCH = records.Limits().review_batch
 
 
-def pending_review(state: state_module.IndustryState) -> list[str]:
+def pending_review(
+    state: state_module.IndustryState, batch: int | None = None
+) -> list[str]:
     """The claims the verifier judges next: unreviewed material or map.
 
     Review is bounded by the budget, so the order is the priority in
     which claims earn citability, interleaved so no group starves: one
     queue for map claims (the value chain and its participants) and one
     per central question, taken round-robin in id order, then the
-    remaining material claims; at most ``REVIEW_BATCH`` per call.
+    remaining material claims; at most ``batch`` per call (the run's
+    ``Limits.review_batch``; ``REVIEW_BATCH`` is only the default).
     """
     unreviewed = sorted(
         (
@@ -420,7 +423,7 @@ def pending_review(state: state_module.IndustryState) -> list[str]:
             if queue:
                 ordered.append(queue.pop(0))
     ordered.extend(rest)
-    return ordered[:REVIEW_BATCH]
+    return ordered[: batch or REVIEW_BATCH]
 
 
 def scope_review(
@@ -1041,20 +1044,10 @@ def build_graph(
         if analysis is None:
             return update
         if analysis.calc_requests:
-            # Only reviewed quantities may enter a calculation; anything
-            # else is a missing input, never a number.
-            inputs = {
-                cid: records.CalcInput(
-                    claim_id=cid,
-                    value=c.quantity.value,
-                    unit=c.quantity.unit,
-                    period=c.quantity.period,
-                    scope=c.quantity.scope,
-                )
-                for cid, c in claims.items()
-                if c.quantity is not None
-                and c.review in ("supported", "qualified")
-            }
+            # Only reviewed, consistent quantities may enter a
+            # calculation; anything else is a missing input, never a
+            # number.
+            inputs = calc.inputs_from_claims(claims)
             requested = analysis.calc_requests
             cap = limits.calc_requests_per_call
             if len(requested) > cap:
@@ -1076,6 +1069,16 @@ def build_graph(
                             if eid not in evidence_ids:
                                 evidence_ids.append(eid)
                     cited_text = ", ".join(cited)
+                    qualifications = [
+                        f"{cid}: {claims[cid].review_reason}"
+                        for cid in cited
+                        if claims[cid].review == "qualified"
+                        and claims[cid].review_reason
+                    ]
+                    if result.alignment_note:
+                        qualifications.append(
+                            f"alignment: {result.alignment_note}"
+                        )
                     claims[claim_id] = records.Claim(
                         id=claim_id,
                         statement=(
@@ -1096,6 +1099,7 @@ def build_graph(
                             )
                             else "supported"
                         ),
+                        review_reason=("; ".join(qualifications) or None),
                         quantity=records.Quantity(
                             value=result.result or 0.0,
                             unit=result.unit or "",
@@ -1216,7 +1220,7 @@ def build_graph(
 
     async def review(state: state_module.IndustryState) -> dict[str, Any]:
         claims = state.get("claims", {})
-        pending = pending_review(state)
+        pending = pending_review(state, limits.review_batch)
         if not pending:
             return {
                 "review_rounds": state.get("review_rounds", 0) + 1,

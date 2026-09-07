@@ -118,7 +118,7 @@ def description_for(
         return roles.analysis_description(before, graph_module.ANALYSIS_NOTE)
     if node == "review":
         return roles.review_description(
-            before, graph_module.pending_review(before)
+            before, graph_module.pending_review(before, limits.review_batch)
         )
     if node == "write":
         return roles.draft_description(

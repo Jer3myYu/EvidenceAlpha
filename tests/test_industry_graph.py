@@ -1321,3 +1321,68 @@ def test_default_budget_keeps_analysis_and_delivery_reachable(tmp_path):
     assert state["meta"].report_status == "complete"
     spent = budget.ledger(state)
     assert spent.wall_clock_s <= runtime.limits.wall_clock_s
+
+
+def test_every_unsupported_unit_in_a_section_is_redacted(tmp_path):
+    # C0 round 13, finding 1: with two uncited sentences the first was
+    # delivered as fact because both shared one issue key.
+    runtime, api, _, compiled = make(tmp_path)
+    api.draft_text = "本行业需求每年增长99%。行业利润率永久保持88%。结论 [C1]。"
+    config = persist.thread_config("t20")
+    runtime.begin("t20")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    units = {
+        i.text
+        for i in state["issues"].values()
+        if i.status == "open" and i.target == "intro" and i.text
+    }
+    assert units == {"本行业需求每年增长99%。", "行业利润率永久保持88%。"}
+    assert state["meta"].report_status == "complete_with_limitations"
+    text = pathlib.Path(state["meta"].report_path).read_text(encoding="utf-8")
+    heading = "## 局限性" if "## 局限性" in text else "## Limitations"
+    body, _, rest = text.partition(heading)
+    assert "99%" not in body and "88%" not in body and "结论" in body
+    assert "99%" in rest and "88%" in rest  # both listed as limitations
+
+
+def test_review_batch_size_follows_the_run_limits(tmp_path):
+    # C0 round 13, finding 6: the graph used the module constant while
+    # the budget used ``Limits.review_batch``.
+    claims = {
+        f"C{i}": records.Claim(
+            id=f"C{i}",
+            statement=f"s{i}",
+            kind="fact",
+            material=True,
+            questions=[4],
+        )
+        for i in range(1, 21)
+    }
+    state = {"claims": claims}
+    assert len(graph_module.pending_review(state)) == graph_module.REVIEW_BATCH
+    limits = records.Limits(review_batch=20)
+    assert len(graph_module.pending_review(state, limits.review_batch)) == 20
+    assert budget.review_batches(state, limits) == 1
+    runtime, api, _, compiled = make(tmp_path, records.Limits(review_batch=3))
+    sizes: list[int] = []
+    original = api.review_claims
+
+    async def review_claims(state, claim_ids, max_turns, deadline):
+        sizes.append(len(claim_ids))
+        return await original(state, claim_ids, max_turns, deadline)
+
+    api.review_claims = review_claims
+    config = persist.thread_config("t21")
+    runtime.begin("t21")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    reviewed = sum(
+        1
+        for c in state["claims"].values()
+        if c.material and c.review != "unreviewed"
+    )
+    assert sizes and max(sizes) <= 3
+    assert (
+        len(sizes)
+        >= -(-reviewed // 3)
+        > -(-reviewed // graph_module.REVIEW_BATCH)
+    )

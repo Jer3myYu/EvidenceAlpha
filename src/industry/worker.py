@@ -375,8 +375,11 @@ async def run_attempt(
     prompt = user_prompt(work, collector)
     options = options_for(work, system, server, allowed)
     session = _Session(work.attempt.id, on_event)
-    started = time.monotonic()
     async with runtime.semaphore:
+        # The charged duration is execution time: it starts once a
+        # session slot is held, like the timeout, so waiting for a slot
+        # is never charged against the attempt's reservation.
+        started = time.monotonic()
         try:
             await asyncio.wait_for(
                 session.consume(query(prompt=prompt, options=options)),

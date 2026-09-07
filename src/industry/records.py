@@ -224,6 +224,11 @@ class Claim(Record):
     calculation_id: str | None = None
     material: bool = False
     review: Review = "unreviewed"
+    # The verifier's reason for the verdict, kept on the reviewed
+    # version (reset whenever the claim is re-versioned) so that a
+    # ``qualified`` claim carries its qualification to the Analyst, the
+    # Editor, and the final verifier.
+    review_reason: str | None = None
     version: int = 1
     supersedes: str | None = None
     entity: str | None = None

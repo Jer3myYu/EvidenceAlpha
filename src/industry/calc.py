@@ -13,6 +13,7 @@ import dataclasses
 import math
 import re
 
+from industry import merge
 from industry import records
 
 
@@ -121,6 +122,31 @@ def _same_period_and_scope(
 def _finite(value: float, role: str) -> None:
     if math.isnan(value) or math.isinf(value):
         raise CalcError(f"non_finite_{role}: {value!r}")
+
+
+def inputs_from_claims(
+    claims: dict[str, records.Claim],
+) -> dict[str, records.CalcInput]:
+    """The quantities a calculation may consume, by claim id.
+
+    Only a claim reviewed supported or qualified whose quantity is
+    consistent (``merge.quantity_consistent``: the numeric value is the
+    number as written) becomes an input; anything else is a missing
+    input, never a number.
+    """
+    return {
+        cid: records.CalcInput(
+            claim_id=cid,
+            value=claim.quantity.value,
+            unit=claim.quantity.unit,
+            period=claim.quantity.period,
+            scope=claim.quantity.scope,
+        )
+        for cid, claim in claims.items()
+        if claim.quantity is not None
+        and claim.review in ("supported", "qualified")
+        and merge.quantity_consistent(claim.quantity)
+    }
 
 
 def _input(

@@ -72,6 +72,26 @@ def quantity_in_excerpts(
     )
 
 
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def quantity_consistent(quantity: records.Quantity) -> bool:
+    """Whether ``value`` is the number ``as_written`` states.
+
+    The unit carries every scale word (``亿元``, ``%``, ``USD bn``), so
+    the number as written must resolve to exactly one numeric token
+    equal to ``value``; anything else (no number, several numbers, a
+    silent conversion such as ``52`` written for a value of 520) is an
+    unresolved conversion and the quantity is not usable.
+    """
+    numbers = _NUMBER.findall(re.sub(r"[,\s，]", "", quantity.as_written))
+    if len(numbers) != 1:
+        return False
+    written = float(numbers[0])
+    tolerance = 1e-9 * max(1.0, abs(written))
+    return abs(written - quantity.value) <= tolerance
+
+
 class _Registry:
     """Working copies of the registries while one merge runs."""
 
@@ -248,6 +268,7 @@ class _Registry:
                 update["version"] = existing.version + 1
                 update["supersedes"] = f"{existing.id}@{existing.version}"
                 update["review"] = "unreviewed"
+                update["review_reason"] = None
                 update["reviewed_topics"] = []
                 self.changed.add(existing.id)
                 self.log.append(
@@ -385,6 +406,14 @@ def _fold_finding(
         excerpts = [registry.evidence[eid].excerpt for eid in evidence_ids]
         if not quantity_in_excerpts(quantity, excerpts):
             limitations.append("quantity_not_in_excerpt")
+            quantity = None
+        elif not quantity_consistent(quantity):
+            limitations.append("quantity_value_mismatch")
+            registry.log.append(
+                f"{attempt_id}: quantity dropped, value {quantity.value} is "
+                f"not the number written ({quantity.as_written!r}): "
+                f"{draft.statement[:60]}"
+            )
             quantity = None
     if draft.milestone and not draft.milestone_date:
         limitations.append("undated_milestone")
@@ -751,6 +780,7 @@ def apply_review(
         claims[claim.id] = claim.model_copy(
             update={
                 "review": verdict.verdict,
+                "review_reason": verdict.reason.strip() or None,
                 "reviewed_topics": [
                     t for t in verdict.topics_supported if t in claim.topics
                 ],
@@ -836,6 +866,8 @@ def invalidate_claim(
             "version": claim.version + 1,
             "supersedes": f"{claim_id}@{claim.version}",
             "review": "unreviewed",
+            "review_reason": None,
+            "reviewed_topics": [],
         }
     )
     findings = stale_findings(state.get("findings", {}), {claim_id})
@@ -873,9 +905,21 @@ def stale_findings(
     }
 
 
-def issue_key(category: str, target: str) -> str:
-    """The canonical key of an issue: one per category and target."""
-    return f"{category}:{target}"
+def issue_key(category: str, target: str, text: str | None = None) -> str:
+    """The canonical key of an issue.
+
+    One per category and target; when the issue is about one exact
+    factual unit (``text``), one per unit, so several unsupported
+    sentences in the same section are separate issues that are each
+    redacted while open, and a section-wide problem (no unit) stays
+    distinguishable from them. Repeats of the same unit share the key,
+    and so the attempt count.
+    """
+    key = f"{category}:{target}"
+    if text:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        key = f"{key}#{digest}"
+    return key
 
 
 def partition_for(questions: list[int]) -> str:
@@ -985,7 +1029,7 @@ def open_issue(
     next step, and draft version are refreshed, so repeats never reset
     the limit.
     """
-    key = issue_key(category, target)
+    key = issue_key(category, target, text)
     updated = dict(issues)
     for issue in issues.values():
         if issue.key == key and issue.status == "open":

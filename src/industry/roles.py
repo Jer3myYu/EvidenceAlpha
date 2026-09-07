@@ -413,7 +413,12 @@ def _claim_line(
         fields.append(
             f"quantity={quantity.as_written} {quantity.unit}"
             + (f" ({quantity.scope})" if quantity.scope else "")
+            + f" [value={quantity.value:g}"
+            + (f", period={quantity.period}" if quantity.period else "")
+            + "]"
         )
+    if claim.review == "qualified" and claim.review_reason:
+        fields.append(f"qualification={claim.review_reason}")
     if claim.milestone:
         fields.append(
             f"milestone={claim.milestone}@{claim.milestone_date or unknown}"
@@ -958,7 +963,10 @@ def draft_description(
             "monitoring, limitations. Use concise tables where they help "
             "(Markdown). Every factual sentence ends with its [C#] "
             "citations; only the claims listed above may be cited (they "
-            "are the reviewed ones). Section ids are short slugs.",
+            "are the reviewed ones). A claim marked qualified may be "
+            "cited only with its qualification= restriction stated in "
+            "the same sentence; never state it as the unqualified claim. "
+            "Section ids are short slugs.",
         ]
     )
 
@@ -998,7 +1006,9 @@ def final_review_description(state: state_module.IndustryState) -> str:
             render_sections(state.get("sections", [])),
             "Check the exact draft: every factual sentence must be "
             "supported by the claims it cites (category unsupported when "
-            "a sentence asserts more than its claims, or cites none); "
+            "a sentence asserts more than its claims, or cites none, or "
+            "cites a qualified claim without its qualification= "
+            "restriction); "
             "conclusions must be consistent across text and tables "
             "(category contradiction); limitations must sit next to the "
             "claims they qualify; wording must be intelligible to a "

@@ -179,3 +179,42 @@ def test_equivalent_period_labels_are_the_same_period():
     assert calc.compute("K1", share, inputs).status == "ok"
     fiscal = share.model_copy(update={"denominator_claim_id": "C3"})
     assert calc.compute("K2", fiscal, inputs).status == "error"
+
+
+def test_inputs_come_only_from_reviewed_consistent_quantities():
+    # C0 round 13, finding 2: a value that is not the number written
+    # must never become a calculation input.
+    def claim(cid, review, value, as_written):
+        return records.Claim(
+            id=cid,
+            statement="s",
+            kind="fact",
+            review=review,
+            quantity=records.Quantity(
+                value=value, unit="亿元", period="2024", as_written=as_written
+            ),
+        )
+
+    claims = {
+        "C1": claim("C1", "supported", 52, "52"),
+        "C2": claim("C2", "supported", 520, "52"),
+        "C3": claim("C3", "unreviewed", 52, "52"),
+        "C4": records.Claim(
+            id="C4", statement="s", kind="fact", review="supported"
+        ),
+        "C5": claim("C5", "qualified", 100, "100亿元"),
+    }
+    inputs = calc.inputs_from_claims(claims)
+    assert sorted(inputs) == ["C1", "C5"] and inputs["C1"].value == 52
+    request = records.CalcRequest(
+        kind="share",
+        label="share",
+        numerator_claim_id="C2",
+        denominator_claim_id="C5",
+    )
+    result = calc.compute("K1", request, inputs)
+    assert result.status == "error" and "missing_quantity" in str(
+        result.message
+    )
+    good = request.model_copy(update={"numerator_claim_id": "C1"})
+    assert calc.compute("K2", good, inputs).result == pytest.approx(52.0)

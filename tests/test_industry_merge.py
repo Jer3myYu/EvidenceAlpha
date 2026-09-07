@@ -3,6 +3,7 @@
 from industry import budget
 from industry import merge
 from industry import records
+from industry import report
 
 NOW = "2026-09-07T00:00:00+00:00"
 LIMITS = records.Limits()
@@ -970,3 +971,119 @@ def test_relationships_are_revoked_when_the_parent_stops_being_supported():
     assert not merge.relationship_live(
         state["relationships"]["R1"], corrected["claims"]
     )
+
+
+def test_each_unsupported_unit_is_its_own_issue_and_all_are_redacted():
+    # C0 round 13, finding 1: two uncited sentences in one section used
+    # to collapse into one issue, and the first was delivered as fact.
+    first_unit = "本行业需求每年增长99%。"
+    second_unit = "行业利润率永久保持88%。"
+    issues, first = merge.open_issue(
+        {}, "unsupported", "material", "s1", "edit", "a", text=first_unit
+    )
+    issues, second = merge.open_issue(
+        issues, "unsupported", "material", "s1", "edit", "b", text=second_unit
+    )
+    assert first.id != second.id and first.key != second.key
+    assert first.key.startswith("unsupported:s1#")
+    # The same unit repeats under the same key and keeps its attempts.
+    issues[first.id] = first.model_copy(update={"attempts": 1})
+    issues, again = merge.open_issue(
+        issues, "unsupported", "material", "s1", "edit", "c", text=first_unit
+    )
+    assert again.id == first.id and again.attempts == 1
+    # A section-wide problem (no unit) is a third, distinguishable issue.
+    issues, wide = merge.open_issue(
+        issues, "unsupported", "material", "s1", "remove", "cites unknown"
+    )
+    assert wide.key == "unsupported:s1" and wide.id not in (first.id, second.id)
+    open_issues = [i for i in issues.values() if i.status == "open"]
+    text = report.redact(
+        f"{first_unit}{second_unit}结论 [C1]。", open_issues, "s1", "[removed]"
+    )
+    assert "99%" not in text and "88%" not in text
+    assert text == "[removed][removed]结论 [C1]。"
+    state = {
+        "sections": [
+            records.Section(id="s1", title="t", text="x", claim_ids=[])
+        ],
+        "issues": issues,
+    }
+    assert report.unremovable_section_issues(state) == [wide]
+
+
+def test_quantity_value_must_be_the_number_written():
+    # C0 round 13, finding 2: value 520 written as "52" reached calc.
+    state = base_state()
+    result = result_t2()
+    result.findings[0] = result.findings[0].model_copy(
+        update={
+            "quantity": records.Quantity(
+                value=520, unit="亿元", period="2024", as_written="52"
+            )
+        }
+    )
+    update = merge.merge_results(state, [result], LIMITS)
+    claim = update["claims"]["C1"]
+    assert claim.quantity is None
+    assert "quantity_value_mismatch" in claim.limitations
+    assert any("not the number written" in l for l in update["route_log"])
+    consistent = merge.quantity_consistent
+    assert consistent(
+        records.Quantity(value=1546.1, unit="亿美元", as_written="1,546.1")
+    )
+    assert consistent(
+        records.Quantity(value=52, unit="亿元", as_written="52亿元")
+    )
+    assert consistent(
+        records.Quantity(value=-3.5, unit="%", as_written="-3.5%")
+    )
+    assert not consistent(
+        records.Quantity(value=52, unit="亿元", as_written="五十二亿元")
+    )
+    assert not consistent(
+        records.Quantity(value=52, unit="%", as_written="52%至60%")
+    )
+    assert not consistent(
+        records.Quantity(value=5200, unit="万元", as_written="52")
+    )
+
+
+def test_review_reason_persists_on_the_reviewed_version_and_resets():
+    # C0 round 13, finding 3: a qualified verdict's reason was dropped.
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    reason = "merchant market only, excludes captive production"
+    review = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1",
+                verdict="qualified",
+                reason=reason,
+                topics_supported=["demand_driver"],
+            )
+        ]
+    )
+    state.update(merge.apply_review(state, review))
+    claim = state["claims"]["C1"]
+    assert claim.review == "qualified" and claim.review_reason == reason
+    # A later batch that does not name C1 leaves the reason in place.
+    later = merge.apply_review(state, records.ClaimReview())
+    assert later["claims"]["C1"].review_reason == reason
+    # A corrected claim is a new version, reviewed again from scratch.
+    corrected = merge.invalidate_claim(state, "C1", statement="corrected")
+    assert corrected["claims"]["C1"].review == "unreviewed"
+    assert corrected["claims"]["C1"].review_reason is None
+    # A meaning-changing repeat resets it too.
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    richer = result_t2().model_copy(
+        update={"attempt_id": "T3.1", "task_id": "T3"}
+    )
+    richer.findings[0] = richer.findings[0].model_copy(
+        update={"dimension": "revenue"}
+    )
+    update = merge.merge_results(state, [richer], LIMITS)
+    repeated = update["claims"]["C1"]
+    assert repeated.version == 2 and repeated.review == "unreviewed"
+    assert repeated.review_reason is None

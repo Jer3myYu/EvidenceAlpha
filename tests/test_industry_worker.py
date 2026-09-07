@@ -1,6 +1,7 @@
 """One attempt as an SDK session: admission, failures, success."""
 
 import asyncio
+import time
 
 import claude_agent_sdk
 import pytest
@@ -407,3 +408,34 @@ def test_sdk_max_turns_is_the_session_cap_not_the_reservation():
     assert "at most 12 tool-using exchanges" in worker.user_prompt(
         work, tools.Collector("T2.1", "T2")
     )
+
+
+def test_waiting_for_a_session_slot_is_not_charged_as_execution():
+    # C0 round 13, finding 4: the duration timer started before the
+    # semaphore, so a queued attempt was charged its wait.
+    runtime = budget.Runtime(records.Limits(concurrency=1))
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
+    meter.register("T2.1", 24)
+    meter.register("T2.2", 24)
+    delay = 0.3
+
+    async def go():
+        runs = []
+        for aid in ("T2.1", "T2.2"):
+            work = work_input()
+            work = work.model_copy(
+                update={"attempt": work.attempt.model_copy(update={"id": aid})}
+            )
+            query, _ = fake_query([result_message()], delay=delay)
+            runs.append(
+                worker.run_attempt(work, runtime, Backend(), query=query)
+            )
+        return await asyncio.gather(*runs)
+
+    started = time.monotonic()
+    first, second = asyncio.run(go())
+    elapsed = time.monotonic() - started
+    assert elapsed >= 2 * delay  # one slot: they really ran in sequence
+    assert first.status == "done" and second.status == "done"
+    for out in (first, second):
+        assert delay <= out.usage.duration_s < 2 * delay

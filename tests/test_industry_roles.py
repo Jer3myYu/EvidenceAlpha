@@ -258,3 +258,43 @@ def test_editor_and_analyst_see_reviewed_lineage_only():
     )
     final = roles.final_review_description(state)
     assert "[F2]" not in final
+
+
+def test_claim_line_carries_value_period_and_qualification_to_every_reader():
+    # C0 round 13, findings 2 and 3: the verifier never saw the numeric
+    # value, and a qualification never reached the Editor or the final
+    # verifier.
+    state = sample_state()
+    claims = state["claims"]
+    claims["C1"] = claims["C1"].model_copy(
+        update={
+            "review": "qualified",
+            "review_reason": "merchant market only, excludes captive",
+            "quantity": records.Quantity(
+                value=60,
+                unit="%",
+                scope="全球",
+                period="2024",
+                as_written="60%",
+            ),
+        }
+    )
+    line = roles.render_claims(state, ["C1"], True, 10_000)
+    assert "quantity=60% % (全球) [value=60, period=2024]" in line
+    assert "qualification=merchant market only, excludes captive" in line
+    for text in (
+        roles.review_description(state, ["C1"]),
+        roles.analysis_description(state, "note"),
+        roles.draft_description(state, "write"),
+        roles.final_review_description(state),
+    ):
+        assert "[value=60, period=2024]" in text
+        assert "qualification=merchant market only" in text
+    assert "qualification= restriction" in roles.draft_description(state, "w")
+    assert "qualification= restriction" in roles.final_review_description(state)
+    claims["C1"] = claims["C1"].model_copy(
+        update={"review": "supported", "review_reason": "E1 states it"}
+    )
+    assert "qualification=" not in roles.render_claims(
+        state, ["C1"], False, 9_999
+    )
