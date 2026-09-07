@@ -132,8 +132,10 @@ segment keys with what flows; participants placed in a segment key
 with their role, what they supply or buy (specific products or
 services), region, whether listed, a selection rationale, and
 evidence_refs. Include global leaders and Chinese participants where
-the evidence shows them. A boundary_note says what is inside and
-outside the industry; gaps lists what you could not establish.
+the evidence shows them: the two to four most significant per segment,
+at most about twenty in all (every participant is a claim the verifier
+must judge). A boundary_note says what is inside and outside the
+industry; gaps lists what you could not establish.
 """
 
 
@@ -225,7 +227,7 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
             )
     lines += [
         "",
-        f"Allowance: at most {work.allowance.turns} turns and "
+        f"Allowance: at most {work.max_turns} tool-using exchanges and "
         f"{work.allowance.tool_calls} tool calls; the tools refuse beyond "
         "that. Return the structured output when done.",
     ]
@@ -242,7 +244,7 @@ def options_for(
         tools=[],
         mcp_servers={"research": server},
         allowed_tools=allowed,
-        max_turns=work.allowance.turns,
+        max_turns=work.max_turns,
         output_format={
             "type": "json_schema",
             "schema": TaskOutput.model_json_schema(),

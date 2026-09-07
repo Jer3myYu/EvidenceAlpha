@@ -17,6 +17,7 @@ excerpt, never the distance alone.
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import pathlib
 from typing import Any, Protocol
@@ -151,10 +152,25 @@ class FixtureBackend:
             (self.directory / "sources.json").read_text(encoding="utf-8")
         )
         self.pages: dict[str, dict[str, Any]] = {}
+        digests: list[str] = []
         for record in manifest:
             if record.get("status") == 200 and record.get("blob"):
                 canonical = sources_module.canonical_url(record["url"])
+                content = (self.directory / record["blob"]).read_bytes()
+                digest = hashlib.sha256(content).hexdigest()
+                recorded = record.get("sha256")
+                if recorded and recorded != digest:
+                    blob = record["blob"]
+                    raise ValueError(
+                        f"fixture blob {blob} does not match its recorded "
+                        "sha256"
+                    )
+                digests.append(f"{canonical} {digest}")
                 self.pages[canonical] = record
+        # The fixture's identity: every served page and its bytes.
+        self.digest = hashlib.sha256(
+            "\n".join(sorted(digests)).encode("utf-8")
+        ).hexdigest()
         self.titles: dict[str, str] = {}
         for canonical, record in self.pages.items():
             version, chunks, _ = self.fetch(canonical, "fixture")

@@ -75,7 +75,14 @@ def quantity_in_excerpts(
 class _Registry:
     """Working copies of the registries while one merge runs."""
 
-    def __init__(self, state: state_module.IndustryState) -> None:
+    def __init__(
+        self,
+        state: state_module.IndustryState,
+        limits: records.Limits | None = None,
+    ) -> None:
+        self.limits = limits or records.Limits()
+        # Material findings the current attempt may still add.
+        self.material_left = self.limits.material_per_attempt
         self.sources = dict(state.get("sources", {}))
         self.versions = dict(state.get("source_versions", {}))
         self.evidence = dict(state.get("evidence", {}))
@@ -343,6 +350,7 @@ def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
         evidence_map[local.id] = registry.evidence_id(
             local, source_id, version_id
         )
+    registry.material_left = registry.limits.material_per_attempt
     for draft in result.findings:
         _fold_finding(registry, result.attempt_id, draft, evidence_map)
     if result.map is not None:
@@ -372,13 +380,24 @@ def _fold_finding(
             quantity = None
     if draft.milestone and not draft.milestone_date:
         limitations.append("undated_milestone")
+    material = draft.material
+    if material and registry.material_left <= 0:
+        # Beyond the per-attempt cap a finding is kept as non-material:
+        # it stays in the registry but does not enter the bounded review.
+        material = False
+        registry.log.append(
+            f"{attempt_id}: material cap reached; kept non-material: "
+            f"{draft.statement[:60]}"
+        )
+    elif material:
+        registry.material_left -= 1
     claim_id = registry.add_claim(
         records.Claim(
             id="C0",
             statement=draft.statement,
             kind=draft.kind,
             evidence_ids=evidence_ids,
-            material=draft.material,
+            material=material,
             entity=draft.entity,
             period=draft.period,
             quantity=quantity,
@@ -511,6 +530,12 @@ def _fold_map(
             continue
         if (normalize_text(item.name), seg_id) in existing_participants:
             continue
+        if len(participants) >= registry.limits.map_participants:
+            registry.log.append(
+                f"{attempt_id}: map participant {item.name} not added: "
+                f"{registry.limits.map_participants} participants is the cap"
+            )
+            continue
         part_id = next_id("P", {p.id: p for p in participants})
         region = f", {item.region}" if item.region else ""
         unstated = "no supply/buy stated"
@@ -585,7 +610,7 @@ def merge_results(
     merged = list(state.get("merged", []))
     tasks = dict(state.get("tasks", {}))
     attempts = dict(state.get("attempts", {}))
-    registry = _Registry(state)
+    registry = _Registry(state, limits)
     pending = [r for r in results if r.attempt_id not in merged]
     pending.sort(
         key=lambda r: (

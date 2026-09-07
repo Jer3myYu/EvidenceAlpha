@@ -513,6 +513,9 @@ class WorkerInput(Record):
     references: list[Reference] = pydantic.Field(default_factory=list)
     open_issue: str | None = None
     allowance: Reservation
+    # The SDK session cap (model exchanges); the allowance above is the
+    # ledger's worst case in ``num_turns`` units and is never the cap.
+    max_turns: int = 12
     model: str
     prompt_version: str
 
@@ -731,6 +734,11 @@ class Limits(Record):
     task_attempts: int = 2
     turns_per_exchange: int = 2
     structured_output_attempts: int = 5
+    # Claim production is bounded so review, which is budget-bounded,
+    # can reach every central question: material findings accepted per
+    # attempt (the rest are kept as non-material) and map participants.
+    material_per_attempt: int = 15
+    map_participants: int = 24
 
     def attempt_turns(self) -> int:
         """The most ``num_turns`` a tool session can report."""
@@ -757,6 +765,7 @@ class RunMeta(Record):
     report_status: ReportStatus | None = None
     report_path: str | None = None
     fixture: str | None = None
+    fixture_digest: str | None = None
 
 
 # Every class that can appear in a checkpoint; the serializer allowlist.

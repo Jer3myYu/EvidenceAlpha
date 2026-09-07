@@ -7,6 +7,7 @@ import pytest
 
 from industry import budget
 from industry import records
+from industry import tools
 from industry import worker
 from research import web
 
@@ -188,7 +189,7 @@ def test_success_builds_the_session_and_result():
     prompt = captured["prompt"]
     assert "Task T2 (research, role industry): Map the upstream" in prompt
     assert "[E1] Earlier report | p2 | 2026-09-01\nPrior passage" in prompt
-    assert "at most 12 turns and 24 tool calls" in prompt
+    assert "at most 12 tool-using exchanges and 24 tool calls" in prompt
     assert "no price targets" in prompt
     assert events and all(e["attempt_id"] == "T2.1" for e in events)
     assert (
@@ -389,3 +390,20 @@ def test_result_error_is_classified_and_its_usage_recovered():
         "schema: ResultError"
     )
     assert out.usage.turns == 13 and not out.usage.unknown
+
+
+def test_sdk_max_turns_is_the_session_cap_not_the_reservation():
+    work = work_input()
+    work = work.model_copy(
+        update={
+            "allowance": records.Reservation(
+                turns=34, tool_calls=24, seconds=5
+            ),
+            "max_turns": 12,
+        }
+    )
+    options = worker.options_for(work, "system", object(), [])
+    assert options.max_turns == 12
+    assert "at most 12 tool-using exchanges" in worker.user_prompt(
+        work, tools.Collector("T2.1", "T2")
+    )

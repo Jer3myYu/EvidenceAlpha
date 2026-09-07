@@ -13,6 +13,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from industry import budget
 from industry import graph as graph_module
+from industry import merge
+from industry import report
 from industry import records
 from industry import roles
 from research import persist
@@ -855,3 +857,190 @@ def test_pending_review_orders_by_citability_priority():
         ),
     }
     assert graph_module.pending_review({"claims": claims}) == ["C3", "C2", "C1"]
+
+
+def test_dispatch_worker_input_caps_the_session_at_limits_max_turns(tmp_path):
+    runtime, _, worker, compiled = make(tmp_path)
+    config = persist.thread_config("t16")
+    runtime.begin("t16")
+    run(compiled.ainvoke({"question": "q"}, config))
+    assert worker.calls, "workers ran"
+    first = worker.calls[0]
+    assert first.allowance.turns == runtime.limits.attempt_turns() == 34
+    assert first.max_turns == runtime.limits.max_turns == 12
+
+
+def test_pending_review_interleaves_map_and_central_questions():
+    def claim(cid, **kw):
+        return records.Claim(id=cid, statement=cid, kind="fact", **kw)
+
+    claims = {
+        "C1": claim("C1", material=True, questions=[7]),
+        "C2": claim("C2", material=True, questions=[4]),
+        "C3": claim("C3", material=False, map_ref="P1", questions=[3]),
+        "C4": claim("C4", material=True, questions=[4, 5]),
+        "C5": claim("C5", material=False, map_ref="P2", questions=[3]),
+        "C6": claim("C6", material=True, questions=[2]),
+        "C7": claim("C7", material=False),
+    }
+    order = graph_module.pending_review({"claims": claims})
+    # map, q2, q4, then the next of each queue, then the non-central.
+    assert order == ["C3", "C6", "C2", "C5", "C4", "C1"]
+
+
+def test_scope_review_drops_out_of_batch_relationship_and_source_verdicts():
+    state = {
+        "claims": {
+            "C1": records.Claim(
+                id="C1",
+                statement="a",
+                kind="fact",
+                material=True,
+                evidence_ids=["E1"],
+            ),
+            "C2": records.Claim(
+                id="C2",
+                statement="b",
+                kind="fact",
+                material=True,
+                evidence_ids=["E2"],
+            ),
+        },
+        "evidence": {
+            "E1": records.Evidence(
+                id="E1",
+                source_id="S1",
+                kind="snippet",
+                excerpt="x",
+                locator="l",
+                extraction="search_snippet",
+                task_id="T",
+                retrieved_at=NOW,
+            ),
+            "E2": records.Evidence(
+                id="E2",
+                source_id="S2",
+                kind="snippet",
+                excerpt="y",
+                locator="l",
+                extraction="search_snippet",
+                task_id="T",
+                retrieved_at=NOW,
+            ),
+        },
+        "relationships": {
+            "R1": records.Relationship(
+                id="R1",
+                claim_id="C1",
+                from_entity="a",
+                to_entity="b",
+                relation="supplies",
+                evidence_ids=["E1"],
+            ),
+            "R2": records.Relationship(
+                id="R2",
+                claim_id="C2",
+                from_entity="a",
+                to_entity="c",
+                relation="supplies",
+                evidence_ids=["E2"],
+            ),
+        },
+    }
+    hostile = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1", verdict="supported", reason="r"
+            ),
+            records.ClaimVerdict(
+                claim_id="C2", verdict="supported", reason="r"
+            ),
+        ],
+        relationships=[
+            records.RelationshipVerdict(
+                relationship_id="R1", supported=True, reason="r"
+            ),
+            records.RelationshipVerdict(
+                relationship_id="R2", supported=True, reason="r"
+            ),
+            records.RelationshipVerdict(
+                relationship_id="R9", supported=True, reason="r"
+            ),
+        ],
+        sources=[
+            records.SourceOriginJudgement(
+                source_id="S1", origin="primary", reason="r"
+            ),
+            records.SourceOriginJudgement(
+                source_id="S2", origin="primary", reason="r"
+            ),
+        ],
+    )
+    scoped = graph_module.scope_review(state, hostile, ["C1"])
+    assert [v.claim_id for v in scoped.claims] == ["C1"]
+    assert [v.relationship_id for v in scoped.relationships] == ["R1"]
+    assert [v.source_id for v in scoped.sources] == ["S1"]
+    applied = merge.apply_review(state, scoped)
+    assert applied["claims"]["C2"].review == "unreviewed"
+    assert not applied["relationships"]["R2"].confirmed
+
+
+def test_findings_citing_unreviewed_claims_are_dropped(tmp_path):
+    runtime, api, _, compiled = make(tmp_path)
+    original = api.analyze
+
+    async def analyze(state, note, max_turns, deadline):
+        out, usage = await original(state, note, max_turns, deadline)
+        unreviewed = [
+            c.id for c in state["claims"].values() if c.review == "unreviewed"
+        ]
+        if unreviewed and out.findings:
+            spec = out.findings[0].model_copy(
+                update={"claim_ids": out.findings[0].claim_ids + unreviewed[:1]}
+            )
+            out = out.model_copy(update={"findings": [spec] + out.findings[1:]})
+        return out, usage
+
+    api.analyze = analyze
+    config = persist.thread_config("t17")
+    runtime.begin("t17")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    reviewed = {
+        c.id
+        for c in state["claims"].values()
+        if c.review in ("supported", "qualified")
+    }
+    assert all(set(f.claim_ids) <= reviewed for f in state["findings"].values())
+
+
+def test_initial_state_records_the_fixture_digest():
+    payload = graph_module.initial_state(
+        "q", records.Limits(), fixture="tmp/f", fixture_digest="abc"
+    )
+    assert payload["meta"].fixture_digest == "abc"
+
+
+def test_check_citations_covers_table_rows_and_list_items():
+    claims = {
+        "C1": records.Claim(
+            id="C1", statement="s", kind="fact", review="supported"
+        )
+    }
+    section = records.Section(
+        id="cmp",
+        title="对比",
+        text=(
+            "| 公司 | 2025收入 |\n|---|---|\n| HOYA | 999亿元 |\n"
+            "| DNP | 500亿元 [C1] |\n\n- 清溢光电产能翻倍\n- 路维光电 [C1]\n"
+        ),
+        claim_ids=["C1"],
+    )
+    problems = report.check_citations(
+        [section], claims, ["清溢光电", "路维光电"]
+    )
+    texts = [p.description for p in problems]
+    assert any("999亿元" in t for t in texts)
+    assert any("清溢光电" in t for t in texts)
+    assert not any(
+        "DNP" in t or "路维光电" in t or "2025收入" in t for t in texts
+    )

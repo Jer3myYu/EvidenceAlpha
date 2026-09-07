@@ -197,7 +197,10 @@ WorkerFunction = Callable[..., Awaitable[records.TaskResult]]
 
 
 def initial_state(
-    question: str, limits: records.Limits, fixture: str | None = None
+    question: str,
+    limits: records.Limits,
+    fixture: str | None = None,
+    fixture_digest: str | None = None,
 ) -> dict[str, Any]:
     """The graph input: the question and the run metadata.
 
@@ -216,6 +219,7 @@ def initial_state(
             limits=limits,
             started_at=records.now_iso(),
             fixture=fixture,
+            fixture_digest=fixture_digest,
         ),
     }
 
@@ -384,24 +388,83 @@ def pending_review(state: state_module.IndustryState) -> list[str]:
     """The claims the verifier judges next: unreviewed material or map.
 
     Review is bounded by the budget, so the order is the priority in
-    which claims earn citability: map claims first (the value chain and
-    its participants, questions 1-2), then claims on a central question,
-    then the rest, each in id order; at most ``REVIEW_BATCH`` per call.
+    which claims earn citability, interleaved so no group starves: one
+    queue for map claims (the value chain and its participants) and one
+    per central question, taken round-robin in id order, then the
+    remaining material claims; at most ``REVIEW_BATCH`` per call.
     """
-    central = set(records.CENTRAL_QUESTIONS)
-    unreviewed = [
-        c
-        for c in state.get("claims", {}).values()
-        if c.review == "unreviewed" and (c.material or c.map_ref)
-    ]
-    unreviewed.sort(
-        key=lambda c: (
-            c.map_ref is None,
-            not (set(c.questions) & central),
-            merge.schedule.task_number(c.id),
-        )
+    unreviewed = sorted(
+        (
+            c
+            for c in state.get("claims", {}).values()
+            if c.review == "unreviewed" and (c.material or c.map_ref)
+        ),
+        key=lambda c: merge.schedule.task_number(c.id),
     )
-    return [c.id for c in unreviewed[:REVIEW_BATCH]]
+    queues: dict[str, list[str]] = {"map": []}
+    for question in records.CENTRAL_QUESTIONS:
+        queues[f"q{question}"] = []
+    rest: list[str] = []
+    for claim in unreviewed:
+        if claim.map_ref is not None:
+            queues["map"].append(claim.id)
+            continue
+        central = [q for q in claim.questions if q in records.CENTRAL_QUESTIONS]
+        if central:
+            queues[f"q{min(central)}"].append(claim.id)
+        else:
+            rest.append(claim.id)
+    ordered: list[str] = []
+    while any(queues.values()):
+        for queue in queues.values():
+            if queue:
+                ordered.append(queue.pop(0))
+    ordered.extend(rest)
+    return ordered[:REVIEW_BATCH]
+
+
+def scope_review(
+    state: state_module.IndustryState,
+    outcome: records.ClaimReview,
+    pending: list[str],
+) -> records.ClaimReview:
+    """Keep only the verdicts about what the verifier was handed.
+
+    Claim verdicts outside the batch, relationship verdicts whose
+    parent claim is not in the batch, and source judgements about
+    sources none of the batch's evidence comes from are dropped, so
+    verifier output can never alter what it did not see.
+    """
+    batch = set(pending)
+    relationships = state.get("relationships", {})
+    evidence = state.get("evidence", {})
+    claims = state.get("claims", {})
+    sources = {
+        evidence[eid].source_id
+        for cid in batch
+        if cid in claims
+        for eid in claims[cid].evidence_ids
+        if eid in evidence
+    }
+    for rel in relationships.values():
+        if rel.claim_id in batch:
+            sources.update(
+                evidence[eid].source_id
+                for eid in rel.evidence_ids
+                if eid in evidence
+            )
+    return outcome.model_copy(
+        update={
+            "claims": [v for v in outcome.claims if v.claim_id in batch],
+            "relationships": [
+                v
+                for v in outcome.relationships
+                if v.relationship_id in relationships
+                and relationships[v.relationship_id].claim_id in batch
+            ],
+            "sources": [v for v in outcome.sources if v.source_id in sources],
+        }
+    )
 
 
 def review_remaining(state: state_module.IndustryState) -> int:
@@ -501,6 +564,7 @@ def build_worker_input(
         references=references,
         open_issue=open_issue,
         allowance=attempt.reserved,
+        max_turns=state["meta"].limits.max_turns,
         model=roles.ROLE_MODELS[task.role],
         prompt_version=roles.PROMPT_VERSION,
     )
@@ -1010,8 +1074,22 @@ def build_graph(
             # the analyst in the next cycle; one reservation is one call.
         findings: dict[str, records.Finding] = {}
         for spec in analysis.findings:
-            valid = [cid for cid in spec.claim_ids if cid in claims]
-            if not valid or not all(
+            # A finding rests on reviewed claims only; one unreviewed,
+            # unsupported, or unknown citation drops it (logged), so
+            # nothing unreviewed is promoted into analysis.
+            valid = [
+                cid
+                for cid in spec.claim_ids
+                if cid in claims
+                and claims[cid].review in ("supported", "qualified")
+            ]
+            if len(valid) != len(spec.claim_ids) or not valid:
+                update["route_log"].append(
+                    f"analyze: finding dropped, claims {spec.claim_ids} "
+                    "not all reviewed supported/qualified"
+                )
+                continue
+            if not all(
                 [
                     spec.mechanism,
                     spec.implication,
@@ -1105,11 +1183,7 @@ def build_graph(
         update["review_rounds"] = state.get("review_rounds", 0) + 1
         if outcome is None:
             return update
-        outcome = outcome.model_copy(
-            update={
-                "claims": [v for v in outcome.claims if v.claim_id in pending]
-            }
-        )
+        outcome = scope_review(state, outcome, pending)
         applied = merge.apply_review(state, outcome)
         update.update(
             {

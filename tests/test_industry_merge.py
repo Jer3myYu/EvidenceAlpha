@@ -698,3 +698,32 @@ def test_meaning_change_stales_dependants_and_conflicts_are_kept():
     update = merge.merge_results(state, [other], LIMITS)
     assert update["claims"]["C1"].period == "2024"
     assert "conflicting_repeat:period" in update["claims"]["C1"].limitations
+
+
+def test_material_findings_beyond_the_attempt_cap_stay_non_material():
+    state = base_state()
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "material_per_attempt": 2}
+    )
+    drafts = [
+        records.FindingDraft(
+            statement=f"fact {n}", material=True, evidence_refs=["E1"]
+        )
+        for n in range(4)
+    ]
+    result = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "fact text", "va")],
+        findings=drafts,
+    )
+    update = merge.merge_results(state, [result], limits)
+    added = [
+        c for c in update["claims"].values() if c.statement.startswith("fact ")
+    ]
+    assert sum(c.material for c in added) == 2 and len(added) == 4
+    assert any("material cap reached" in line for line in update["route_log"])

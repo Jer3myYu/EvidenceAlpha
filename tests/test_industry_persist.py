@@ -422,3 +422,19 @@ def test_loaded_records_are_revalidated():
     )
     problems = persist.validate_records({"claims": {"C2": broken}})
     assert problems and problems[0].startswith("claims[C2]")
+
+
+def test_validate_records_covers_every_persisted_field():
+    malformed = records.IndustryMap.model_construct(
+        segments=[{"id": "G1", "name": "x"}], links=[], participants=[]
+    )
+    problems = persist.validate_records({"map": malformed})
+    assert problems and problems[0].startswith("map")
+    fine = {"map": records.IndustryMap(), "coverage": [], "question": "q"}
+    assert not persist.validate_records(fine)
+    bad_list = {
+        "coverage": [
+            records.Coverage.model_construct(question="one", status="covered")
+        ]
+    }
+    assert persist.validate_records(bad_list)

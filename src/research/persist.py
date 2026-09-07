@@ -145,12 +145,24 @@ def validate_records(values: dict[str, Any]) -> list[str]:
     dictionaries; a loaded thread must not proceed on such records.
     """
     problems: list[str] = []
-    for key in REGISTRY_KEYS:
-        for item_id, item in (values.get(key) or {}).items():
-            try:
-                type(item).model_validate(item.model_dump())
-            except (AttributeError, ValueError) as error:
-                problems.append(f"{key}[{item_id}]: {str(error)[:120]}")
+
+    def check(label: str, item: Any) -> None:
+        if not hasattr(item, "model_dump"):
+            return
+        try:
+            type(item).model_validate(item.model_dump())
+        except (AttributeError, ValueError) as error:
+            problems.append(f"{label}: {str(error)[:120]}")
+
+    for key, value in values.items():
+        if isinstance(value, dict):
+            for item_id, item in value.items():
+                check(f"{key}[{item_id}]", item)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                check(f"{key}[{index}]", item)
+        else:
+            check(key, value)
     return problems
 
 

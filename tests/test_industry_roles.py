@@ -142,3 +142,119 @@ def test_verifier_prompt_binds_relationships_to_excerpts():
     text = roles.render_relationships(state, ["C1"], with_excerpts=True)
     assert "claim C1" in text and "sec 2" in text
     assert "co-mention" in roles.VERIFIER_PROMPT
+
+
+def test_editor_and_analyst_see_reviewed_lineage_only():
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="上游",
+                stage="upstream",
+                description="d",
+                claim_id="C1",
+            ),
+            records.Segment(
+                id="G2",
+                name="中游",
+                stage="midstream",
+                description="d",
+                claim_id="C2",
+            ),
+        ],
+        participants=[
+            records.Participant(
+                id="P1",
+                name="菲利华",
+                segment_id="G1",
+                role="supplier",
+                selection_rationale="r",
+                claim_id="C3",
+            )
+        ],
+    )
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="s1",
+            kind="map",
+            review="supported",
+            map_ref="G1",
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="s2",
+            kind="map",
+            review="unreviewed",
+            map_ref="G2",
+        ),
+        "C3": records.Claim(
+            id="C3",
+            statement="s3",
+            kind="map",
+            review="unreviewed",
+            map_ref="P1",
+        ),
+        "C4": records.Claim(
+            id="C4", statement="s4", kind="fact", review="supported"
+        ),
+    }
+    text = roles.render_map(industry_map, claims)
+    assert "G1" in text and "G2" not in text and "菲利华" not in text
+    assert "2 map items" in text
+    state = {
+        "brief": records.Brief(industry="光掩模"),
+        "map": industry_map,
+        "claims": claims,
+        "relationships": {
+            "R1": records.Relationship(
+                id="R1",
+                claim_id="C4",
+                from_entity="a",
+                to_entity="b",
+                relation="supplies",
+                confirmed=True,
+            ),
+            "R2": records.Relationship(
+                id="R2",
+                claim_id="C2",
+                from_entity="a",
+                to_entity="c",
+                relation="supplies",
+            ),
+        },
+        "findings": {
+            "F1": records.Finding(
+                id="F1",
+                conclusion="ok",
+                claim_ids=["C4"],
+                mechanism="m",
+                implication="i",
+                counterargument="c",
+                uncertainty="u",
+                monitor="w",
+            ),
+            "F2": records.Finding(
+                id="F2",
+                conclusion="leaky",
+                claim_ids=["C4", "C2"],
+                mechanism="m",
+                implication="i",
+                counterargument="c",
+                uncertainty="u",
+                monitor="w",
+            ),
+        },
+    }
+    draft = roles.draft_description(state, "write")
+    assert "[R1]" in draft and "[R2]" not in draft
+    assert "[F1]" in draft and "[F2]" not in draft
+    assert "s2" not in draft and "s3" not in draft
+    analysis = roles.analysis_description(state, "")
+    assert (
+        "[C2]" not in analysis
+        and "[F2]" not in analysis
+        and "[R2]" not in analysis
+    )
+    final = roles.final_review_description(state)
+    assert "[F2]" not in final

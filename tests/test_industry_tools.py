@@ -1,6 +1,8 @@
 """The per-attempt tools: admission, evidence collection, observations."""
 
 import asyncio
+import hashlib
+import json
 
 import pytest
 
@@ -256,8 +258,6 @@ def test_fixture_backend_serves_only_the_recorded_pages(tmp_path):
     )
     (tmp_path / "a.html").write_bytes(page)
     (tmp_path / "b.html").write_bytes(other)
-    import json  # pylint: disable=import-outside-toplevel
-
     (tmp_path / "sources.json").write_text(
         json.dumps(
             [
@@ -301,3 +301,37 @@ def test_fixture_backend_serves_only_the_recorded_pages(tmp_path):
         backend.fetch("https://live.example/", "S1")
     docs = backend.search_documents("blanks", 5, "https://a.example/x")
     assert len(docs) == 1 and "HOYA" in docs[0].text
+
+
+def test_fixture_backend_has_a_digest_and_refuses_changed_blobs(tmp_path):
+    fixture = tmp_path / "fx"
+    fixture.mkdir()
+    blob = b"<html><body><p>photomask upstream quartz</p></body></html>"
+    digest = hashlib.sha256(blob).hexdigest()
+    (fixture / "a.html").write_bytes(blob)
+    manifest = [
+        {
+            "url": "https://x.example/a",
+            "blob": "a.html",
+            "status": 200,
+            "content_type": "text/html",
+            "sha256": digest,
+        }
+    ]
+    (fixture / "sources.json").write_text(json.dumps(manifest))
+    store = snapshots.vector_store(str(tmp_path / "chroma"))
+    backend = tools.FixtureBackend(str(fixture), store, str(tmp_path / "src"))
+    assert len(backend.digest) == 64
+    same = tools.FixtureBackend(
+        str(fixture),
+        snapshots.vector_store(str(tmp_path / "chroma2")),
+        str(tmp_path / "src2"),
+    )
+    assert same.digest == backend.digest
+    (fixture / "a.html").write_bytes(blob + b"<!-- changed -->")
+    with pytest.raises(ValueError):
+        tools.FixtureBackend(
+            str(fixture),
+            snapshots.vector_store(str(tmp_path / "chroma3")),
+            str(tmp_path / "src3"),
+        )

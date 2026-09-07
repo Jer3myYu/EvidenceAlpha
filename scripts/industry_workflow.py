@@ -73,6 +73,31 @@ def limits_from(overrides: list[str]) -> records.Limits:
     return records.Limits(**values)
 
 
+def require_live_key() -> None:
+    """Stop before any run that would need the live web API without a key."""
+    try:
+        web.api_key()
+    except RuntimeError as error:
+        sys.exit(str(error))
+
+
+def check_fixture(
+    meta: records.RunMeta, backend: tools.FixtureBackend
+) -> str | None:
+    """The reason a resumed fixture run may not continue, or ``None``.
+
+    The thread recorded the fixture's digest (every served page and its
+    bytes); a resume must rebuild exactly that evidence.
+    """
+    if meta.fixture_digest and meta.fixture_digest != backend.digest:
+        return (
+            f"Fixture {meta.fixture} has changed since this thread was "
+            f"recorded (digest {backend.digest[:12]} != "
+            f"{meta.fixture_digest[:12]}); a resume keeps its evidence."
+        )
+    return None
+
+
 def fixture_backend(directory: str) -> tools.FixtureBackend:
     """The fixed-evidence backend over a temporary index and store."""
     scratch = tempfile.mkdtemp(prefix="fixture-run-")
@@ -130,11 +155,8 @@ async def main() -> None:
         persist.backup(persist.DB_PATH, args.backup)
         print(f"Backed up {persist.DB_PATH} to {args.backup}")
         return
-    if not args.fixture:
-        try:
-            web.api_key()
-        except RuntimeError as error:
-            sys.exit(str(error))
+    if args.resume is None and not args.fixture:
+        require_live_key()
     runtime = budget.Runtime(limits_from(args.limit))
     backend = fixture_backend(args.fixture) if args.fixture else None
     async with persist.open_checkpointer() as checkpointer:
@@ -149,7 +171,10 @@ async def main() -> None:
             show("QUESTION", args.question)
             config = persist.thread_config(thread_id)
             payload = graph_module.initial_state(
-                args.question, runtime.limits, fixture=args.fixture
+                args.question,
+                runtime.limits,
+                fixture=args.fixture,
+                fixture_digest=backend.digest if backend else None,
             )
         else:
             if args.limit:
@@ -171,7 +196,14 @@ async def main() -> None:
                     "a resume keeps it."
                 )
             runtime = budget.Runtime(meta.limits)
-            backend = fixture_backend(meta.fixture) if meta.fixture else None
+            if meta.fixture:
+                backend = fixture_backend(meta.fixture)
+                problem = check_fixture(meta, backend)
+                if problem:
+                    sys.exit(problem)
+            else:
+                backend = None
+                require_live_key()
             graph = graph_module.build_graph(
                 runtime, backend=backend, checkpointer=checkpointer
             )

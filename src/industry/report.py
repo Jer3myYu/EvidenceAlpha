@@ -75,13 +75,8 @@ def check_citations(
                         f"cites {cid}, reviewed {claim.review}, as fact",
                     )
                 )
-        for sentence in _SENTENCE.findall(section.text):
-            stripped = sentence.strip()
-            if (
-                not stripped
-                or _CITATION.search(stripped)
-                or stripped.startswith(("|", "#", "-", "*"))
-            ):
+        for stripped in factual_units(section.text):
+            if _CITATION.search(stripped):
                 continue
             if _DIGITS.search(stripped):
                 problems.append(
@@ -99,6 +94,38 @@ def check_citations(
                     )
                 )
     return problems
+
+
+_SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
+_LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+
+
+def factual_units(text: str) -> list[str]:
+    """The units a citation check judges: sentences, table rows, items.
+
+    A Markdown table row (other than the header row and its separator)
+    is one unit, so a figure in a cell needs a citation in that row; a
+    list item is a unit after its marker. Headings are skipped.
+    """
+    units: list[str] = []
+    lines = text.split("\n")
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("|"):
+            if _SEPARATOR_ROW.match(line):
+                continue
+            following = (
+                lines[index + 1].strip() if index + 1 < len(lines) else ""
+            )
+            if _SEPARATOR_ROW.match(following):
+                continue  # the header row
+            units.append(line)
+            continue
+        line = _LIST_MARK.sub("", line)
+        units.extend(s.strip() for s in _SENTENCE.findall(line) if s.strip())
+    return units
 
 
 def known_entities(state: state_module.IndustryState) -> list[str]:

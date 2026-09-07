@@ -324,25 +324,50 @@ def render_brief(brief: records.Brief) -> str:
     return "\n".join(lines)
 
 
-def render_map(industry_map: records.IndustryMap) -> str:
-    """Segments, links, and participants with their claim ids."""
+def render_map(
+    industry_map: records.IndustryMap,
+    claims: dict[str, records.Claim] | None = None,
+) -> str:
+    """Segments, links, and participants with their claim ids.
+
+    With ``claims``, only items whose map claim was reviewed
+    ``supported`` or ``qualified`` are rendered (the Analyst and the
+    Editor see reviewed lineage only); the omitted ones are counted.
+    """
     if not industry_map.segments:
         return "Industry map: none yet."
+
+    def shown(claim_id: str) -> bool:
+        if claims is None:
+            return True
+        claim = claims.get(claim_id)
+        return claim is not None and claim.review in ("supported", "qualified")
+
     names = {s.id: s.name for s in industry_map.segments}
     unknown = "?"
     lines = ["Industry map:"]
+    omitted = 0
     for seg in industry_map.segments:
+        if not shown(seg.claim_id):
+            omitted += 1
+            continue
         lines.append(
             f"  {seg.id} [{seg.stage}] {seg.name}: {seg.description} "
             f"(claim {seg.claim_id})"
         )
     for link in industry_map.links:
+        if not shown(link.claim_id):
+            omitted += 1
+            continue
         lines.append(
             f"  {link.id} {names.get(link.from_segment, unknown)} -> "
             f"{names.get(link.to_segment, unknown)}: {link.what_flows} "
             f"(claim {link.claim_id})"
         )
     for part in industry_map.participants:
+        if not shown(part.claim_id):
+            omitted += 1
+            continue
         flows = []
         if part.supplies:
             flows.append(f"supplies {part.supplies}")
@@ -359,6 +384,13 @@ def render_map(industry_map: records.IndustryMap) -> str:
         lines.append(f"  boundary: {industry_map.boundary_note}")
     if industry_map.gaps:
         lines.append("  gaps: " + "; ".join(industry_map.gaps))
+    if omitted:
+        lines.append(
+            f"  ({omitted} map items whose claims are not yet reviewed are "
+            "omitted; they may not be stated)"
+        )
+    if len(lines) == 1:
+        lines.append("  (no reviewed map items yet)")
     return "\n".join(lines)
 
 
@@ -469,6 +501,7 @@ def render_relationships(
     state: state_module.IndustryState,
     claim_ids: list[str] | None = None,
     with_excerpts: bool = False,
+    confirmed_only: bool = False,
 ) -> str:
     """Relationships with their parent claim and, on request, excerpts.
 
@@ -479,11 +512,14 @@ def render_relationships(
         beside the claims it was handed.
       with_excerpts: Render each cited excerpt with its locator and
         kind, so a judgement is bound to the exact text.
+      confirmed_only: Only confirmed relationships (what the Analyst
+        and the Editor may build on).
     """
     items = [
         rel
         for rel in state.get("relationships", {}).values()
-        if claim_ids is None or rel.claim_id in claim_ids
+        if (claim_ids is None or rel.claim_id in claim_ids)
+        and (not confirmed_only or rel.confirmed)
     ]
     if not items:
         return "Relationships: none."
@@ -510,10 +546,20 @@ def render_relationships(
     return "\n".join(lines)
 
 
-def render_findings(state: state_module.IndustryState) -> str:
-    """Current findings with their claim ids."""
+def render_findings(
+    state: state_module.IndustryState, reviewed_only: bool = False
+) -> str:
+    """Current findings with their claim ids.
+
+    With ``reviewed_only``, a finding is rendered only when every claim
+    it cites is reviewed ``supported`` or ``qualified``.
+    """
+    reviewed = set(reviewed_claim_ids(state)) if reviewed_only else None
     items = [
-        f for f in state.get("findings", {}).values() if f.status == "current"
+        f
+        for f in state.get("findings", {}).values()
+        if f.status == "current"
+        and (reviewed is None or set(f.claim_ids) <= reviewed)
     ]
     if not items:
         return "Findings: none."
@@ -786,11 +832,18 @@ def analysis_description(
     return "\n\n".join(
         [
             render_brief(state["brief"]),
-            render_map(state.get("map", records.IndustryMap())),
-            render_claims(state, None, True, MAX_CONTEXT_CHARS["analyst"]),
-            render_relationships(state),
+            render_map(
+                state.get("map", records.IndustryMap()), state.get("claims", {})
+            ),
+            render_claims(
+                state,
+                reviewed_claim_ids(state),
+                True,
+                MAX_CONTEXT_CHARS["analyst"],
+            ),
+            render_relationships(state, confirmed_only=True),
             render_calculations(state),
-            render_findings(state),
+            render_findings(state, reviewed_only=True),
             render_issues(state),
             calculations_note,
             "Return material findings for the economics (questions 4 and "
@@ -876,8 +929,10 @@ def draft_description(
     return "\n\n".join(
         [
             render_brief(state["brief"]),
-            render_map(state.get("map", records.IndustryMap())),
-            render_findings(state),
+            render_map(
+                state.get("map", records.IndustryMap()), state.get("claims", {})
+            ),
+            render_findings(state, reviewed_only=True),
             render_calculations(state),
             render_claims(
                 state,
@@ -885,7 +940,7 @@ def draft_description(
                 False,
                 MAX_CONTEXT_CHARS["editor"],
             ),
-            render_relationships(state),
+            render_relationships(state, confirmed_only=True),
             render_coverage(state),
             render_issues(state),
             render_sections(state.get("sections", [])),
@@ -933,7 +988,7 @@ def final_review_description(state: state_module.IndustryState) -> str:
                 False,
                 MAX_CONTEXT_CHARS["verifier"],
             ),
-            render_findings(state),
+            render_findings(state, reviewed_only=True),
             render_sections(state.get("sections", [])),
             "Check the exact draft: every factual sentence must be "
             "supported by the claims it cites (category unsupported when "
