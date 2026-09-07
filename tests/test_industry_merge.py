@@ -739,7 +739,7 @@ def test_map_segments_links_and_participants_are_capped():
             **LIMITS.model_dump(),
             "map_segments": 2,
             "map_links": 1,
-            "map_participants": 1,
+            "map_participants_per_stage": 1,
         }
     )
     draft = records.MapDraft(
@@ -747,7 +747,7 @@ def test_map_segments_links_and_participants_are_capped():
             records.SegmentDraft(
                 key=f"s{n}",
                 name=f"segment {n}",
-                stage="upstream",
+                stage="upstream" if n == 0 else "midstream",
                 description="d",
                 evidence_refs=["E1"],
             )
@@ -764,11 +764,11 @@ def test_map_segments_links_and_participants_are_capped():
         participants=[
             records.ParticipantDraft(
                 name=f"company {n}",
-                segment_key="s0",
+                segment_key="s0" if n < 3 else "s1",
                 role="supplier",
                 evidence_refs=["E1"],
             )
-            for n in range(3)
+            for n in range(4)
         ],
     )
     result = records.TaskResult(
@@ -785,8 +785,10 @@ def test_map_segments_links_and_participants_are_capped():
     industry_map = update["map"]
     assert len(industry_map.segments) == 2
     assert len(industry_map.links) == 1
-    assert len(industry_map.participants) == 1
-    assert sum(1 for c in update["claims"].values() if c.map_ref) == 4
+    # One participant per stage: the second segment is midstream, so
+    # its company is admitted beside the first stage's one.
+    assert len(industry_map.participants) == 2
+    assert sum(1 for c in update["claims"].values() if c.map_ref) == 5
 
 
 def test_relationship_needs_a_supported_parent_to_confirm():

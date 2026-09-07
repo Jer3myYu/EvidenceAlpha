@@ -739,13 +739,14 @@ class Limits(Record):
     # ``material_claims`` material claims in a run, of which each central
     # question may hold ``material_per_question`` (the map counts as
     # question 1-3's share through ``map_segments``, ``map_links`` and
-    # ``map_participants``); a material finding beyond its quota is kept
-    # non-material. 80 claims are 8 review batches of 10.
+    # ``map_participants_per_stage``, a per-stage cap so a full upstream
+    # never crowds out the Chinese midstream); a material finding beyond
+    # its quota is kept non-material. 80 claims are 8 review batches of 10.
     material_claims: int = 80
     material_per_question: int = 12
     map_segments: int = 12
     map_links: int = 16
-    map_participants: int = 24
+    map_participants_per_stage: int = 8
 
     @pydantic.model_validator(mode="before")
     @classmethod

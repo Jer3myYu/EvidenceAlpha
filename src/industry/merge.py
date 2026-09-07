@@ -518,6 +518,7 @@ def _fold_map(
         by_name[name] = seg_id
         key_to_id[item.key] = seg_id
     seg_name = {s.id: s.name for s in segments}
+    seg_stage = {s.id: s.stage for s in segments}
     existing_links = {(l.from_segment, l.to_segment) for l in links}
     for item in draft.links:
         if len(links) >= registry.limits.map_links:
@@ -577,10 +578,17 @@ def _fold_map(
             continue
         if (normalize_text(item.name), seg_id) in existing_participants:
             continue
-        if len(participants) >= registry.limits.map_participants:
+        stage = seg_stage.get(seg_id, "adjacent")
+        in_stage = sum(
+            1
+            for p in participants
+            if seg_stage.get(p.segment_id, "adjacent") == stage
+        )
+        if in_stage >= registry.limits.map_participants_per_stage:
             registry.log.append(
                 f"{attempt_id}: map participant {item.name} not added: "
-                f"{registry.limits.map_participants} participants is the cap"
+                f"{registry.limits.map_participants_per_stage} {stage} "
+                "participants is the cap"
             )
             continue
         part_id = next_id("P", {p.id: p for p in participants})
