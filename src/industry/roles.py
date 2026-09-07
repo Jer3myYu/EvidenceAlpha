@@ -18,6 +18,7 @@ import pydantic
 
 from industry import budget
 from industry import merge
+from industry import calc as calc_module
 from industry import records
 from industry import state as state_module
 from research import crew
@@ -597,11 +598,14 @@ def render_calculations(state: state_module.IndustryState) -> str:
             f"{i.claim_id}={i.value} {i.unit} ({i.period or unknown})"
             for i in calc.inputs
         )
-        outcome = (
-            f"{calc.result} {calc.unit}"
-            if calc.status == "ok"
-            else f"error: {calc.message}"
-        )
+        if calc.status == "ok":
+            outcome = f"{calc.result} {calc.unit}"
+        elif (calc.message or "").startswith(calc_module.STALE_INPUT):
+            # Not a request that could not be answered: a result its own
+            # inputs withdrew, waiting to be computed again.
+            outcome = f"withdrawn, awaiting recomputation: {calc.message}"
+        else:
+            outcome = f"error: {calc.message}"
         formula = calc.formula or "-"
         lines.append(
             f"  [{calc.id}] {calc.kind} {calc.label}: {inputs}; "

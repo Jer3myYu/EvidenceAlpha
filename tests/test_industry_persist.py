@@ -397,36 +397,22 @@ def test_loaded_records_are_revalidated():
         id="C1", statement="s", kind="fact", topics=["cost_differentiation"]
     )
     assert not persist.validate_records({"claims": {"C1": claim}})
-    broken = records.Claim.model_construct(
-        id="C2",
-        statement="s",
-        kind="fact",
-        topics=["not_a_topic"],
-        quantity={"value": 1},
-        evidence_ids=[],
-        reviewed_topics=[],
-        questions=[],
-        limitations=[],
-        calculation_id=None,
-        material=False,
-        review="unreviewed",
-        version=1,
-        supersedes=None,
-        entity=None,
-        period=None,
-        milestone=None,
-        milestone_date=None,
-        dimension=None,
-        origin="",
-        map_ref=None,
+    # model_copy does not validate, so it produces the degraded shape a
+    # reader would choke on: an invalid topic and a dictionary quantity.
+    broken = claim.model_copy(
+        update={
+            "id": "C2",
+            "topics": ["not_a_topic"],
+            "quantity": {"value": 1},
+        }
     )
     problems = persist.validate_records({"claims": {"C2": broken}})
     assert problems and problems[0].startswith("claims[C2]")
 
 
 def test_validate_records_covers_every_persisted_field():
-    malformed = records.IndustryMap.model_construct(
-        segments=[{"id": "G1", "name": "x"}], links=[], participants=[]
+    malformed = records.IndustryMap().model_copy(
+        update={"segments": [{"id": "G1", "name": "x"}]}
     )
     problems = persist.validate_records({"map": malformed})
     assert problems and problems[0].startswith("map")
@@ -434,7 +420,9 @@ def test_validate_records_covers_every_persisted_field():
     assert not persist.validate_records(fine)
     bad_list = {
         "coverage": [
-            records.Coverage.model_construct(question="one", status="covered")
+            records.Coverage(question=1, status="covered").model_copy(
+                update={"question": "one"}
+            )
         ]
     }
     assert persist.validate_records(bad_list)
@@ -480,21 +468,58 @@ def test_a_thread_of_another_record_schema_is_refused(tmp_path):
     asyncio.run(run())
 
 
+def test_an_unknown_persisted_field_is_refused_before_it_is_dropped():
+    # C1 round 2, finding 3: the serializer rebuilt a record that failed
+    # validation with model_construct, which drops the fields it does
+    # not know; with no nested record left over there was nothing for a
+    # post-deserialization check to notice, and the thread loaded with
+    # the field silently gone.
+    class Claim(records.Record):
+        """A Claim as another schema wrote it: one field more, no nested
+        record to leave behind."""
+
+        id: str
+        statement: str
+        kind: str = "fact"
+        review: str = "qualified"
+        restriction: str = "merchant market only"
+
+    Claim.__module__ = "industry.records"
+    blob = persist.SERIALIZER.dumps_typed(
+        {"claims": {"C1": Claim(id="C1", statement="s")}}
+    )
+    loaded = persist.SERIALIZER.loads_typed(blob)
+    item = loaded["claims"]["C1"]
+    # The payload is handed back whole rather than reconstructed, so the
+    # unknown field is still there to be refused, not already lost.
+    assert isinstance(item, dict)
+    assert item["restriction"] == "merchant market only"
+    problems = persist.validate_records(loaded)
+    assert problems and "dict where Claim is required" in problems[0]
+
+
+def test_a_record_may_not_be_built_without_validation():
+    # The refusal that makes the serializer hand back the raw payload.
+    with pytest.raises(TypeError, match="without validation"):
+        records.Claim.model_construct(id="C1", statement="s", kind="fact")
+
+
 def test_a_nested_record_left_as_a_dictionary_is_rejected():
-    # C1 round 1, finding 2: the serializer rebuilds a record that fails
-    # validation with model_construct, leaving nested values as plain
-    # dictionaries; validating model_dump() cannot see the difference.
-    claim = records.Claim.model_construct(
-        id="C1",
-        statement="Acme 2024 revenue was 52亿元",
-        kind="fact",
-        evidence_ids=["E1"],
-        quantity={"value": 52, "unit": "亿元", "as_written": "52亿元"},
+    # Defence in depth: whatever leaves a declared record as a plain
+    # value, no reader should be handed it.
+    claim = records.Claim(id="C1", statement="s", kind="fact").model_copy(
+        update={
+            "quantity": {
+                "value": 52,
+                "unit": "亿元",
+                "as_written": "52亿元",
+                "period": None,
+                "scope": None,
+            }
+        }
     )
     problems = persist.validate_records({"claims": {"C1": claim}})
-    assert problems and "quantity" in problems[0]
-    assert "dict where Quantity is required" in problems[0]
-    # A genuine nested record passes.
+    assert problems and "dict where Quantity is required" in problems[0]
     good = claim.model_copy(
         update={
             "quantity": records.Quantity(
@@ -503,14 +528,15 @@ def test_a_nested_record_left_as_a_dictionary_is_rejected():
         }
     )
     assert not persist.validate_records({"claims": {"C1": good}})
-    # And a record nested two levels down is checked too.
-    calculation = records.Calculation.model_construct(
+    calculation = records.Calculation(
         id="K1",
         kind="share",
         label="l",
-        inputs=[{"claim_id": "C1", "value": 1.0, "unit": "u"}],
+        inputs=[records.CalcInput(claim_id="C1", value=1.0, unit="u")],
         formula="f",
         status="ok",
+    ).model_copy(
+        update={"inputs": [{"claim_id": "C1", "value": 1.0, "unit": "u"}]}
     )
     deep = persist.validate_records({"calculations": {"K1": calculation}})
     assert deep and "CalcInput is required" in deep[0]

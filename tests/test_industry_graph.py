@@ -1575,3 +1575,140 @@ def test_a_claim_a_live_calculation_consumes_is_still_cited():
     closed = graph_module.resolve_issues(state)
     assert closed["issues"][issue.id].status == "resolved"
     assert closed["issues"][issue.id].resolution == "claim no longer cited"
+
+
+def test_one_review_batch_stales_everything_it_touched():
+    # C1 round 2 (routed to C2), introduced by 5faf1c3: the review node
+    # recomputed findings from the pre-cascade state, discarding what
+    # the cascade had staled through a calculation. Staling for rejected
+    # claims and staling through the cascade are now one pass over one
+    # authority, so neither can drop the other.
+    state = {
+        "claims": {
+            "C1": records.Claim(
+                id="C1",
+                statement="an input",
+                kind="fact",
+                evidence_ids=["E1"],
+                quantity=records.Quantity(
+                    value=52, unit="亿元", as_written="52亿元"
+                ),
+                review="supported",
+                material=True,
+                partition="q4",
+            ),
+            "C3": records.Claim(
+                id="C3",
+                statement="share: 52.0 %",
+                kind="derived",
+                evidence_ids=["E1"],
+                calculation_id="K1",
+                review="supported",
+                material=True,
+                partition="q4",
+            ),
+            "C9": records.Claim(
+                id="C9",
+                statement="an unrelated claim",
+                kind="fact",
+                evidence_ids=["E1"],
+                review="supported",
+                material=True,
+                partition="q4",
+            ),
+        },
+        "calculations": {
+            "K1": records.Calculation(
+                id="K1",
+                kind="share",
+                label="share",
+                inputs=[
+                    records.CalcInput(claim_id="C1", value=52, unit="亿元")
+                ],
+                formula="f",
+                result=52.0,
+                unit="%",
+                status="ok",
+            )
+        },
+        "findings": {
+            fid: records.Finding(
+                id=fid,
+                conclusion=fid,
+                claim_ids=[cid],
+                mechanism="m",
+                implication="i",
+                counterargument="c",
+                uncertainty="u",
+                monitor="mo",
+                questions=[8],
+            )
+            for fid, cid in (("F1", "C3"), ("F2", "C9"))
+        },
+        "sections": [],
+        "relationships": {},
+    }
+    applied = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C1", verdict="unsupported", reason="no source"
+                ),
+                records.ClaimVerdict(
+                    claim_id="C9", verdict="unsupported", reason="no source"
+                ),
+            ]
+        ),
+    )
+    # F1 goes stale through the calculation, F2 because its claim was
+    # rejected; one call has to deliver both.
+    assert applied["findings"]["F1"].status == "stale"
+    assert applied["findings"]["F2"].status == "stale"
+    assert applied["calculations"]["K1"].status == "error"
+    assert applied["claims"]["C3"].review == "unreviewed"
+
+
+def test_a_stale_derived_claim_is_not_offered_for_review():
+    # C1 round 2, finding 1: review cannot settle it, only recomputation
+    # can, so it must not consume a review slot either.
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="a measured claim",
+            kind="fact",
+            evidence_ids=["E1"],
+            review="unreviewed",
+            material=True,
+            partition="q4",
+            questions=[4],
+        ),
+        "C3": records.Claim(
+            id="C3",
+            statement="share: 52.0 %",
+            kind="derived",
+            evidence_ids=["E1"],
+            calculation_id="K1",
+            review="unreviewed",
+            material=True,
+            partition="q4",
+            questions=[4],
+        ),
+    }
+    stopped = records.Calculation(
+        id="K1",
+        kind="share",
+        label="share",
+        inputs=[records.CalcInput(claim_id="C1", value=52, unit="亿元")],
+        formula="f",
+        status="error",
+        message="stale_input: C1 changed after the calculation",
+    )
+    state = {"claims": claims, "calculations": {"K1": stopped}}
+    assert graph_module.pending_review(state, 10) == ["C1"]
+    assert graph_module.review_remaining(state) == 1
+    # Once the calculation is current again, it queues normally.
+    state["calculations"]["K1"] = stopped.model_copy(
+        update={"status": "ok", "message": None, "result": 52.0, "unit": "%"}
+    )
+    assert set(graph_module.pending_review(state, 10)) == {"C1", "C3"}

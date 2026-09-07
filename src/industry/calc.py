@@ -12,6 +12,7 @@ problem instead of a number.
 import dataclasses
 import math
 import re
+from typing import Any
 
 from industry import merge
 from industry import records
@@ -126,14 +127,18 @@ def _finite(value: float, role: str) -> None:
 
 def inputs_from_claims(
     claims: dict[str, records.Claim],
+    calculations: dict[str, records.Calculation] | None = None,
 ) -> dict[str, records.CalcInput]:
     """The quantities a calculation may consume, by claim id.
 
     Only a claim reviewed supported or qualified whose quantity is
     consistent (``merge.quantity_consistent``: the numeric value is the
     number as written) becomes an input; anything else is a missing
-    input, never a number.
+    input, never a number. A claim that reports a calculation of its own
+    is an input only while that calculation is current, so a result
+    withdrawn by a changed input never feeds the next one.
     """
+    live = calculations or {}
     return {
         cid: records.CalcInput(
             claim_id=cid,
@@ -145,6 +150,7 @@ def inputs_from_claims(
         for cid, claim in claims.items()
         if claim.quantity is not None
         and claim.is_reviewed()
+        and merge.calculation_current(claim, live)
         and merge.quantity_consistent(claim.quantity)
     }
 
@@ -178,7 +184,9 @@ def compute(
       ``status="error"`` and a ``message`` naming the failed check.
     """
     try:
-        return _compute(calc_id, request, inputs)
+        return _compute(calc_id, request, inputs).model_copy(
+            update={"request": request}
+        )
     except CalcError as error:
         used = [
             inputs[cid]
@@ -199,6 +207,7 @@ def compute(
             status="error",
             message=str(error),
             alignment_note=request.alignment_note,
+            request=request,
         )
 
 
@@ -273,3 +282,101 @@ def _compute(
         status="ok",
         alignment_note=note,
     )
+
+
+STALE_INPUT = "stale_input:"
+
+
+def derived_fields(
+    result: records.Calculation, claims: dict[str, records.Claim]
+) -> dict[str, Any]:
+    """The claim fields that report one calculation's result.
+
+    A derived claim states the result, cites the evidence of every claim
+    the calculation consumed, and inherits their restrictions: it is
+    qualified when an input was, or when the periods or scopes were only
+    comparable under an alignment note, and supported otherwise. Its
+    approval comes from its inputs and the arithmetic, never from a
+    verdict on its text.
+    """
+    cited = [item.claim_id for item in result.inputs]
+    evidence_ids: list[str] = []
+    for cid in cited:
+        for eid in claims[cid].evidence_ids:
+            if eid not in evidence_ids:
+                evidence_ids.append(eid)
+    qualifications = [
+        f"{cid}: {claims[cid].review_reason}"
+        for cid in cited
+        if claims[cid].review == "qualified" and claims[cid].review_reason
+    ]
+    if result.alignment_note:
+        qualifications.append(f"alignment: {result.alignment_note}")
+    cited_text = ", ".join(cited)
+    return {
+        "statement": (
+            f"{result.label}: {result.result} {result.unit} "
+            f"(computed from {cited_text}; {result.formula})"
+        ),
+        "evidence_ids": evidence_ids,
+        "review": "qualified" if qualifications else "supported",
+        "review_reason": "; ".join(qualifications) or None,
+        "quantity": records.Quantity(
+            value=result.result or 0.0,
+            unit=result.unit or "",
+            period=result.inputs[-1].period,
+            scope=result.inputs[-1].scope,
+            as_written=str(result.result),
+        ),
+        "limitations": (
+            [f"alignment: {result.alignment_note}"]
+            if result.alignment_note
+            else []
+        ),
+    }
+
+
+def recompute_stale(
+    claims: dict[str, records.Claim],
+    calculations: dict[str, records.Calculation],
+) -> tuple[dict[str, records.Claim], dict[str, records.Calculation], list[str]]:
+    """Run again every calculation a changed input stopped.
+
+    This is the only way back for a derived claim: its calculation is
+    recomputed from the claims as they stand now, and the claim that
+    reports it becomes a new version stating the new result. A
+    calculation whose inputs are still unusable stays stopped and its
+    claim stays uncitable. Returns the updated claims, the updated
+    calculations, and the log lines.
+    """
+    claims = dict(claims)
+    calculations = dict(calculations)
+    log: list[str] = []
+    for calc_id in sorted(calculations):
+        record = calculations[calc_id]
+        if record.status != "error" or record.request is None:
+            continue
+        if not (record.message or "").startswith(STALE_INPUT):
+            continue
+        fresh = compute(
+            calc_id, record.request, inputs_from_claims(claims, calculations)
+        )
+        if fresh.status != "ok":
+            continue
+        calculations[calc_id] = fresh
+        for claim_id, claim in list(claims.items()):
+            if claim.calculation_id != calc_id:
+                continue
+            claims[claim_id] = claim.model_copy(
+                update={
+                    **derived_fields(fresh, claims),
+                    "version": claim.version + 1,
+                    "supersedes": f"{claim_id}@{claim.version}",
+                    "reviewed_topics": [],
+                }
+            )
+            log.append(
+                f"analyze: {calc_id} recomputed = {fresh.result} "
+                f"{fresh.unit} -> {claim_id} version {claim.version + 1}"
+            )
+    return claims, calculations, log

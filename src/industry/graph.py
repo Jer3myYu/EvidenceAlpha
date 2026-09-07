@@ -396,11 +396,14 @@ def pending_review(
     remaining material claims; at most ``batch`` per call (the run's
     ``Limits.review_batch``; ``REVIEW_BATCH`` is only the default).
     """
+    calculations = state.get("calculations", {})
     unreviewed = sorted(
         (
             c
             for c in state.get("claims", {}).values()
-            if c.needs_review() and c.material
+            if c.needs_review()
+            and c.material
+            and merge.calculation_current(c, calculations)
         ),
         key=lambda c: merge.schedule.task_number(c.id),
     )
@@ -481,11 +484,18 @@ def scope_review(
 
 
 def review_remaining(state: state_module.IndustryState) -> int:
-    """How many material claims are still unreviewed."""
+    """How many material claims review could still settle.
+
+    A derived claim whose calculation was stopped is not among them:
+    only recomputation can settle it (``calc.recompute_stale``).
+    """
+    calculations = state.get("calculations", {})
     return sum(
         1
         for c in state.get("claims", {}).values()
-        if c.needs_review() and c.material
+        if c.needs_review()
+        and c.material
+        and merge.calculation_current(c, calculations)
     )
 
 
@@ -1062,9 +1072,13 @@ def build_graph(
 
     async def analyze(state: state_module.IndustryState) -> dict[str, Any]:
         note = ANALYSIS_NOTE
-        calculations = dict(state.get("calculations", {}))
-        claims = dict(state.get("claims", {}))
-        log: list[str] = []
+        # A calculation a corrected claim stopped is run again from the
+        # claims as they stand now, before the analyst is asked for
+        # anything: a derived claim comes back as a new version stating
+        # the new result, never as the old result re-approved.
+        claims, calculations, log = calc.recompute_stale(
+            state.get("claims", {}), state.get("calculations", {})
+        )
 
         async def first(max_turns: int, deadline: float):
             return await api.analyze(state, note, max_turns, deadline)
@@ -1077,7 +1091,7 @@ def build_graph(
             # Only reviewed, consistent quantities may enter a
             # calculation; anything else is a missing input, never a
             # number.
-            inputs = calc.inputs_from_claims(claims)
+            inputs = calc.inputs_from_claims(claims, calculations)
             requested = analysis.calc_requests
             cap = limits.calc_requests_per_call
             if len(requested) > cap:
@@ -1092,58 +1106,15 @@ def build_graph(
                 calculations[calc_id] = result
                 if result.status == "ok":
                     claim_id = merge.next_id("C", claims)
-                    cited = [i.claim_id for i in result.inputs]
-                    evidence_ids: list[str] = []
-                    for cid in cited:
-                        for eid in claims[cid].evidence_ids:
-                            if eid not in evidence_ids:
-                                evidence_ids.append(eid)
-                    cited_text = ", ".join(cited)
-                    qualifications = [
-                        f"{cid}: {claims[cid].review_reason}"
-                        for cid in cited
-                        if claims[cid].review == "qualified"
-                        and claims[cid].review_reason
-                    ]
-                    if result.alignment_note:
-                        qualifications.append(
-                            f"alignment: {result.alignment_note}"
-                        )
                     claims[claim_id] = records.Claim(
                         id=claim_id,
-                        statement=(
-                            f"{result.label}: {result.result} {result.unit} "
-                            f"(computed from {cited_text}; {result.formula})"
-                        ),
                         kind="derived",
-                        evidence_ids=evidence_ids,
                         calculation_id=calc_id,
                         material=merge.admit_material(claims, limits, "q4"),
                         partition="q4",
-                        review=(
-                            "qualified"
-                            if result.alignment_note
-                            or any(
-                                claims[cid].review == "qualified"
-                                for cid in cited
-                            )
-                            else "supported"
-                        ),
-                        review_reason=("; ".join(qualifications) or None),
-                        quantity=records.Quantity(
-                            value=result.result or 0.0,
-                            unit=result.unit or "",
-                            period=result.inputs[-1].period,
-                            scope=result.inputs[-1].scope,
-                            as_written=str(result.result),
-                        ),
-                        limitations=(
-                            [f"alignment: {result.alignment_note}"]
-                            if result.alignment_note
-                            else []
-                        ),
                         questions=[4],
                         origin=calc_id,
+                        **calc.derived_fields(result, claims),
                     )
                     update["route_log"].append(
                         f"analyze: {calc_id} = {result.result} {result.unit} "
@@ -1318,9 +1289,6 @@ def build_graph(
                 "acquire",
                 text,
             )
-        update["findings"] = merge.stale_findings(
-            state.get("findings", {}), newly_bad
-        )
         created = 0
         wanted = outcome.acquisitions
         if len(wanted) > limits.acquisitions_per_review:

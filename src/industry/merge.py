@@ -49,33 +49,27 @@ def text_hash(text: str) -> str:
     return hashlib.sha1(normalize_text(text).encode("utf-8")).hexdigest()[:16]
 
 
+def _unique(items: list[str]) -> list[str]:
+    """The items in order, each kept once."""
+    seen: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
 def _label(ref: str) -> str:
     match = _LABEL.match(ref.strip())
     return match.group(1) if match else ref.strip()
 
 
-def quantity_in_excerpts(
-    quantity: records.Quantity, excerpts: list[str]
-) -> bool:
-    """Whether the number as written occurs in any excerpt.
-
-    Thousands separators and spaces are ignored on both sides so that
-    ``52亿`` matches ``52 亿`` and ``1,546.1`` matches ``1546.1``.
-    """
-
-    def squash(text: str) -> str:
-        return re.sub(r"[,\s，]", "", text)
-
-    needle = squash(quantity.as_written)
-    return bool(needle) and any(
-        needle in squash(excerpt) for excerpt in excerpts
-    )
-
-
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
-# Scale words an excerpt can put beside a number; longest first so that
-# ``万亿`` is never read as ``万``.
-_SCALE_WORDS = (
+_LATIN_RUN = re.compile(r"[a-z]+")
+_CJK_RUN = re.compile(r"[^\W\da-z_]+")
+# Scale words unambiguous enough to be read anywhere in the text that
+# governs a number; longest first so ``万亿`` is never read as ``万``.
+# Abbreviations are deliberately absent: ``mn`` would match ``column``.
+_WINDOW_SCALES = (
     "trillion",
     "billion",
     "million",
@@ -87,10 +81,24 @@ _SCALE_WORDS = (
     "千",
     "%",
     "％",
+)
+# Latin scales written against the number; the whole word must match,
+# so ``52m`` is a scale and ``52 bags`` is not.
+_LATIN_SCALES = (
+    "trillion",
+    "billion",
+    "million",
+    "thousand",
     "bn",
     "mn",
     "tn",
+    "m",
+    "b",
+    "k",
 )
+# Chinese scales written against the number; a prefix is enough,
+# because ``亿元`` carries no such ambiguity.
+_CJK_SCALES = ("万亿", "百万", "亿", "万", "千")
 # Currency symbols and the codes they stand for, so ``$52`` with unit
 # ``USD`` is a notation the unit carries, not an unresolved scale.
 _CURRENCY = {
@@ -167,38 +175,175 @@ def quantity_consistent(quantity: records.Quantity) -> bool:
     return _carried_by_unit(_residue(quantity.as_written), quantity.unit)
 
 
+def _clean(text: str) -> str:
+    """Drop thousands separators, keeping the spaces that bound words."""
+    return re.sub(r"[,，]", "", text).lower()
+
+
+def _needle(as_written: str) -> re.Pattern[str] | None:
+    """A pattern matching the number as written across stray spaces."""
+    written = re.sub(r"[,，\s]", "", as_written).lower()
+    if not written:
+        return None
+    return re.compile(r"\s*".join(re.escape(char) for char in written))
+
+
+def _adjacent_scale(tail: str) -> str | None:
+    """The scale written against the number (``52m``, ``52亿``, ``52%``).
+
+    A latin scale must be the whole word, so ``52 bags`` carries none;
+    a Chinese scale may be a prefix of the run (``亿`` of ``亿元``).
+    """
+    rest = tail.lstrip()
+    if rest[:1] in ("%", "％"):
+        return "%"
+    latin = _LATIN_RUN.match(rest)
+    if latin:
+        return latin.group() if latin.group() in _LATIN_SCALES else None
+    cjk = _CJK_RUN.match(rest)
+    if cjk:
+        for word in _CJK_SCALES:
+            if cjk.group().startswith(word):
+                return word
+    return None
+
+
+def _scale_within(text: str) -> str | None:
+    """A scale word written somewhere in the text governing a number."""
+    for word in _WINDOW_SCALES:
+        if word in text:
+            return word
+    return None
+
+
+def supporting_occurrences(
+    quantity: records.Quantity, excerpts: list[str]
+) -> tuple[int, int]:
+    """How the excerpts support the number as written.
+
+    Returns ``(complete, supported)``: how many occurrences are a
+    complete number of their own -- digits inside a longer number never
+    count, so ``52`` is not read out of ``152`` -- and how many of those
+    are governed by a scale the unit carries.
+
+    The scale governing an occurrence is the one written against it
+    (``52 million``, ``52m``, ``52亿``, ``52%``), and a scale the unit
+    carries settles it there. Otherwise the text between this number and
+    its neighbours is read, so a scale declared ahead of the figure
+    (``revenue (USD million): 52``) counts too, while another figure's
+    scale further off (``... sold 52 million units`` after ``52 USD``)
+    does not reach back into it. A scale the unit does not carry leaves
+    that occurrence unsupported; nothing is ever converted.
+    """
+    pattern = _needle(quantity.as_written)
+    if pattern is None:
+        return 0, 0
+    unit_text = "".join(_components(quantity.unit))
+    complete = 0
+    supported = 0
+    for excerpt in excerpts:
+        text = _clean(excerpt)
+        spans = [m.span() for m in _NUMBER.finditer(re.sub(r"\s", "", text))]
+        flat = re.sub(r"\s", "", text)
+        for match in pattern.finditer(text):
+            start_at, end_at = match.span()
+            flat_start = len(re.sub(r"\s", "", text[:start_at]))
+            flat_end = flat_start + len(re.sub(r"\s", "", match.group()))
+            before = flat[flat_start - 1 : flat_start]
+            if before.isdigit() or before in (".", "-"):
+                continue
+            if flat[flat_end - 1 : flat_end].isdigit():
+                after = flat[flat_end : flat_end + 2]
+                if after[:1].isdigit() or (
+                    after[:1] == "." and after[1:2].isdigit()
+                ):
+                    continue
+            complete += 1
+            if _supported_here(
+                text,
+                spans,
+                (start_at, end_at),
+                (flat_start, flat_end),
+                unit_text,
+            ):
+                supported += 1
+    return complete, supported
+
+
+def _supported_here(
+    text: str,
+    spans: list[tuple[int, int]],
+    here: tuple[int, int],
+    flat_here: tuple[int, int],
+    unit_text: str,
+) -> bool:
+    """Whether the scale governing one occurrence is in the unit."""
+    adjacent = _adjacent_scale(text[here[1] :])
+    if adjacent is not None:
+        return adjacent in unit_text
+    flat_start, flat_end = flat_here
+    following = min((s for s, _ in spans if s >= flat_end), default=None)
+    preceding = max((e for _, e in spans if e <= flat_start), default=None)
+    tail = text[here[1] :]
+    if following is not None:
+        tail = _take(text, here[1], following - flat_end)
+    head = text[: here[0]]
+    if preceding is not None:
+        head = head[len(head) - _span_back(head, flat_start - preceding) :]
+    for window in (tail, head):
+        scale = _scale_within(window)
+        if scale is not None and scale not in unit_text:
+            return False
+    return True
+
+
+def _take(text: str, start: int, characters: int) -> str:
+    """The slice from ``start`` holding ``characters`` non-space chars."""
+    taken = 0
+    for index in range(start, len(text)):
+        if not text[index].isspace():
+            if taken == characters:
+                return text[start:index]
+            taken += 1
+    return text[start:]
+
+
+def _span_back(text: str, characters: int) -> int:
+    """How far back from the end holds ``characters`` non-space chars."""
+    taken = 0
+    for index in range(len(text) - 1, -1, -1):
+        if not text[index].isspace():
+            if taken == characters:
+                return len(text) - 1 - index
+            taken += 1
+    return len(text)
+
+
+def quantity_in_excerpts(
+    quantity: records.Quantity, excerpts: list[str]
+) -> bool:
+    """Whether the number as written is a complete number in an excerpt.
+
+    Thousands separators and spaces are ignored on both sides so that
+    ``52亿`` matches ``52 亿`` and ``1,546.1`` matches ``1546.1``; the
+    digits must stand as their own number, never inside a longer one.
+    """
+    return supporting_occurrences(quantity, excerpts)[0] > 0
+
+
 def quantity_scale_in_excerpts(
     quantity: records.Quantity, excerpts: list[str]
 ) -> bool:
-    """Whether the excerpt's own scale beside the number is in the unit.
+    """Whether an excerpt supports the number at the unit's scale.
 
     ``value=52`` with ``as_written="52"`` and unit ``USD`` is internally
     consistent, but if the excerpt reads ``52 million USD`` the number
     was copied without its scale and the value is a million-fold wrong.
-    Every occurrence of the number as written must be followed either by
-    no scale word or by one the unit carries; the scale is never
-    inferred, the quantity is refused.
+    At least one complete occurrence must be governed by a scale the
+    unit carries; an unrelated figure elsewhere in the excerpt does not
+    disqualify it, and no scale is ever inferred.
     """
-
-    def squash(text: str) -> str:
-        return re.sub(r"[,\s，]", "", text)
-
-    needle = squash(quantity.as_written)
-    if not needle:
-        return False
-    unit_text = "".join(_components(quantity.unit))
-    for excerpt in excerpts:
-        text = squash(excerpt)
-        start = text.find(needle)
-        while start != -1:
-            before = text[start - 1 : start]
-            if not (before.isdigit() or before in (".", "-")):
-                tail = text[start + len(needle) :].lower()
-                for word in _SCALE_WORDS:
-                    if tail.startswith(word) and word not in unit_text:
-                        return False
-            start = text.find(needle, start + 1)
-    return True
+    return supporting_occurrences(quantity, excerpts)[1] > 0
 
 
 class _Registry:
@@ -350,12 +495,9 @@ class _Registry:
                 # quantity, an undated milestone) belongs on the
                 # canonical claim; otherwise folding a repeat would
                 # leave the record of the drop only in the route log.
-                "limitations": existing.limitations
-                + [
-                    lim
-                    for lim in claim.limitations
-                    if lim not in existing.limitations
-                ],
+                "limitations": _unique(
+                    existing.limitations + claim.limitations
+                ),
             }
             meaning_changed = False
             conflicts = []
@@ -375,9 +517,10 @@ class _Registry:
                 elif mine is not None and theirs is not None and mine != theirs:
                     conflicts.append(field)
             if conflicts:
-                update["limitations"] = update["limitations"] + [
-                    f"conflicting_repeat:{field}" for field in conflicts
-                ]
+                update["limitations"] = _unique(
+                    update["limitations"]
+                    + [f"conflicting_repeat:{field}" for field in conflicts]
+                )
                 names = ", ".join(conflicts)
                 self.log.append(
                     f"claim {existing.id}: a repeat disagreed on {names}; "
@@ -904,11 +1047,21 @@ def apply_review(
                 return True
         return False
 
+    calculations = state.get("calculations", {})
     changed: set[str] = set()
     for verdict in review.claims:
         claim = claims.get(verdict.claim_id)
         if claim is None:
             log.append(f"review names unknown claim {verdict.claim_id}")
+            continue
+        if not calculation_current(claim, calculations):
+            # Reviewing the text of a stale derived claim would approve
+            # arithmetic its own calculation has already withdrawn; it
+            # has to be recomputed instead.
+            log.append(
+                f"verdict on {claim.id} ignored: its calculation "
+                f"{claim.calculation_id} is not current"
+            )
             continue
         reason = verdict.reason.strip() or None
         if verdict.verdict == "qualified" and reason is None:
@@ -926,17 +1079,31 @@ def apply_review(
                 ],
             }
         )
-        if claim.is_reviewed() and (claim.review, claim.review_reason) != (
-            verdict.verdict,
-            reason,
+        # What rests on a claim is invalidated when the claim stops
+        # being citable or when its restriction changes. Rewording the
+        # reason behind an unchanged supported verdict changes neither,
+        # and must not cost the run its analysis.
+        restriction = (
+            claim.review_reason if claim.review == "qualified" else None
+        )
+        restricted_now = reason if verdict.verdict == "qualified" else None
+        if claim.is_reviewed() and (
+            not claims[claim.id].is_reviewed() or restriction != restricted_now
         ):
-            # A claim that was citable and is no longer, or whose
-            # restriction changed, invalidates what rests on it.
             changed.add(claim.id)
     # A parent that this batch rejected takes its relationships, its
     # derived claims and their calculations, findings and sections with
     # it; a parent it merely re-qualified takes them too, so nothing
-    # keeps an approval its basis no longer supports.
+    # keeps an approval its basis no longer supports. Rejected claims
+    # join the same set, so one pass over one authority stales
+    # everything this batch touched -- recomputing any part of it from
+    # the state as it stood before would drop the rest.
+    changed |= {
+        verdict.claim_id
+        for verdict in review.claims
+        if verdict.verdict in ("unsupported", "contradicted")
+        and verdict.claim_id in claims
+    }
     cascade = cascade_changes(state, changed, claims, relationships)
     claims = cascade["claims"]
     relationships = cascade["relationships"]
@@ -1003,7 +1170,8 @@ def invalidate_claim(
         ``quantity``, ``milestone``, ...).
 
     Returns:
-      The update from ``cascade_changes``: the claim's version is
+      An empty update when every named value already holds; otherwise
+      the update from ``cascade_changes``: the claim's version is
       incremented, ``supersedes`` names the previous version, its
       review is reset, and everything resting on it — claims derived
       through a calculation, those calculations, the findings and
@@ -1012,6 +1180,12 @@ def invalidate_claim(
     """
     claims = dict(state.get("claims", {}))
     claim = claims[claim_id]
+    if all(
+        getattr(claim, field, None) == value for field, value in changes.items()
+    ):
+        # Nothing actually changed; a new version here would withdraw
+        # the analysis that rests on the claim for no reason.
+        return {}
     claims[claim_id] = claim.model_copy(
         update={
             **changes,
@@ -1109,6 +1283,12 @@ def cascade_changes(
     dependants = derived_dependants(claims, calculations, changed)
     for cid in sorted(dependants):
         claim = claims[cid]
+        if not claim.is_reviewed() and not calculation_current(
+            claim, calculations
+        ):
+            # Already withdrawn by an earlier change; versioning it
+            # again would only churn the record.
+            continue
         claims[cid] = claim.model_copy(
             update={
                 "version": claim.version + 1,
@@ -1230,6 +1410,23 @@ def admit_material(
         if c.material and material_partition(c) == partition
     )
     return used < partition_cap(partition, limits)
+
+
+def calculation_current(
+    claim: records.Claim, calculations: dict[str, records.Calculation]
+) -> bool:
+    """Whether a claim reporting a calculation still has a live one.
+
+    A derived claim is only ever as good as the arithmetic behind it.
+    When ``cascade_changes`` stops that calculation the claim loses its
+    review; this is what stops an ordinary verdict from handing the old
+    number its approval back. Only recomputation (``calc.recompute_
+    stale``) can, and it writes a new version of the claim.
+    """
+    if claim.calculation_id is None:
+        return True
+    record = calculations.get(claim.calculation_id)
+    return record is not None and record.status == "ok"
 
 
 def relationship_live(

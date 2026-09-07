@@ -336,3 +336,44 @@ def test_a_refetch_reports_the_recorded_version_not_the_new_fetch(tmp_path):
     )
     assert recorded["retrieved_at"] == first.retrieved_at
     assert recorded["content_type"] == "text/html"
+
+
+def test_recorded_bytes_are_read_again_the_way_they_were_read(tmp_path):
+    # C1 round 2, finding 4: extraction ran before the stored metadata
+    # was consulted, so the same bytes served as text/plain re-extracted
+    # under the existing version id and replaced its chunks with raw
+    # HTML, leaving them inconsistent with its recorded content type.
+    fragment = b"<h2>Market</h2><p>HOYA supplies blanks.</p><p>AGC follows.</p>"
+    root = str(tmp_path / "sources")
+
+    def acquire(source_id, content_type):
+        return snapshots.acquire_bytes(
+            "https://example.com/a",
+            source_id,
+            root,
+            session=FakeSession(
+                {
+                    "https://example.com/a": FakeResponse(
+                        200, {"content-type": content_type}, fragment
+                    )
+                }
+            ),
+            resolver=resolver_for(PUBLIC),
+        )
+
+    first, chunks = acquire("S1", "text/html")
+    assert first.content_type.startswith("text/html")
+    assert chunks[0].text == "HOYA supplies blanks."
+    assert chunks[0].section == "Market"
+    again, later = acquire("S2", "text/plain")
+    assert again.id == first.id
+    assert again.content_type == first.content_type
+    assert again.chunk_count == first.chunk_count
+    # Read as text/plain the same bytes would chunk as raw markup under
+    # the very same chunk ids; the recorded interpretation governs.
+    assert [c.text for c in later] == [c.text for c in chunks]
+    assert [c.section for c in later] == [c.section for c in chunks]
+    assert [c.index for c in later] == [c.index for c in chunks]
+    assert "<p>" not in later[0].text
+    # The registry id of the source stays attempt-local.
+    assert again.source_id == "S2"

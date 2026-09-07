@@ -29,7 +29,10 @@ import pydantic
 # excerpt it was read from, so a claim written under schema 2 may carry
 # a quantity whose scale was never validated; such a thread is replayed
 # read-only and refused for resume (``persist.load_industry_state``).
-SCHEMA_VERSION = 3
+# 4: a Calculation records the request that produced it, so one stopped
+# by a changed input is recomputed instead of re-approved; a claim
+# derived under schema 3 carries no such request.
+SCHEMA_VERSION = 4
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -143,6 +146,24 @@ class Record(pydantic.BaseModel):
     """Base of every record: unknown fields are an error, not ignored."""
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @classmethod
+    def model_construct(cls, _fields_set=None, **values: Any) -> "Record":
+        """Refuse to build a record without validating it.
+
+        The checkpoint serializer rebuilds a model that fails
+        validation by calling ``model_construct``, which skips
+        validation and, under ``extra="forbid"``, silently drops the
+        fields it does not know -- so a record written by another
+        schema would come back stripped and be indistinguishable from a
+        valid one. Raising here makes the serializer hand back the raw
+        payload it read instead, which ``persist.validate_records``
+        then refuses by type, before anything is lost.
+        """
+        raise TypeError(
+            f"{cls.__name__} may not be constructed without validation; "
+            "the persisted record does not match the current schema"
+        )
 
 
 class Quantity(Record):
@@ -613,6 +634,10 @@ class Calculation(Record):
     status: CalcStatus
     message: str | None = None
     alignment_note: str | None = None
+    # The request that produced it, so a calculation stopped by a
+    # changed input can be run again from the corrected claims rather
+    # than have its old result re-approved.
+    request: CalcRequest | None = None
 
 
 class Finding(Record):

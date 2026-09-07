@@ -1510,3 +1510,207 @@ def test_a_qualification_without_a_reason_revokes_its_relationship():
     )
     assert not relationships["R1"].confirmed
     assert log and "no longer supported" in log[0]
+
+
+def test_a_stale_derived_claim_cannot_be_re_approved_by_review():
+    # C1 round 2, finding 1: the derived claim kept its old statement
+    # and quantity, entered the review queue, and a supported verdict
+    # made it citable and calculation-eligible again while its own
+    # calculation was still an error.
+    state = derived_state()
+    state["calculations"]["K1"] = state["calculations"]["K1"].model_copy(
+        update={
+            "request": records.CalcRequest(
+                kind="share",
+                label="Acme share",
+                numerator_claim_id="C1",
+                denominator_claim_id="C2",
+            )
+        }
+    )
+    state.update(
+        merge.invalidate_claim(
+            state,
+            "C1",
+            quantity=records.Quantity(
+                value=26, unit="亿元", period="2024", as_written="26亿元"
+            ),
+        )
+    )
+    assert state["calculations"]["K1"].status == "error"
+    assert not merge.calculation_current(
+        state["claims"]["C3"], state["calculations"]
+    )
+    applied = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C1", verdict="supported", reason="corrected"
+                ),
+                records.ClaimVerdict(
+                    claim_id="C3", verdict="supported", reason="looks fine"
+                ),
+            ]
+        ),
+    )
+    derived = applied["claims"]["C3"]
+    assert derived.review == "unreviewed" and not derived.is_reviewed()
+    assert "C3" not in calc.inputs_from_claims(
+        applied["claims"], applied["calculations"]
+    )
+    assert any("verdict on C3 ignored" in l for l in applied["route_log"])
+    # Recomputation is the only way back, and it writes a new version.
+    claims, calculations, log = calc.recompute_stale(
+        applied["claims"], applied["calculations"]
+    )
+    assert calculations["K1"].status == "ok"
+    assert claims["C3"].version == 3 and claims["C3"].quantity.value == 26.0
+    assert claims["C3"].supersedes == "C3@2"
+    assert log and "recomputed" in log[0]
+
+
+def test_a_calculation_that_cannot_be_recomputed_stays_stopped():
+    # The other half of finding 1: a permanently rejected input must
+    # not quietly restore the derived claim either.
+    state = derived_state()
+    state["calculations"]["K1"] = state["calculations"]["K1"].model_copy(
+        update={
+            "request": records.CalcRequest(
+                kind="share",
+                label="Acme share",
+                numerator_claim_id="C1",
+                denominator_claim_id="C2",
+            )
+        }
+    )
+    state.update(
+        merge.apply_review(
+            state,
+            records.ClaimReview(
+                claims=[
+                    records.ClaimVerdict(
+                        claim_id="C1",
+                        verdict="unsupported",
+                        reason="no source",
+                    )
+                ]
+            ),
+        )
+    )
+    claims, calculations, log = calc.recompute_stale(
+        state["claims"], state["calculations"]
+    )
+    assert calculations["K1"].status == "error"
+    assert not claims["C3"].is_reviewed()
+    assert not log
+
+
+def test_the_scale_governing_the_number_is_read_wherever_it_is_written():
+    # C1 round 2, findings 2 and 6: the check only looked after the
+    # number and matched digits inside a longer number, and it rejected
+    # a valid quantity because another figure elsewhere had a scale.
+    def usd(as_written="52"):
+        return records.Quantity(
+            value=52, unit="USD", period="2024", as_written=as_written
+        )
+
+    def supported(quantity, excerpt):
+        return merge.quantity_in_excerpts(
+            quantity, [excerpt]
+        ) and merge.quantity_scale_in_excerpts(quantity, [excerpt])
+
+    # The reviewer's four rows.
+    assert not supported(usd(), "Acme 2024 revenue was 52 million USD")
+    assert not supported(usd(), "Acme 2024 revenue (USD million): 52")
+    assert not supported(usd(), "Acme 2024 revenue was 52m USD")
+    assert not supported(usd(), "Acme revenue was 152 million USD")
+    # Digits inside a longer number are not the number at all.
+    assert not merge.quantity_in_excerpts(
+        usd(), ["Acme revenue was 152 million USD"]
+    )
+    # Nearby variants: a scale after the unit, and Chinese notation.
+    assert not supported(usd(), "Acme 2024 revenue was 52 USD million")
+    assert not supported(
+        records.Quantity(value=52, unit="元", as_written="52"),
+        "营业收入52亿元",
+    )
+    # And valid ones are still admitted.
+    assert supported(usd(), "Acme 2024 revenue was 52 USD")
+    assert supported(
+        records.Quantity(value=52, unit="USD million", as_written="52"),
+        "Acme 2024 revenue was 52 million USD",
+    )
+    assert supported(
+        records.Quantity(value=52, unit="亿元", as_written="52"),
+        "同比上升12%至52亿元",
+    )
+    assert supported(
+        records.Quantity(value=1546.1, unit="亿美元", as_written="1,546.1"),
+        "市场规模为1,546.1亿美元",
+    )
+    # A different figure's scale does not reach back into this one.
+    assert supported(
+        usd(), "Acme revenue was 52 USD. Another firm sold 52 million units."
+    )
+    # Nor does an ordinary word that merely starts like an abbreviation.
+    assert supported(usd(), "Acme sold 52 bags and 3 firms agreed")
+    assert supported(usd(), "In autumn Acme sold 52 USD")
+
+
+def test_invalidation_is_idempotent_and_ignores_semantic_no_ops():
+    # C1 round 2, finding 5: repeating the cascade re-versioned the
+    # dependant, correcting a claim to the value it already had
+    # invalidated everything, and rewording a supported verdict's
+    # reason withdrew the analysis resting on it.
+    state = derived_state()
+    first = merge.invalidate_claim(state, "C1", statement="corrected")
+    assert first["claims"]["C3"].version == 2
+    state.update(first)
+    again = merge.cascade_changes(
+        state, {"C1"}, state["claims"], state["relationships"]
+    )
+    assert again["claims"]["C3"].version == 2
+    # A correction to the value already on record changes nothing.
+    assert not merge.invalidate_claim(state, "C1", statement="corrected")
+    # Rewording a supported verdict's reason is not a meaning change.
+    state = derived_state()
+    reworded = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C1",
+                    verdict="supported",
+                    reason="confirmed against source",
+                )
+            ]
+        ),
+    )
+    assert reworded["claims"]["C3"].review == "supported"
+    assert reworded["calculations"]["K1"].status == "ok"
+
+
+def test_limitations_never_accumulate_duplicates():
+    # C1 round 2, finding 7: each conflicting repeat appended another
+    # identical marker.
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    for number in (3, 4, 5):
+        state["tasks"][f"T{number}"] = task(f"T{number}")
+        state["attempts"][f"T{number}.1"] = attempt(
+            f"T{number}.1", f"T{number}"
+        )
+        clashing = result_t2().model_copy(
+            update={
+                "attempt_id": f"T{number}.1",
+                "task_id": f"T{number}",
+            }
+        )
+        clashing.findings[0] = clashing.findings[0].model_copy(
+            update={"entity": f"Other{number}"}
+        )
+        state.update(merge.merge_results(state, [clashing], LIMITS))
+    limitations = state["claims"]["C1"].limitations
+    assert limitations.count("conflicting_repeat:entity") == 1
+    assert len(limitations) == len(set(limitations))

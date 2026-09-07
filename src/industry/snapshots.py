@@ -234,6 +234,34 @@ def _atomic_write(path: pathlib.Path, data: bytes) -> None:
 _METADATA_ONLY = ("url", "canonical_url", "publisher", "published")
 
 
+def _recorded_version(
+    meta: pathlib.Path, source_id: str
+) -> records.SourceVersion | None:
+    """The version a metadata file records, bound to this source id."""
+    if not meta.exists():
+        return None
+    recorded = json.loads(meta.read_text(encoding="utf-8"))
+    fields = {
+        name: value
+        for name, value in recorded.items()
+        if name not in _METADATA_ONLY
+    }
+    return records.SourceVersion.model_validate(
+        {**fields, "source_id": source_id}
+    )
+
+
+def stored_version(
+    fetched: "Fetched", source_id: str, root: str = SOURCES_DIR
+) -> records.SourceVersion | None:
+    """The version already recorded for exactly these bytes, if any."""
+    canonical = sources_module.canonical_url(fetched.url)
+    vid = version_id(canonical, content_hash(fetched.content))
+    return _recorded_version(
+        pathlib.Path(root) / "versions" / f"{vid}.json", source_id
+    )
+
+
 def store_snapshot(
     fetched: Fetched,
     source_id: str,
@@ -277,20 +305,13 @@ def store_snapshot(
         extraction_version=EXTRACTION_VERSION,
         chunk_count=chunk_count,
     )
-    if meta.exists():
+    recorded = _recorded_version(meta, source_id)
+    if recorded is not None:
         # The version is immutable: a later fetch of the same bytes
         # keeps the recorded retrieval time, content type, extraction
         # version and chunk count, so every chunk indexed under this
         # version id keeps one consistent interpretation.
-        recorded = json.loads(meta.read_text(encoding="utf-8"))
-        fields = {
-            name: value
-            for name, value in recorded.items()
-            if name not in _METADATA_ONLY
-        }
-        return records.SourceVersion.model_validate(
-            {**fields, "source_id": source_id}
-        )
+        return recorded
     payload = version.model_dump(exclude={"source_id"})
     payload["url"] = fetched.url
     payload["canonical_url"] = canonical
@@ -629,9 +650,22 @@ def acquire_bytes(
 ) -> tuple[records.SourceVersion, list[Chunk]]:
     """Fetch, extract, chunk, then snapshot with the accurate chunk count.
 
-    Indexing is the caller's step (it needs the index lock).
+    Bytes already snapshotted keep their recorded version and are read
+    again exactly as they were read then, so re-indexing them changes
+    nothing. Indexing is the caller's step (it needs the index lock).
     """
     fetched = fetch(url, session=session, resolver=resolver)
+    recorded = stored_version(fetched, source_id, root)
+    if recorded is not None:
+        # The version is immutable and so is the way it was read: the
+        # same bytes served later as another content type must not be
+        # re-extracted under this version's id, or its chunks would stop
+        # matching its own metadata.
+        return recorded, chunk_blocks(
+            extract(
+                dataclasses.replace(fetched, content_type=recorded.content_type)
+            )
+        )
     chunks = chunk_blocks(extract(fetched))
     publisher = published = None
     if not is_pdf(fetched.content_type, fetched.final_url, fetched.content):
