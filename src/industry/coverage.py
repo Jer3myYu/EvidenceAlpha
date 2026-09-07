@@ -79,11 +79,18 @@ class _View:
         ]
 
     def topic_claims(self, topic: str) -> list[records.Claim]:
-        """Reviewed claims whose verifier-confirmed topics include it."""
+        """Reviewed claims whose verifier-confirmed topics include it.
+
+        The legacy topic ``cost_differentiation`` counts toward
+        ``cost_structure`` only, never toward ``differentiation``.
+        """
+        wanted = {topic}
+        if topic == "cost_structure":
+            wanted.add("cost_differentiation")
         return [
             claim
             for claim in self.claims.values()
-            if topic in claim.reviewed_topics and self.reviewed(claim)
+            if wanted & set(claim.reviewed_topics) and self.reviewed(claim)
         ]
 
     def entity_region(self, entity: str | None) -> str | None:

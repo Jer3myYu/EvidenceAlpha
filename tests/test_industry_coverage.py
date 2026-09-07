@@ -413,3 +413,12 @@ def test_report_status_fails_closed_without_all_questions():
         records.Coverage(question=q, status="covered") for q in range(1, 8)
     ]
     assert coverage.report_status(partial, {"issues": {}}) == "incomplete"
+
+
+def test_legacy_cost_differentiation_counts_as_cost_structure_only():
+    state = full_state()
+    state["claims"]["C33"] = claim("C33", topics=["cost_differentiation"])
+    assert statuses(coverage.derive(state, None))[4] == "covered"
+    del state["claims"]["C34"]  # differentiation is not implied
+    state["findings"]["F1"] = finding("F1", ["C31", "C32", "C33", "C35", "C40"])
+    assert statuses(coverage.derive(state, None))[4] == "partial"

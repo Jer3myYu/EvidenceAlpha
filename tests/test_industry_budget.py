@@ -242,3 +242,12 @@ def test_unknown_observed_usage_charges_the_reservation():
         },
     }
     assert budget.ledger(single).turns == 5
+
+
+def test_unknown_usage_with_a_measured_duration_charges_that_duration():
+    failed = attempt(
+        "T1.1", "failed", records.Usage(turns=0, duration_s=450.0, unknown=True)
+    )
+    charge = budget.attempt_charge(failed)
+    assert (charge.turns, charge.tool_calls) == (12, 24)
+    assert charge.duration_s == 450.0 and charge.unknown

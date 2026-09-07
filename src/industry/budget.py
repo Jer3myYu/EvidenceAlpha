@@ -71,10 +71,19 @@ def attempt_charge(attempt: records.Attempt) -> records.Usage:
         and not observed.unknown
     ):
         return observed
+    # Turns and tool calls are unknown, so the reservation stands; the
+    # wall clock is measured locally and is charged as observed when the
+    # attempt recorded it (an attempt that never reported keeps the
+    # reserved seconds).
+    measured = (
+        observed.duration_s
+        if observed is not None and observed.duration_s > 0
+        else attempt.reserved.seconds
+    )
     return records.Usage(
         turns=attempt.reserved.turns,
         tool_calls=attempt.reserved.tool_calls,
-        duration_s=attempt.reserved.seconds,
+        duration_s=measured,
         unknown=True,
     )
 

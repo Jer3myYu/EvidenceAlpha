@@ -22,7 +22,10 @@ from typing import Literal
 
 import pydantic
 
-SCHEMA_VERSION = 1
+# 2: the economics topics cost_structure and differentiation replaced
+# cost_differentiation, which stays accepted as a legacy alias counting
+# toward cost_structure only.
+SCHEMA_VERSION = 2
 
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
 ParticipantRole = Literal[
@@ -81,6 +84,7 @@ Topic = Literal[
     "demand_driver",
     "cost_structure",
     "differentiation",
+    "cost_differentiation",  # legacy value of threads before 2026-09-07
     "bargaining_power",
     "barrier",
     "commercialization",

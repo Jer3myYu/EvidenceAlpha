@@ -390,3 +390,35 @@ def test_backup_copies_a_consistent_database(tmp_path):
     ).fetchall()
     copy.close()
     assert threads == [("b29768d7",)]
+
+
+def test_loaded_records_are_revalidated():
+    claim = records.Claim(
+        id="C1", statement="s", kind="fact", topics=["cost_differentiation"]
+    )
+    assert not persist.validate_records({"claims": {"C1": claim}})
+    broken = records.Claim.model_construct(
+        id="C2",
+        statement="s",
+        kind="fact",
+        topics=["not_a_topic"],
+        quantity={"value": 1},
+        evidence_ids=[],
+        reviewed_topics=[],
+        questions=[],
+        limitations=[],
+        calculation_id=None,
+        material=False,
+        review="unreviewed",
+        version=1,
+        supersedes=None,
+        entity=None,
+        period=None,
+        milestone=None,
+        milestone_date=None,
+        dimension=None,
+        origin="",
+        map_ref=None,
+    )
+    problems = persist.validate_records({"claims": {"C2": broken}})
+    assert problems and problems[0].startswith("claims[C2]")

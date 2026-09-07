@@ -113,7 +113,45 @@ async def load_industry_state(
             f"Thread {thread_id!r} was recorded by workflow "
             f"{version!r}; this program runs {expected_version!r}."
         )
+    problems = validate_records(snapshot.values)
+    if problems:
+        raise LegacyThreadError(
+            f"Thread {thread_id!r} holds records the current schema "
+            f"rejects ({len(problems)}): {problems[0]}"
+        )
     return snapshot
+
+
+REGISTRY_KEYS = (
+    "tasks",
+    "attempts",
+    "single_calls",
+    "sources",
+    "source_versions",
+    "evidence",
+    "claims",
+    "relationships",
+    "calculations",
+    "issues",
+    "findings",
+)
+
+
+def validate_records(values: dict[str, Any]) -> list[str]:
+    """Re-validate the registries of a loaded state; return the problems.
+
+    The checkpoint serializer rebuilds a model that fails validation
+    with ``model_construct`` and no error, leaving nested values as
+    dictionaries; a loaded thread must not proceed on such records.
+    """
+    problems: list[str] = []
+    for key in REGISTRY_KEYS:
+        for item_id, item in (values.get(key) or {}).items():
+            try:
+                type(item).model_validate(item.model_dump())
+            except (AttributeError, ValueError) as error:
+                problems.append(f"{key}[{item_id}]: {str(error)[:120]}")
+    return problems
 
 
 def resume_config(thread_id: str, snapshot: StateSnapshot) -> dict[str, Any]:
