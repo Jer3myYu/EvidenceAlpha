@@ -10,6 +10,7 @@ problem instead of a number.
 """
 
 import dataclasses
+import math
 import re
 
 from industry import records
@@ -107,6 +108,11 @@ def _same_period_and_scope(
     return None
 
 
+def _finite(value: float, role: str) -> None:
+    if math.isnan(value) or math.isinf(value):
+        raise CalcError(f"non_finite_{role}: {value!r}")
+
+
 def _input(
     claim_id: str | None, inputs: dict[str, records.CalcInput], role: str
 ) -> records.CalcInput:
@@ -172,8 +178,12 @@ def _compute(
             raise CalcError(f"unit_mismatch: {start.unit!r} vs {end.unit!r}")
         if start.scope != end.scope and not request.alignment_note:
             raise CalcError("scope_mismatch: growth inputs differ in scope")
+        _finite(start.value, "start")
+        _finite(end.value, "end")
         if start.value <= 0:
             raise CalcError("non_positive_start: growth needs a start > 0")
+        if end.value <= 0:
+            raise CalcError("non_positive_end: growth needs an end > 0")
         years = elapsed_years(
             parse_period(start.period), parse_period(end.period)
         )
@@ -193,6 +203,8 @@ def _compute(
         )
     numerator = _input(request.numerator_claim_id, inputs, "numerator")
     denominator = _input(request.denominator_claim_id, inputs, "denominator")
+    _finite(numerator.value, "numerator")
+    _finite(denominator.value, "denominator")
     if denominator.value <= 0:
         raise CalcError("non_positive_denominator")
     note = _same_period_and_scope(

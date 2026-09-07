@@ -1,0 +1,812 @@
+"""The single-call roles: Lead, Analyst, Verifier judgement, Editor.
+
+Each function renders the context its role is allowed to see (the
+brief, the typed map, claims with their excerpts, findings, issues,
+sections; never a researcher's prose), builds one CrewAI task through
+``research.crew.run_task`` with a deadline, and returns the validated
+wire model. Prompts are versioned by ``PROMPT_VERSION``; per-role
+models come from ``ROLE_MODELS`` and can be changed per role without a
+provider framework. Context is bounded per role: evidence enters by
+priority (material claims first) and anything omitted is listed by id
+in the prompt so the omission is visible.
+"""
+
+import datetime
+from typing import Any, Literal
+
+import pydantic
+
+from industry import budget
+from industry import records
+from industry import state as state_module
+from research import crew
+
+PROMPT_VERSION = "10.2"
+MODEL = "claude-sonnet-5"
+ROLE_MODELS = {
+    "lead": MODEL,
+    "industry": MODEL,
+    "company": MODEL,
+    "analyst": MODEL,
+    "verifier": MODEL,
+    "editor": MODEL,
+}
+MAX_CONTEXT_CHARS = {
+    "lead": 60_000,
+    "analyst": 90_000,
+    "verifier": 90_000,
+    "editor": 90_000,
+}
+LANGUAGE_NAMES = {"zh": "Chinese (简体中文)", "en": "English"}
+
+
+def detect_language(text: str) -> str:
+    """``zh`` when the question has CJK characters, else ``en``."""
+    return "zh" if any("一" <= ch <= "鿿" for ch in text) else "en"
+
+
+def default_brief(question: str) -> records.Brief:
+    """The deterministic defaults the Lead may only narrow, not override."""
+    return records.Brief(
+        industry=question.strip(),
+        language=detect_language(question),
+        mode="brief",
+        cutoff=datetime.date.today().isoformat(),
+        required_questions=[
+            f"{number}. {text}"
+            for number, text in sorted(records.REQUIRED_QUESTIONS.items())
+        ],
+        evidence_expectations=(
+            "Every material claim rests on retrieved passages from fetched "
+            "sources; search snippets are leads. Named commercial "
+            "relationships need an excerpt naming both parties. Market "
+            "figures carry year, geography, definition, and source."
+        ),
+    )
+
+
+# --- wire models -----------------------------------------------------------
+
+
+class BriefOutput(records.Record):
+    """What the Lead adds to the deterministic brief."""
+
+    industry: str
+    boundary_in: list[str] = pydantic.Field(default_factory=list)
+    boundary_out: list[str] = pydantic.Field(default_factory=list)
+    boundary_alternatives: list[str] = pydantic.Field(default_factory=list)
+    explicit_language: str | None = None
+    explicit_mode: records.Mode | None = None
+    explicit_geography: str | None = None
+    constraints: list[str] = pydantic.Field(default_factory=list)
+    budget_policy: str = ""
+
+
+class TaskSpec(records.Record):
+    """One task the Lead proposes; ids are assigned by the graph."""
+
+    key: str
+    role: Literal["industry", "company"]
+    objective: str
+    scope: str = ""
+    depends_on: list[str] = pydantic.Field(default_factory=list)
+    references: list[str] = pydantic.Field(default_factory=list)
+    required_fields: list[str] = pydantic.Field(default_factory=list)
+    acceptance: str = ""
+    issue_id: str | None = None
+
+
+class TaskPlan(records.Record):
+    """The Lead's task allocation."""
+
+    tasks: list[TaskSpec] = pydantic.Field(default_factory=list)
+    rationale: str = ""
+
+
+class FindingSpec(records.Record):
+    """One analytical finding as the Analyst returns it."""
+
+    conclusion: str
+    claim_ids: list[str]
+    mechanism: str
+    implication: str
+    counterargument: str
+    uncertainty: str
+    monitor: str
+    material: bool = False
+    questions: list[int] = pydantic.Field(default_factory=list)
+    entity: str | None = None
+
+
+class IssueSpec(records.Record):
+    """A problem a role raises for the router."""
+
+    category: records.IssueCategory
+    severity: records.Severity
+    target: str
+    description: str
+    requested_action: records.RequestedAction
+    next_step: str | None = None
+
+
+class Analysis(records.Record):
+    """The Analyst's structured result."""
+
+    findings: list[FindingSpec] = pydantic.Field(default_factory=list)
+    calc_requests: list[records.CalcRequest] = pydantic.Field(
+        default_factory=list
+    )
+    evidence_requests: list[IssueSpec] = pydantic.Field(default_factory=list)
+    counterarguments: list[str] = pydantic.Field(default_factory=list)
+
+
+class SectionSpec(records.Record):
+    """One drafted section citing claims by ``[C#]``."""
+
+    id: str
+    title: str
+    text: str
+
+
+class Draft(records.Record):
+    """The Editor's structured result."""
+
+    sections: list[SectionSpec] = pydantic.Field(default_factory=list)
+    limitations: list[str] = pydantic.Field(default_factory=list)
+
+
+# --- role definitions ------------------------------------------------------
+
+LEAD_PROMPT = """\
+You are the research lead of an investment-research system. The
+reader understands basic investing but not this industry. You scope
+the work, allocate bounded research tasks, judge coverage of the eight
+required questions, and never write the report or research yourself.
+You reason over typed state: the brief, the industry map, claims with
+their review states, findings, and open issues. You cannot raise a
+coverage status above what reviewed evidence supports; when you propose
+one, name the claim and finding ids that support it. Tasks you create
+must be concrete: one objective, a scope, the fields the researcher
+must fill, and a completion criterion; select representative
+companies by relevance to the value chain and business model, never
+from a fixed list. Respect the remaining budget you are told.
+"""
+
+ANALYST_PROMPT = """\
+You are the investment analyst of an investment-research system. You
+explain the industry's economics from reviewed claims only: who pays
+whom, what drives demand, where costs, differentiation, and bargaining
+power arise, what barriers protect suppliers, how capabilities are
+commercialized, and how global leaders and Chinese participants
+compare. For each material conclusion give the observation, the
+mechanism, the business implication, the strongest counterargument,
+the uncertainty, and an observable test to monitor. Cite claims by
+id; a conclusion without claim ids is discarded. Never do arithmetic
+yourself: request it with claim ids and the operation, and the system
+computes it deterministically. Do not use different periods, scopes,
+or denominators as if comparable without saying so. When evidence is
+missing, request it precisely instead of speculating.
+"""
+
+VERIFIER_PROMPT = """\
+You are the evidence verifier of an investment-research system. You
+judge claims against their evidence excerpts alone: never against the
+researcher's summary and never from your own knowledge. For each
+claim decide supported (the excerpt states it, for the right entity,
+period, and scope), qualified (partly supported, or supported only by
+a search snippet without original context, or the wording overstates),
+unsupported (the excerpt does not state it), or contradicted (an
+excerpt states otherwise). For each proposed relationship decide
+whether an excerpt names both parties and the direction of that
+relation; co-mention, product compatibility, or competitor lists never
+support a supply or customer relation. Judge a source's origin from
+its content: a filing, annual report, or official disclosure is
+primary even when mirrored by a news site; an article is secondary
+even on a reputable platform. Name contradictions between excerpts.
+Request acquisition of an original source only when a material claim
+rests on a snippet or a contradiction needs the original text.
+"""
+
+EDITOR_PROMPT = """\
+You are the report editor of an investment-research system. You write
+from reviewed claims and analytical findings only, in the reader's
+language, for someone who knows basic investing but not this industry.
+Lead with what the investor must understand, explain each unfamiliar
+term on first use, connect numbers to mechanisms, compare companies on
+consistent dimensions, and omit adjacent-industry trivia. Every
+factual sentence cites the claim it rests on as [C#]; write nothing
+factual that no claim supports, and never cite a claim marked
+unsupported or contradicted as fact. Keep unresolved conflicts as
+conflicts. State scope and information cutoff. No buy or sell
+instructions and no price targets. Prefer fewer, well-supported
+findings to exhaustive unsupported precision.
+"""
+
+LEAD = crew.Role(
+    "Research lead",
+    "Scope the research, allocate bounded tasks, and judge coverage "
+    "honestly against reviewed evidence.",
+    LEAD_PROMPT,
+)
+ANALYST = crew.Role(
+    "Investment analyst",
+    "Explain the industry's economics from reviewed claims with "
+    "mechanisms, counterarguments, and observable tests.",
+    ANALYST_PROMPT,
+    Analysis,
+)
+VERIFIER = crew.Role(
+    "Evidence verifier",
+    "Judge every material claim, relationship, and source against the "
+    "evidence excerpts alone.",
+    VERIFIER_PROMPT,
+    records.ClaimReview,
+)
+EDITOR = crew.Role(
+    "Report editor",
+    "Write an accessible, fully cited industry report from reviewed "
+    "claims and findings.",
+    EDITOR_PROMPT,
+    Draft,
+)
+
+
+def llm_for(role: str, max_turns: int) -> crew.ClaudeLLM:
+    """The adapter for one role with its configured model."""
+    return crew.ClaudeLLM(model=ROLE_MODELS[role], max_turns=max_turns)
+
+
+# --- context rendering -----------------------------------------------------
+
+
+def render_brief(brief: records.Brief) -> str:
+    """The brief as the roles see it."""
+    lines = [
+        f"Industry: {brief.industry}",
+        f"Audience: {brief.audience}",
+        f"Language: {LANGUAGE_NAMES.get(brief.language, brief.language)}",
+        f"Mode: {brief.mode}; geography: {brief.geography}; "
+        f"cutoff: {brief.cutoff}",
+    ]
+    if brief.boundary_in or brief.boundary_out:
+        lines.append(
+            "Boundary inside: " + "; ".join(brief.boundary_in or ["-"])
+        )
+        lines.append(
+            "Boundary outside: " + "; ".join(brief.boundary_out or ["-"])
+        )
+    if brief.constraints:
+        lines.append("User constraints: " + "; ".join(brief.constraints))
+    lines.append("Required questions:")
+    lines.extend(f"  {q}" for q in brief.required_questions)
+    return "\n".join(lines)
+
+
+def render_map(industry_map: records.IndustryMap) -> str:
+    """Segments, links, and participants with their claim ids."""
+    if not industry_map.segments:
+        return "Industry map: none yet."
+    names = {s.id: s.name for s in industry_map.segments}
+    unknown = "?"
+    lines = ["Industry map:"]
+    for seg in industry_map.segments:
+        lines.append(
+            f"  {seg.id} [{seg.stage}] {seg.name}: {seg.description} "
+            f"(claim {seg.claim_id})"
+        )
+    for link in industry_map.links:
+        lines.append(
+            f"  {link.id} {names.get(link.from_segment, unknown)} -> "
+            f"{names.get(link.to_segment, unknown)}: {link.what_flows} "
+            f"(claim {link.claim_id})"
+        )
+    for part in industry_map.participants:
+        flows = []
+        if part.supplies:
+            flows.append(f"supplies {part.supplies}")
+        if part.buys:
+            flows.append(f"buys {part.buys}")
+        region = f", {part.region}" if part.region else ""
+        flow_text = "; ".join(flows) or "no supply/buy"
+        lines.append(
+            f"  {part.id} {part.name} in {names.get(part.segment_id, unknown)} "
+            f"({part.role}{region}): {flow_text} "
+            f"(claim {part.claim_id})"
+        )
+    if industry_map.boundary_note:
+        lines.append(f"  boundary: {industry_map.boundary_note}")
+    if industry_map.gaps:
+        lines.append("  gaps: " + "; ".join(industry_map.gaps))
+    return "\n".join(lines)
+
+
+def _claim_line(
+    claim: records.Claim, with_excerpts: bool, state: state_module.IndustryState
+) -> str:
+    unknown = "?"
+    fields = [f"kind={claim.kind}", f"review={claim.review}"]
+    if claim.material:
+        fields.append("material")
+    if claim.entity:
+        fields.append(f"entity={claim.entity}")
+    if claim.period:
+        fields.append(f"period={claim.period}")
+    if claim.quantity:
+        quantity = claim.quantity
+        fields.append(
+            f"quantity={quantity.as_written} {quantity.unit}"
+            + (f" ({quantity.scope})" if quantity.scope else "")
+        )
+    if claim.milestone:
+        fields.append(
+            f"milestone={claim.milestone}@{claim.milestone_date or unknown}"
+        )
+    if claim.topics:
+        fields.append("topics=" + ",".join(claim.topics))
+    if claim.questions:
+        fields.append("questions=" + ",".join(map(str, claim.questions)))
+    if claim.limitations:
+        fields.append("limitations=" + ",".join(claim.limitations))
+    header = f"[{claim.id}] ({'; '.join(fields)}) {claim.statement}"
+    if not with_excerpts:
+        return header + f" <- {', '.join(claim.evidence_ids)}"
+    evidence = state.get("evidence", {})
+    sources = state.get("sources", {})
+    versions = state.get("source_versions", {})
+    parts = [header]
+    for eid in claim.evidence_ids:
+        item = evidence.get(eid)
+        if item is None:
+            continue
+        source = sources.get(item.source_id)
+        title = source.title if source else item.source_id
+        where = source.canonical_url or source.path if source else ""
+        version = versions.get(item.source_version_id or "")
+        retrieved = version.retrieved_at[:10] if version else "no snapshot"
+        origin = source.origin if source else "unknown"
+        limits = (
+            f"; limitations: {', '.join(item.limitations)}"
+            if item.limitations
+            else ""
+        )
+        parts.append(
+            f"    [{eid}] {item.kind} from {title} ({where}; {origin}; "
+            f"{item.locator}; retrieved {retrieved}{limits})\n"
+            f'    "{item.excerpt}"'
+        )
+    return "\n".join(parts)
+
+
+def render_claims(
+    state: state_module.IndustryState,
+    claim_ids: list[str] | None,
+    with_excerpts: bool,
+    budget_chars: int,
+) -> str:
+    """Claims by priority (material first) within a character budget.
+
+    Omitted claims are listed by id so the reader knows what is
+    missing; open material issues are appended after the claims and
+    never omitted.
+    """
+    claims = state.get("claims", {})
+    chosen = [claims[cid] for cid in (claim_ids or claims) if cid in claims]
+    chosen.sort(key=lambda c: (not c.material, budget_number(c.id)))
+    lines: list[str] = []
+    used = 0
+    omitted: list[str] = []
+    for claim in chosen:
+        text = _claim_line(claim, with_excerpts, state)
+        if used + len(text) > budget_chars:
+            omitted.append(claim.id)
+            continue
+        lines.append(text)
+        used += len(text) + 1
+    if omitted:
+        lines.append(
+            f"Omitted for length ({len(omitted)} claims): {', '.join(omitted)}"
+        )
+    return "\n".join(lines) if lines else "Claims: none."
+
+
+def budget_number(identifier: str) -> int:
+    """The number in an id, for stable ordering."""
+    digits = "".join(ch for ch in identifier if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def render_relationships(state: state_module.IndustryState) -> str:
+    """Proposed and confirmed relationships with their evidence ids."""
+    items = state.get("relationships", {})
+    if not items:
+        return "Relationships: none."
+    lines = ["Relationships:"]
+    unknown = "?"
+    for rel in items.values():
+        status = "confirmed" if rel.confirmed else rel.review
+        evidence_ids = ", ".join(rel.evidence_ids) or "-"
+        lines.append(
+            f"  [{rel.id}] {rel.from_entity} --{rel.relation}--> "
+            f"{rel.to_entity} ({status}; evidence {evidence_ids}; "
+            f"date {rel.date or unknown})"
+        )
+    return "\n".join(lines)
+
+
+def render_findings(state: state_module.IndustryState) -> str:
+    """Current findings with their claim ids."""
+    items = [
+        f for f in state.get("findings", {}).values() if f.status == "current"
+    ]
+    if not items:
+        return "Findings: none."
+    lines = ["Findings:"]
+    for finding in items:
+        flag = "material " if finding.material else ""
+        cited = ", ".join(finding.claim_ids)
+        lines.append(
+            f"  [{finding.id}] {flag}{finding.conclusion} (claims {cited})\n"
+            f"    mechanism: {finding.mechanism}\n"
+            f"    implication: {finding.implication}\n"
+            f"    counterargument: {finding.counterargument}\n"
+            f"    uncertainty: {finding.uncertainty}\n"
+            f"    monitor: {finding.monitor}"
+        )
+    return "\n".join(lines)
+
+
+def render_calculations(state: state_module.IndustryState) -> str:
+    """Calculations with inputs, formula, result, or error."""
+    items = state.get("calculations", {})
+    if not items:
+        return "Calculations: none."
+    lines = ["Calculations:"]
+    unknown = "?"
+    for calc in items.values():
+        inputs = ", ".join(
+            f"{i.claim_id}={i.value} {i.unit} ({i.period or unknown})"
+            for i in calc.inputs
+        )
+        outcome = (
+            f"{calc.result} {calc.unit}"
+            if calc.status == "ok"
+            else f"error: {calc.message}"
+        )
+        formula = calc.formula or "-"
+        lines.append(
+            f"  [{calc.id}] {calc.kind} {calc.label}: {inputs}; "
+            f"{formula} = {outcome}"
+        )
+    return "\n".join(lines)
+
+
+def render_issues(state: state_module.IndustryState) -> str:
+    """Open issues; never omitted."""
+    items = [i for i in state.get("issues", {}).values() if i.status == "open"]
+    if not items:
+        return "Open issues: none."
+    lines = ["Open issues:"]
+    for issue in items:
+        lines.append(
+            f"  [{issue.id}] {issue.severity} {issue.category} on "
+            f"{issue.target} (action {issue.requested_action}, attempts "
+            f"{issue.attempts}): {issue.description}"
+        )
+    return "\n".join(lines)
+
+
+def render_coverage(state: state_module.IndustryState) -> str:
+    """Derived coverage per question."""
+    items = state.get("coverage", [])
+    if not items:
+        return "Coverage: not assessed yet."
+    lines = ["Coverage:"]
+    for item in items:
+        claim_ids = ", ".join(item.claim_ids) or "-"
+        finding_ids = ", ".join(item.finding_ids) or "-"
+        lines.append(
+            f"  Q{item.question}: {item.status} (claims {claim_ids}; "
+            f"findings {finding_ids}) {item.note}"
+        )
+    return "\n".join(lines)
+
+
+def render_sections(sections: list[records.Section]) -> str:
+    """The draft sections verbatim."""
+    if not sections:
+        return "Draft: none."
+    parts = []
+    for section in sections:
+        stale = " (stale)" if section.stale else ""
+        parts.append(
+            f"## [{section.id}] {section.title}{stale}\n{section.text}"
+        )
+    return "\n\n".join(parts)
+
+
+def remaining_line(
+    state: state_module.IndustryState, limits: records.Limits
+) -> str:
+    """The budget the Lead plans against."""
+    left = budget.remaining(state, limits)
+    slots = budget.dispatchable(state, limits, keep_acquisition_slot=True)
+    return (
+        f"Remaining budget: {slots} research tasks can still start "
+        f"({left.task_executions} executions, {left.turns} model turns, "
+        f"{left.tool_calls} tool calls, {left.seconds / 60:.0f} minutes)."
+    )
+
+
+# --- role calls -------------------------------------------------------------
+
+
+async def scope(
+    question: str,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> records.Brief:
+    """The Lead's brief on top of the deterministic defaults."""
+    defaults = default_brief(question)
+    description = (
+        f"User request: {question}\n\n"
+        "Produce the brief for an investor-oriented industry report. The "
+        "defaults are already set: language "
+        f"{LANGUAGE_NAMES[defaults.language]}, mode brief, geography "
+        f"'{defaults.geography}', cutoff {defaults.cutoff}. Set "
+        "explicit_language, explicit_mode, or explicit_geography ONLY "
+        "when the user's request explicitly asks for them, quoting the "
+        "request in constraints. Name the industry precisely, what is "
+        "inside and outside its boundary, and up to three boundary "
+        "alternatives only if the boundary is genuinely ambiguous. List "
+        "explicit user constraints (companies, depth, exclusions). One "
+        "sentence of budget policy."
+    )
+    role = crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, BriefOutput)
+    output = await crew.run_task(
+        role,
+        description,
+        "The structured brief.",
+        llm or llm_for("lead", max_turns),
+        deadline,
+    )
+    updates: dict[str, Any] = {
+        "industry": output.industry or defaults.industry,
+        "boundary_in": output.boundary_in,
+        "boundary_out": output.boundary_out,
+        "boundary_alternatives": output.boundary_alternatives[:3],
+        "constraints": output.constraints,
+        "budget_policy": output.budget_policy,
+    }
+    if output.explicit_language in LANGUAGE_NAMES:
+        updates["language"] = output.explicit_language
+    if output.explicit_mode:
+        updates["mode"] = output.explicit_mode
+    if output.explicit_geography:
+        updates["geography"] = output.explicit_geography
+    return defaults.model_copy(update=updates)
+
+
+async def plan_tasks(
+    state: state_module.IndustryState,
+    limits: records.Limits,
+    slots: int,
+    purpose: str,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> TaskPlan:
+    """The Lead's task allocation for the next wave(s)."""
+    description = "\n\n".join(
+        [
+            render_brief(state["brief"]),
+            render_map(state.get("map", records.IndustryMap())),
+            render_claims(state, None, False, MAX_CONTEXT_CHARS["lead"] // 2),
+            render_coverage(state),
+            render_issues(state),
+            remaining_line(state, limits),
+            f"Purpose of this planning: {purpose}",
+            f"Create at most {slots} tasks (fewer is fine). Each task: a "
+            "key, role industry or company, one objective, scope, "
+            "depends_on (keys of tasks in this plan or existing T ids), "
+            "references (evidence ids the researcher should reuse), "
+            "required_fields, and acceptance. Company tasks must name the "
+            "company and ask what it supplies or buys, to or from whom, "
+            "its exposure, figures with period and unit, and its "
+            "commercialization stage. Industry tasks must target a stage "
+            "of the chain or one of the required questions. If a task "
+            "addresses an open issue, set issue_id.",
+        ]
+    )
+    role = crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, TaskPlan)
+    return await crew.run_task(
+        role,
+        description,
+        "The structured task plan.",
+        llm or llm_for("lead", max_turns),
+        deadline,
+    )
+
+
+async def assess_coverage(
+    state: state_module.IndustryState,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> records.LeadAssessment:
+    """The Lead's coverage proposal; Python clamps it afterwards."""
+    description = "\n\n".join(
+        [
+            render_brief(state["brief"]),
+            render_map(state.get("map", records.IndustryMap())),
+            render_claims(state, None, False, MAX_CONTEXT_CHARS["lead"]),
+            render_relationships(state),
+            render_findings(state),
+            render_issues(state),
+            "For each required question 1-8 propose covered, partial, or "
+            "uncovered, naming the claim, finding, and relationship ids "
+            "that support it. In `missing`, list concrete missing evidence "
+            "as one sentence each, naming what a researcher could go and "
+            "find (source type, company, figure, period). In "
+            "beginner_usefulness, say in two sentences whether a newcomer "
+            "could understand the value chain and economics from what "
+            "exists.",
+        ]
+    )
+    role = crew.Role(
+        LEAD.name, LEAD.goal, LEAD.backstory, records.LeadAssessment
+    )
+    return await crew.run_task(
+        role,
+        description,
+        "The structured coverage assessment.",
+        llm or llm_for("lead", max_turns),
+        deadline,
+    )
+
+
+async def analyze(
+    state: state_module.IndustryState,
+    calculations_note: str,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> Analysis:
+    """The Analyst's findings, calculation requests, evidence requests."""
+    description = "\n\n".join(
+        [
+            render_brief(state["brief"]),
+            render_map(state.get("map", records.IndustryMap())),
+            render_claims(state, None, True, MAX_CONTEXT_CHARS["analyst"]),
+            render_relationships(state),
+            render_calculations(state),
+            render_findings(state),
+            render_issues(state),
+            calculations_note,
+            "Return material findings for the economics (questions 4 and "
+            "5), the global/China comparison (6), the company comparison "
+            "(7), and the conclusions with invalidators and monitoring "
+            "(8), each citing claim ids. Request calculations for any "
+            "ratio, share, or growth you want to state. Request missing "
+            "evidence as issues with category missing_evidence, the "
+            "target (a question like Q4 or a claim id), and a concrete "
+            "next step. Do not restate claims as findings.",
+        ]
+    )
+    return await crew.run_task(
+        ANALYST,
+        description,
+        "The structured analysis.",
+        llm or llm_for("analyst", max_turns),
+        deadline,
+    )
+
+
+async def review_claims(
+    state: state_module.IndustryState,
+    claim_ids: list[str],
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> records.ClaimReview:
+    """The Verifier's judgement of the named claims and all relations."""
+    brief = state["brief"]
+    description = "\n\n".join(
+        [
+            f"Industry: {brief.industry}; language "
+            f"{LANGUAGE_NAMES.get(brief.language, brief.language)}",
+            render_claims(
+                state, claim_ids, True, MAX_CONTEXT_CHARS["verifier"]
+            ),
+            render_relationships(state),
+            "Judge every claim listed (a verdict per claim id), every "
+            "relationship (supported only if an excerpt names both parties "
+            "and the direction), and the origin of each source you can "
+            "tell from its excerpts. List contradictions between excerpts "
+            "as sentences naming the claim ids. Request acquisition only "
+            "for material claims resting on snippets or contradictions "
+            "needing the original, with the URL when an excerpt names one.",
+        ]
+    )
+    return await crew.run_task(
+        VERIFIER,
+        description,
+        "The structured claim review.",
+        llm or llm_for("verifier", max_turns),
+        deadline,
+    )
+
+
+async def write(
+    state: state_module.IndustryState,
+    instructions: str,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> Draft:
+    """The Editor's draft or revision."""
+    description = "\n\n".join(
+        [
+            render_brief(state["brief"]),
+            render_map(state.get("map", records.IndustryMap())),
+            render_findings(state),
+            render_calculations(state),
+            render_claims(state, None, False, MAX_CONTEXT_CHARS["editor"]),
+            render_relationships(state),
+            render_coverage(state),
+            render_issues(state),
+            render_sections(state.get("sections", [])),
+            instructions,
+            "Structure (adapt naturally, avoid many tiny chapters): "
+            "executive understanding; industry and value-chain map with "
+            "participants; economics and competitive barriers; global "
+            "versus China and company comparison; conclusions, risks, "
+            "monitoring, limitations. Use concise tables where they help "
+            "(Markdown). Every factual sentence ends with its [C#] "
+            "citations. Section ids are short slugs.",
+        ]
+    )
+    return await crew.run_task(
+        EDITOR,
+        description,
+        "The structured draft.",
+        llm or llm_for("editor", max_turns),
+        deadline,
+    )
+
+
+async def final_review(
+    state: state_module.IndustryState,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+) -> records.DraftReview:
+    """The Verifier's check of the exact draft against the claims."""
+    role = crew.Role(
+        VERIFIER.name, VERIFIER.goal, VERIFIER.backstory, records.DraftReview
+    )
+    brief = state["brief"]
+    description = "\n\n".join(
+        [
+            f"Industry: {brief.industry}",
+            render_claims(state, None, False, MAX_CONTEXT_CHARS["verifier"]),
+            render_findings(state),
+            render_sections(state.get("sections", [])),
+            "Check the exact draft: every factual sentence must be "
+            "supported by the claims it cites (category unsupported when "
+            "a sentence asserts more than its claims, or cites none); "
+            "conclusions must be consistent across text and tables "
+            "(category contradiction); limitations must sit next to the "
+            "claims they qualify; wording must be intelligible to a "
+            "newcomer (category wording, minor). Give the section id and, "
+            "where one applies, the claim id. Set consistent=false if any "
+            "material issue exists.",
+        ]
+    )
+    return await crew.run_task(
+        role,
+        description,
+        "The structured draft review.",
+        llm or llm_for("verifier", max_turns),
+        deadline,
+    )

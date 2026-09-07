@@ -23,7 +23,6 @@ between roles is the typed workflow state, mediated by LangGraph.
 """
 
 import asyncio
-import contextlib
 import dataclasses
 import os
 from collections.abc import Callable
@@ -56,10 +55,22 @@ FINAL_ANSWER = "Final Answer: "
 # How long a cancelled call may take to wind down before run_task gives
 # up waiting for CrewAI's worker thread.
 CANCEL_GRACE_SECONDS = 30.0
+# What a cancelled kickoff ends with: CrewAI wraps the cancellation in
+# its own error types, so every outcome of the cancelled task is
+# expected here and only the deadline matters.
+_CANCEL_OUTCOMES = (Exception, asyncio.CancelledError)
 
 
 class RoleTimeout(TimeoutError):
     """A role's model call exceeded its deadline and was cancelled."""
+
+
+class RoleHung(RuntimeError):
+    """A cancelled call did not stop within the grace period.
+
+    Raised instead of routing onward, so nothing keeps running
+    unobserved; the run is left resumable.
+    """
 
 
 def split_messages(messages: str | list[dict[str, Any]]) -> tuple[str, str]:
@@ -240,6 +251,7 @@ async def run_task(
     expected_output: str,
     llm: crewai.BaseLLM | None = None,
     deadline: float | None = None,
+    grace: float = CANCEL_GRACE_SECONDS,
 ) -> str | pydantic.BaseModel:
     """Run one task as a crew of one agent and return its output.
 
@@ -255,22 +267,26 @@ async def run_task(
       deadline: Seconds after which the call is cancelled. CrewAI runs
         the model call in a worker thread, so on timeout the LLM's
         ``cancel`` is called and the crew is awaited until that thread
-        has finished (bounded by ``CANCEL_GRACE_SECONDS``) before
-        ``RoleTimeout`` is raised; nothing keeps running unobserved.
+        has finished (bounded by ``grace``) before ``RoleTimeout`` is
+        raised; if it has not finished by then ``RoleHung`` is raised
+        instead, so nothing keeps running unobserved.
+      grace: Seconds to wait for the cancelled call to wind down.
 
     Returns:
       The task's text, or an instance of ``role.output`` when it has one.
 
     Raises:
-      RoleTimeout: If ``deadline`` passed.
+      RoleTimeout: If ``deadline`` passed and the call was stopped.
+      RoleHung: If ``deadline`` passed and the call did not stop.
       RuntimeError: If the model call fails, or a structured task did
         not produce its model.
     """
+    llm = llm or ClaudeLLM()
     agent = crewai.Agent(
         role=role.name,
         goal=role.goal,
         backstory=role.backstory,
-        llm=llm or ClaudeLLM(),
+        llm=llm,
         allow_delegation=False,
         verbose=False,
         max_iter=1,
@@ -302,8 +318,15 @@ async def run_task(
         cancel = getattr(llm, "cancel", None)
         if cancel is not None:
             cancel()
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            await asyncio.wait_for(kickoff, CANCEL_GRACE_SECONDS)
+        try:
+            await asyncio.wait_for(asyncio.shield(kickoff), grace)
+        except asyncio.TimeoutError:
+            raise RoleHung(
+                f"{role.name} exceeded {deadline:.0f} s and did not stop "
+                f"within {grace:.0f} s after cancellation."
+            ) from None
+        except _CANCEL_OUTCOMES:
+            pass
         raise RoleTimeout(
             f"{role.name} exceeded {deadline:.0f} s and was cancelled."
         ) from None

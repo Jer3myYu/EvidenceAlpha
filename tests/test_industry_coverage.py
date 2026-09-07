@@ -21,6 +21,7 @@ def evidence(eid, kind="passage"):
 
 
 def claim(cid, review="supported", evidence_ids=("E1",), **kw):
+    topics = kw.pop("topics", [])
     return records.Claim(
         id=cid,
         statement=cid,
@@ -28,7 +29,24 @@ def claim(cid, review="supported", evidence_ids=("E1",), **kw):
         evidence_ids=list(evidence_ids),
         review=review,
         material=True,
+        topics=topics,
+        reviewed_topics=kw.pop("reviewed_topics", topics),
         **kw,
+    )
+
+
+def version(vid="v1", source_id="S1"):
+    return records.SourceVersion(
+        id=vid,
+        source_id=source_id,
+        content_hash="h",
+        blob_path="b",
+        meta_path="m",
+        final_url="u",
+        content_type="text/html",
+        size=1,
+        retrieved_at=NOW,
+        extraction_version="v2",
     )
 
 
@@ -86,7 +104,7 @@ def full_map():
     participants = []
     n = 10
     for seg in ("G1", "G2", "G3"):
-        for _ in range(2):
+        for region in ("中国", "日本"):
             n += 1
             participants.append(
                 records.Participant(
@@ -95,6 +113,7 @@ def full_map():
                     segment_id=seg,
                     role="supplier",
                     supplies="mask blanks",
+                    region=region,
                     selection_rationale="",
                     claim_id=f"C{n}",
                 )
@@ -120,6 +139,7 @@ def full_state(evidence_kind="passage", review="supported"):
             part.claim_id, review, kind="map", map_ref=part.id, entity=part.name
         )
     claims["C30"] = claim("C30", review, topics=["boundary"])
+    claims["C29"] = claim("C29", review, topics=["product"])
     for i, topic in enumerate(records.QUESTION_4_TOPICS, start=31):
         claims[f"C{i}"] = claim(f"C{i}", review, topics=[topic])
     claims["C40"] = claim("C40", review, topics=["barrier"])
@@ -131,12 +151,22 @@ def full_state(evidence_kind="passage", review="supported"):
         milestone_date="2024-06",
         entity="co11",
     )
-    claims["C42"] = claim("C42", review, topics=["global_china"], entity="HOYA")
-    claims["C43"] = claim(
-        "C43", review, topics=["global_china"], entity="清溢光电"
+    claims["C42"] = claim("C42", review, topics=["global_china"], entity="co12")
+    claims["C43"] = claim("C43", review, topics=["global_china"], entity="co11")
+    claims["C44"] = claim(
+        "C44",
+        review,
+        topics=["comparison"],
+        entity="co11",
+        dimension="2024 revenue",
     )
-    claims["C44"] = claim("C44", review, topics=["comparison"], entity="A")
-    claims["C45"] = claim("C45", review, topics=["comparison"], entity="B")
+    claims["C45"] = claim(
+        "C45",
+        review,
+        topics=["comparison"],
+        entity="co12",
+        dimension="2024 Revenue",
+    )
     findings = {
         "F1": finding("F1", ["C31", "C32", "C33", "C34", "C40"]),
         "F2": finding("F2", ["C42", "C43", "C44", "C45"]),
@@ -156,6 +186,7 @@ def full_state(evidence_kind="passage", review="supported"):
         "map": industry_map,
         "claims": claims,
         "evidence": {"E1": evidence("E1", evidence_kind)},
+        "source_versions": {"v1": version()},
         "findings": findings,
         "relationships": relationships,
         "issues": {},
@@ -297,3 +328,86 @@ def test_participants_without_supply_or_buy_do_not_complete_question_3():
     ]
     state["map"] = industry_map.model_copy(update={"participants": stripped})
     assert statuses(coverage.derive(state, None))[3] == "partial"
+
+
+def test_versionless_or_foreign_version_passage_is_not_context_backed():
+    state = full_state()
+    state["source_versions"] = {}
+    cov = statuses(coverage.derive(state, None))
+    assert all(cov[q] == "partial" for q in records.CENTRAL_QUESTIONS)
+    state["source_versions"] = {"v1": version(source_id="S9")}
+    cov = statuses(coverage.derive(state, None))
+    assert all(cov[q] == "partial" for q in records.CENTRAL_QUESTIONS)
+
+
+def test_tagged_but_unreviewed_topics_do_not_count():
+    state = full_state()
+    for cid in ("C31", "C32", "C33", "C34"):
+        state["claims"][cid] = state["claims"][cid].model_copy(
+            update={"reviewed_topics": []}
+        )
+    assert statuses(coverage.derive(state, None))[4] == "uncovered"
+
+
+def test_one_claim_tagged_with_every_economics_topic_is_not_covered():
+    state = full_state()
+    for cid in ("C32", "C33", "C34"):
+        del state["claims"][cid]
+    state["claims"]["C31"] = state["claims"]["C31"].model_copy(
+        update={
+            "topics": list(records.QUESTION_4_TOPICS),
+            "reviewed_topics": list(records.QUESTION_4_TOPICS),
+        }
+    )
+    state["findings"]["F1"] = finding("F1", ["C31", "C40"])
+    assert statuses(coverage.derive(state, None))[4] == "partial"
+
+
+def test_question_1_needs_a_product_definition():
+    state = full_state()
+    del state["claims"]["C29"]
+    assert statuses(coverage.derive(state, None))[1] == "partial"
+
+
+def test_milestone_needs_an_entity_and_a_company_or_fact_claim():
+    state = full_state()
+    state["claims"]["C41"] = state["claims"]["C41"].model_copy(
+        update={"entity": None}
+    )
+    assert statuses(coverage.derive(state, None))[5] == "partial"
+    state["claims"]["C41"] = state["claims"]["C41"].model_copy(
+        update={"entity": "co11", "kind": "inference"}
+    )
+    assert statuses(coverage.derive(state, None))[5] == "partial"
+
+
+def test_global_china_needs_both_regions_in_one_finding():
+    state = full_state()
+    state["claims"]["C42"] = state["claims"]["C42"].model_copy(
+        update={"entity": "co13"}  # also Chinese
+    )
+    assert statuses(coverage.derive(state, None))[6] == "partial"
+    state["claims"]["C42"] = state["claims"]["C42"].model_copy(
+        update={"entity": "nobody"}  # not on the map
+    )
+    assert statuses(coverage.derive(state, None))[6] == "partial"
+
+
+def test_comparison_needs_a_shared_dimension_in_one_finding():
+    state = full_state()
+    state["claims"]["C45"] = state["claims"]["C45"].model_copy(
+        update={"dimension": "node capability"}
+    )
+    assert statuses(coverage.derive(state, None))[7] == "partial"
+    state["claims"]["C45"] = state["claims"]["C45"].model_copy(
+        update={"dimension": "2024 revenue", "entity": "co11"}
+    )
+    assert statuses(coverage.derive(state, None))[7] == "partial"
+
+
+def test_report_status_fails_closed_without_all_questions():
+    assert coverage.report_status([], {"issues": {}}) == "incomplete"
+    partial = [
+        records.Coverage(question=q, status="covered") for q in range(1, 8)
+    ]
+    assert coverage.report_status(partial, {"issues": {}}) == "incomplete"

@@ -40,6 +40,8 @@ class IndustryState(TypedDict, total=False):
     map: records.IndustryMap
     tasks: dict[str, records.Task]
     attempts: dict[str, records.Attempt]
+    single_calls: dict[str, records.Attempt]
+    phase: str
     task_results: Annotated[list[records.TaskResult], operator.add]
     merged: list[str]
     sources: dict[str, records.Source]

@@ -1,9 +1,11 @@
 """Budget accounting, admission rules, and the in-process run meter.
 
-``ledger`` is the only accounting path: every attempt counts once, as
-its observed usage when it finished or as its reservation while it is
-running or unknown, and every single-call node counts through the one
-``Usage`` event it appends. Routers, the CLI, and Studio all read this
+``ledger`` is the only accounting path: every tool-using attempt and
+every single-call reservation (``single_calls``, written by the
+reserve node that precedes each model node) counts once, as its
+observed usage when it finished or as its reservation while it is
+running, unknown, or failed without usage; ``usage_events`` carries
+anything else a node reports. Routers, the CLI, and Studio all read this
 function, so no two of them can disagree about what a run has spent.
 
 The ``RunMeter`` bounds what is in flight inside one process: attempts
@@ -57,9 +59,18 @@ class Remaining:
 
 
 def attempt_charge(attempt: records.Attempt) -> records.Usage:
-    """Return what one attempt counts for: observed usage or reservation."""
-    if attempt.status in ("done", "failed") and attempt.observed is not None:
-        return attempt.observed
+    """Return what one attempt counts for: observed usage or reservation.
+
+    An observed usage marked ``unknown`` (a transport failure exposed
+    nothing) is informational only; the reservation is charged.
+    """
+    observed = attempt.observed
+    if (
+        attempt.status in ("done", "failed")
+        and observed is not None
+        and not observed.unknown
+    ):
+        return observed
     return records.Usage(
         turns=attempt.reserved.turns,
         tool_calls=attempt.reserved.tool_calls,
@@ -75,6 +86,11 @@ def ledger(state: state_module.IndustryState) -> Ledger:
     attempts = state.get("attempts", {})
     for attempt in attempts.values():
         charge = attempt_charge(attempt)
+        if charge.unknown:
+            unknown += 1
+        total = total + charge
+    for call in state.get("single_calls", {}).values():
+        charge = attempt_charge(call)
         if charge.unknown:
             unknown += 1
         total = total + charge

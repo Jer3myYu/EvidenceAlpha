@@ -1,5 +1,6 @@
 """Deterministic merge, review application, invalidation, issues."""
 
+from industry import budget
 from industry import merge
 from industry import records
 
@@ -28,7 +29,7 @@ def version(vid, sid, content_hash):
     )
 
 
-def evidence(eid, sid, excerpt, vid=None, kind="passage", locator="sec 1"):
+def evidence(eid, sid, excerpt, vid="va", kind="passage", locator="sec 1"):
     return records.Evidence(
         id=eid,
         source_id=sid,
@@ -246,7 +247,8 @@ def test_identical_long_passages_across_sources_mark_syndication():
         task_id="T3",
         status="done",
         sources=[source("S1", "https://copy.example/z")],
-        evidence=[evidence("E1", "S1", long_text, None)],
+        source_versions=[version("vc", "S1", "hash-c")],
+        evidence=[evidence("E1", "S1", long_text, "vc")],
         findings=[records.FindingDraft(statement="c", evidence_refs=["E1"])],
     )
     update = merge.merge_results(state, [copy], LIMITS)
@@ -311,6 +313,7 @@ def test_map_draft_becomes_map_items_with_map_claims():
         task_id="T1",
         status="done",
         sources=[source("S1", "https://a.example/x")],
+        source_versions=[version("va", "S1", "hash-a")],
         evidence=[evidence("E1", "S1", "HOYA supplies mask blanks.")],
         map=draft,
     )
@@ -354,6 +357,10 @@ def test_failed_attempt_requeues_once_then_fails():
     assert update["tasks"]["T2"].status == "pending"
     assert update["attempts"]["T2.1"].status == "failed"
     assert update["attempts"]["T2.1"].observed is not None
+    # Unknown usage is informational; the reservation stays charged.
+    charged = budget.ledger({"attempts": update["attempts"]})
+    assert (charged.turns, charged.tool_calls) == (24, 48)
+    assert charged.wall_clock_s == 2400 and charged.unknown_attempts == 2
     state.update(update)
     state["tasks"]["T2"] = state["tasks"]["T2"].model_copy(
         update={"attempts": 2, "status": "running"}
@@ -391,7 +398,8 @@ def test_results_fold_in_task_order_regardless_of_arrival():
         task_id="T3",
         status="done",
         sources=[source("S1", "https://b.example/")],
-        evidence=[evidence("E1", "S1", "Beta text.")],
+        source_versions=[version("vb", "S1", "hash-b")],
+        evidence=[evidence("E1", "S1", "Beta text.", "vb")],
         findings=[records.FindingDraft(statement="beta", evidence_refs=["E1"])],
     )
     update = merge.merge_results(state, [r3, r2], LIMITS)
@@ -495,3 +503,101 @@ def test_open_issue_is_canonical_and_keeps_attempts():
         issues, "contradiction", "material", "Q4", "acquire", "x"
     )
     assert other.id == "I2"
+
+
+def test_passage_without_a_valid_version_is_dropped():
+    state = base_state()
+    result = result_t2()
+    result.evidence[0] = evidence(
+        "E1", "S1", "Acme revenue reached 52亿元 in 2024, up 12%.", "missing"
+    )
+    update = merge.merge_results(state, [result], LIMITS)
+    assert not update["evidence"] and not update["claims"]
+    assert any(
+        "missing or belongs to another source" in l for l in update["route_log"]
+    )
+    # A version that belongs to another source is refused too.
+    state = base_state()
+    result = result_t2()
+    result.sources.append(source("S2", "https://other.example/"))
+    result.source_versions[0] = version("va", "S2", "hash-a")
+    update = merge.merge_results(state, [result], LIMITS)
+    assert not update["evidence"]
+    # A snippet needs no version.
+    state = base_state()
+    result = result_t2()
+    result.source_versions = []
+    result.evidence[0] = evidence(
+        "E1",
+        "S1",
+        "Acme revenue reached 52亿元 in 2024, up 12%.",
+        None,
+        "snippet",
+    )
+    update = merge.merge_results(state, [result], LIMITS)
+    assert list(update["evidence"]) == ["E1"]
+
+
+def test_repeated_claim_gains_metadata_and_resets_review_when_meaning_changes():
+    state = base_state()
+    plain = result_t2(quantity=False)
+    plain.findings[0] = plain.findings[0].model_copy(
+        update={
+            "questions": [4],
+            "topics": ["demand_driver"],
+            "entity": None,
+            "period": None,
+        }
+    )
+    state.update(merge.merge_results(state, [plain], LIMITS))
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"review": "supported"}
+    )
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    richer = result_t2().model_copy(
+        update={"attempt_id": "T3.1", "task_id": "T3"}
+    )
+    richer.findings[0] = richer.findings[0].model_copy(
+        update={"questions": [7], "topics": ["comparison"], "material": True}
+    )
+    update = merge.merge_results(state, [richer], LIMITS)
+    claim = update["claims"]["C1"]
+    assert len(update["claims"]) == 1
+    assert claim.questions == [4, 7] and claim.topics == [
+        "demand_driver",
+        "comparison",
+    ]
+    assert claim.quantity is not None and claim.entity == "Acme"
+    assert claim.version == 2 and claim.review == "unreviewed"
+    # A repeat that only adds classification does not reset the review.
+    state.update(update)
+    state["claims"]["C1"] = claim.model_copy(update={"review": "supported"})
+    state["tasks"]["T4"] = task("T4")
+    state["attempts"]["T4.1"] = attempt("T4.1", "T4")
+    tagged = result_t2().model_copy(
+        update={"attempt_id": "T4.1", "task_id": "T4"}
+    )
+    tagged.findings[0] = tagged.findings[0].model_copy(
+        update={"questions": [3]}
+    )
+    update = merge.merge_results(state, [tagged], LIMITS)
+    assert update["claims"]["C1"].review == "supported"
+    assert update["claims"]["C1"].questions == [3, 4, 7]
+
+
+def test_apply_review_keeps_only_confirmed_topics():
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    review = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1",
+                verdict="supported",
+                reason="r",
+                topics_supported=["demand_driver", "barrier"],
+            )
+        ]
+    )
+    update = merge.apply_review(state, review)
+    assert update["claims"]["C1"].reviewed_topics == ["demand_driver"]

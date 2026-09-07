@@ -112,3 +112,30 @@ def test_cancel_before_the_call_starts_is_latched():
     llm.cancel()
     with pytest.raises(asyncio.CancelledError):
         llm.call("hello")
+
+
+class StubbornLLM(SleepingLLM):
+    """Ignores cancellation, so the grace period expires."""
+
+    def cancel(self):
+        pass
+
+
+def test_hung_call_raises_role_hung_instead_of_routing_on():
+    llm = StubbornLLM(3)
+    with pytest.raises(crew.RoleHung, match="did not stop"):
+        asyncio.run(
+            crew.run_task(
+                crew.REPORTER, "hi", "one word", llm, deadline=0.2, grace=0.3
+            )
+        )
+
+
+def test_run_task_cancels_the_llm_instance_it_runs():
+    """The cancel reaches the instance the agent runs, default or not."""
+    llm = SleepingLLM(30)
+    with pytest.raises(crew.RoleTimeout):
+        asyncio.run(
+            crew.run_task(crew.REPORTER, "hi", "one word", llm, deadline=0.3)
+        )
+    assert llm.ended.is_set()

@@ -5,9 +5,13 @@ count through their map claims; findings count only while ``current``
 and only when every claim they cite is reviewed. For the central
 questions, ``covered`` further requires *context-backed* claims: a
 ``supported`` claim with at least one ``passage`` or ``table`` evidence
-item, so a search snippet alone never completes a central requirement.
+item whose source version exists in the registry and belongs to the
+evidence's source, so a search snippet or an unverifiable passage never
+completes a central requirement. Topics count only when the verifier
+confirmed them (``reviewed_topics``), so tagging alone covers nothing.
 The Lead proposes a status; Python derives the maximum permissible one
-and stores both. Exhaustion of any limit changes nothing here.
+and stores both. Exhaustion of any limit changes nothing here, and a
+missing question fails closed.
 """
 
 import dataclasses
@@ -17,6 +21,7 @@ from industry import state as state_module
 
 _ORDER = {"uncovered": 0, "partial": 1, "covered": 2}
 _STAGES = ("upstream", "midstream", "downstream")
+_CHINA_MARKERS = ("中国", "china", "chinese", "大陆", "prc", "国内", "a股")
 
 
 @dataclasses.dataclass
@@ -25,6 +30,7 @@ class _View:
 
     claims: dict[str, records.Claim]
     evidence: dict[str, records.Evidence]
+    versions: dict[str, records.SourceVersion]
     findings: list[records.Finding]
     relationships: dict[str, records.Relationship]
     industry_map: records.IndustryMap
@@ -35,14 +41,17 @@ class _View:
         return claim.review in ("supported", "qualified")
 
     def context_backed(self, claim: records.Claim) -> bool:
-        """Whether the claim can complete a central requirement."""
+        """Supported, with original context whose version is verifiable."""
         if claim.review != "supported":
             return False
-        return any(
-            self.evidence[eid].kind in ("passage", "table")
-            for eid in claim.evidence_ids
-            if eid in self.evidence
-        )
+        for eid in claim.evidence_ids:
+            item = self.evidence.get(eid)
+            if item is None or item.kind not in ("passage", "table"):
+                continue
+            version = self.versions.get(item.source_version_id or "")
+            if version is not None and version.source_id == item.source_id:
+                return True
+        return False
 
     def cited_by_finding(self, claim_id: str) -> list[str]:
         """Ids of current, fully reviewed findings citing the claim."""
@@ -70,12 +79,29 @@ class _View:
         ]
 
     def topic_claims(self, topic: str) -> list[records.Claim]:
-        """Reviewed claims tagged with a topic."""
+        """Reviewed claims whose verifier-confirmed topics include it."""
         return [
             claim
             for claim in self.claims.values()
-            if topic in claim.topics and self.reviewed(claim)
+            if topic in claim.reviewed_topics and self.reviewed(claim)
         ]
+
+    def entity_region(self, entity: str | None) -> str | None:
+        """``china`` or ``global`` from the map's participant region."""
+        if not entity:
+            return None
+        wanted = entity.casefold()
+        for participant in self.industry_map.participants:
+            if participant.name.casefold() == wanted:
+                region = (participant.region or "").casefold()
+                if not region:
+                    return None
+                return (
+                    "china"
+                    if any(marker in region for marker in _CHINA_MARKERS)
+                    else "global"
+                )
+        return None
 
 
 def _status(covered: bool, partial: bool) -> records.CoverageStatus:
@@ -96,12 +122,21 @@ def _q1(view: _View) -> tuple[records.CoverageStatus, list[str], str]:
         stage_of.get(c.map_ref, "") for c in segments if view.context_backed(c)
     }
     boundary = view.topic_claims("boundary")
-    covered = all(s in stages_backed for s in _STAGES) and any(
-        view.context_backed(c) for c in boundary
+    product = view.topic_claims("product")
+    covered = (
+        all(s in stages_backed for s in _STAGES)
+        and any(view.context_backed(c) for c in boundary)
+        and any(view.context_backed(c) for c in product)
     )
-    partial = len(stages_reviewed & set(_STAGES)) >= 2
-    ids = [c.id for c in segments] + [c.id for c in boundary]
-    return _status(covered, partial), ids, "segments per stage + boundary"
+    partial = len(stages_reviewed & set(_STAGES)) >= 2 or (
+        bool(product) and bool(stages_reviewed)
+    )
+    ids = [c.id for c in segments + boundary + product]
+    return (
+        _status(covered, partial),
+        ids,
+        "product definition + segments per stage + boundary",
+    )
 
 
 def _q2(view: _View) -> tuple[records.CoverageStatus, list[str], str]:
@@ -171,19 +206,25 @@ def _q4(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
     finding_ids: list[str] = []
     covered_topics = 0
     reviewed_topics = 0
+    covering_claims: set[str] = set()
     for topic in records.QUESTION_4_TOPICS:
         claims = view.topic_claims(topic)
         if claims:
             reviewed_topics += 1
             ids.extend(c.id for c in claims)
-        if any(
-            view.context_backed(c) and view.cited_by_finding(c.id)
+        backed = [
+            c
             for c in claims
-        ):
+            if view.context_backed(c) and view.cited_by_finding(c.id)
+        ]
+        if backed:
             covered_topics += 1
+            covering_claims.update(c.id for c in backed)
         for claim in claims:
             finding_ids.extend(view.cited_by_finding(claim.id))
-    covered = covered_topics == len(records.QUESTION_4_TOPICS)
+    covered = covered_topics == len(records.QUESTION_4_TOPICS) and (
+        len(covering_claims) >= 2
+    )
     partial = reviewed_topics >= 2 and bool(finding_ids)
     return _status(covered, partial), ids, sorted(set(finding_ids))
 
@@ -193,7 +234,11 @@ def _q5(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
     milestones = [
         c
         for c in view.claims.values()
-        if c.milestone and c.milestone_date and view.reviewed(c)
+        if c.milestone
+        and c.milestone_date
+        and c.entity
+        and c.kind in ("company_claim", "fact")
+        and view.reviewed(c)
     ]
     finding_ids = sorted(
         {fid for c in barriers for fid in view.cited_by_finding(c.id)}
@@ -208,25 +253,56 @@ def _q5(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
 
 def _q6(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
     claims = view.topic_claims("global_china")
-    cited = [c for c in claims if view.cited_by_finding(c.id)]
     finding_ids = sorted(
         {fid for c in claims for fid in view.cited_by_finding(c.id)}
     )
-    covered = len({c.entity for c in cited if c.entity}) >= 2
+    # Covered: one current finding cites a reviewed claim about a
+    # Chinese participant and one about a non-Chinese participant.
+    covered = False
+    for finding in view.findings:
+        if not view.finding_ok(finding):
+            continue
+        regions = {
+            view.entity_region(view.claims[cid].entity)
+            for cid in finding.claim_ids
+            if cid in view.claims
+            and "global_china" in view.claims[cid].reviewed_topics
+        }
+        if {"china", "global"} <= regions:
+            covered = True
+            break
     return _status(covered, bool(claims)), [c.id for c in claims], finding_ids
 
 
 def _q7(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
     comparison = view.topic_claims("comparison")
-    cited = [c for c in comparison if view.cited_by_finding(c.id)]
-    entities_cited = {c.entity for c in cited if c.entity}
-    entities_any = {
-        c.entity for c in view.claims.values() if c.entity and view.reviewed(c)
-    }
     finding_ids = sorted(
         {fid for c in comparison for fid in view.cited_by_finding(c.id)}
     )
-    covered = len(entities_cited) >= 2
+    # Covered: one current finding compares two entities on the same
+    # dimension, each through its own reviewed comparison claim.
+    covered = False
+    for finding in view.findings:
+        if not view.finding_ok(finding):
+            continue
+        by_dimension: dict[str, set[str]] = {}
+        for cid in finding.claim_ids:
+            claim = view.claims.get(cid)
+            if (
+                claim is None
+                or "comparison" not in claim.reviewed_topics
+                or not claim.entity
+                or not claim.dimension
+            ):
+                continue
+            key = " ".join(claim.dimension.split()).casefold()
+            by_dimension.setdefault(key, set()).add(claim.entity.casefold())
+        if any(len(entities) >= 2 for entities in by_dimension.values()):
+            covered = True
+            break
+    entities_any = {
+        c.entity for c in view.claims.values() if c.entity and view.reviewed(c)
+    }
     partial = len(entities_any) >= 2
     return _status(covered, partial), [c.id for c in comparison], finding_ids
 
@@ -271,6 +347,7 @@ def derive(
     view = _View(
         claims=state.get("claims", {}),
         evidence=state.get("evidence", {}),
+        versions=state.get("source_versions", {}),
         findings=list(state.get("findings", {}).values()),
         relationships=state.get("relationships", {}),
         industry_map=state.get("map", records.IndustryMap()),
@@ -330,8 +407,12 @@ def report_status(
     partial, no open material issue targeting anything counted toward a
     central question, and no finding cited for a central question
     resting on an unsupported or contradicted claim.
-    ``incomplete``: otherwise.
+    ``incomplete``: otherwise, including when the coverage does not
+    hold exactly the eight required questions (fail closed).
     """
+    by_question = {c.question: c for c in coverage}
+    if sorted(by_question) != sorted(records.REQUIRED_QUESTIONS):
+        return "incomplete"
     claims = state.get("claims", {})
     findings = state.get("findings", {})
     issues = [
@@ -339,7 +420,6 @@ def report_status(
         for i in state.get("issues", {}).values()
         if i.status == "open" and i.severity == "material"
     ]
-    by_question = {c.question: c for c in coverage}
     if all(c.status == "covered" for c in coverage) and not issues:
         return "complete"
     central_targets: set[str] = set()

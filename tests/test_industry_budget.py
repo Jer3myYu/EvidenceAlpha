@@ -156,3 +156,28 @@ def test_begin_revokes_admissions_of_an_earlier_invocation():
     assert runtime.meter_for("t") is None
     fresh = runtime.new_meter("t", {"attempts": {}, "usage_events": []})
     assert not fresh.is_admitted("T1.1")
+
+
+def test_unknown_observed_usage_charges_the_reservation():
+    failed = attempt("T1.1", "failed", records.Usage(turns=0, unknown=True))
+    charge = budget.attempt_charge(failed)
+    assert (charge.turns, charge.tool_calls, charge.duration_s) == (
+        12,
+        24,
+        1200,
+    )
+    assert charge.unknown
+    single = {
+        "attempts": {},
+        "single_calls": {
+            "scope.1": records.Attempt(
+                id="scope.1",
+                task_id="scope",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                started_at="2026-09-07T00:00:00+00:00",
+            )
+        },
+    }
+    assert budget.ledger(single).turns == 5

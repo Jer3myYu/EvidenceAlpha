@@ -173,7 +173,14 @@ class _Registry:
         return new_id
 
     def add_claim(self, claim: records.Claim) -> str:
-        """Register a claim unless an identical one exists."""
+        """Register a claim, or fold a repeat into the existing one.
+
+        A repeat (same statement, same evidence) adds its questions,
+        topics, and materiality to the existing claim. When it brings
+        a quantity, milestone, entity, period, or dimension the
+        existing claim lacks, the claim's meaning changes: it gets a
+        new version and its review is reset.
+        """
         key = (
             normalize_text(claim.statement),
             tuple(sorted(claim.evidence_ids)),
@@ -182,8 +189,41 @@ class _Registry:
             if (
                 normalize_text(existing.statement),
                 tuple(sorted(existing.evidence_ids)),
-            ) == key:
-                return existing.id
+            ) != key:
+                continue
+            update: dict[str, Any] = {
+                "questions": sorted(
+                    set(existing.questions) | set(claim.questions)
+                ),
+                "topics": existing.topics
+                + [t for t in claim.topics if t not in existing.topics],
+                "material": existing.material or claim.material,
+            }
+            meaning_changed = False
+            for field in (
+                "quantity",
+                "milestone",
+                "milestone_date",
+                "entity",
+                "period",
+                "dimension",
+            ):
+                if getattr(existing, field) is None and (
+                    getattr(claim, field) is not None
+                ):
+                    update[field] = getattr(claim, field)
+                    meaning_changed = True
+            if meaning_changed:
+                update["version"] = existing.version + 1
+                update["supersedes"] = f"{existing.id}@{existing.version}"
+                update["review"] = "unreviewed"
+                update["reviewed_topics"] = []
+                self.log.append(
+                    f"claim {existing.id} gained fields from a repeat; "
+                    f"version {existing.version + 1}, review reset"
+                )
+            self.claims[existing.id] = existing.model_copy(update=update)
+            return existing.id
         new_id = next_id("C", self.claims)
         self.claims[new_id] = claim.model_copy(update={"id": new_id})
         return new_id
@@ -261,11 +301,23 @@ def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
                 f"source {local.source_id}; dropped"
             )
             continue
-        version_id = (
-            version_map.get(local.source_version_id)
-            if local.source_version_id
-            else None
-        )
+        version_id = None
+        if local.source_version_id:
+            version_id = version_map.get(local.source_version_id)
+            version = registry.versions.get(version_id or "")
+            if version is None or version.source_id != source_id:
+                registry.log.append(
+                    f"{result.attempt_id}: evidence {local.id} names "
+                    f"version {local.source_version_id} that is missing or "
+                    "belongs to another source; dropped"
+                )
+                continue
+        elif local.kind in ("passage", "table"):
+            registry.log.append(
+                f"{result.attempt_id}: {local.kind} evidence {local.id} "
+                "has no source version; dropped"
+            )
+            continue
         evidence_map[local.id] = registry.evidence_id(
             local, source_id, version_id
         )
@@ -313,6 +365,7 @@ def _fold_finding(
             limitations=limitations,
             questions=draft.questions,
             topics=draft.topics,
+            dimension=draft.dimension,
             origin=attempt_id,
         )
     )
@@ -590,7 +643,14 @@ def apply_review(
         if claim is None:
             log.append(f"review names unknown claim {verdict.claim_id}")
             continue
-        claims[claim.id] = claim.model_copy(update={"review": verdict.verdict})
+        claims[claim.id] = claim.model_copy(
+            update={
+                "review": verdict.verdict,
+                "reviewed_topics": [
+                    t for t in verdict.topics_supported if t in claim.topics
+                ],
+            }
+        )
     for verdict in review.relationships:
         relation = relationships.get(verdict.relationship_id)
         if relation is None:
@@ -650,14 +710,7 @@ def invalidate_claim(
             "review": "unreviewed",
         }
     )
-    findings = {
-        fid: (
-            finding.model_copy(update={"status": "stale"})
-            if claim_id in finding.claim_ids
-            else finding
-        )
-        for fid, finding in state.get("findings", {}).items()
-    }
+    findings = stale_findings(state.get("findings", {}), {claim_id})
     sections = [
         (
             section.model_copy(update={"stale": True})
@@ -667,6 +720,21 @@ def invalidate_claim(
         for section in state.get("sections", [])
     ]
     return {"claims": claims, "findings": findings, "sections": sections}
+
+
+def stale_findings(
+    findings: dict[str, records.Finding], claim_ids: set[str]
+) -> dict[str, records.Finding]:
+    """Mark every current finding citing one of the claims stale."""
+    return {
+        fid: (
+            finding.model_copy(update={"status": "stale"})
+            if finding.status == "current"
+            and set(finding.claim_ids) & claim_ids
+            else finding
+        )
+        for fid, finding in findings.items()
+    }
 
 
 def issue_key(category: str, target: str) -> str:

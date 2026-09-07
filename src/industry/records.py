@@ -76,6 +76,7 @@ ReportStatus = Literal["complete", "complete_with_limitations", "incomplete"]
 Verdict = Literal["supported", "qualified", "unsupported", "contradicted"]
 # Sub-topics that coverage counts; question 4 needs its first four.
 Topic = Literal[
+    "product",
     "payer_flow",
     "demand_driver",
     "cost_differentiation",
@@ -196,6 +197,15 @@ class Evidence(Record):
     task_id: str
     retrieved_at: str
 
+    @pydantic.model_validator(mode="after")
+    def _passages_need_a_version(self) -> "Evidence":
+        if self.kind in ("passage", "table") and not self.source_version_id:
+            raise ValueError(
+                f"{self.kind} evidence needs a source_version_id; only "
+                "search snippets have none"
+            )
+        return self
+
 
 class Claim(Record):
     """A statement with its evidence, kind, materiality, and review state."""
@@ -217,6 +227,8 @@ class Claim(Record):
     limitations: list[str] = pydantic.Field(default_factory=list)
     questions: list[int] = pydantic.Field(default_factory=list)
     topics: list[Topic] = pydantic.Field(default_factory=list)
+    reviewed_topics: list[Topic] = pydantic.Field(default_factory=list)
+    dimension: str | None = None
     origin: str = ""
     map_ref: str | None = None
 
@@ -385,6 +397,7 @@ class FindingDraft(Record):
     )
     questions: list[int] = pydantic.Field(default_factory=list)
     topics: list[Topic] = pydantic.Field(default_factory=list)
+    dimension: str | None = None
 
 
 class SegmentDraft(Record):
@@ -467,10 +480,18 @@ class Brief(Record):
 
 
 class Reference(Record):
-    """Evidence handed to a worker, with the source context it needs."""
+    """Evidence handed to a worker, with the source identity it needs.
+
+    The worker copies it into its collector under the same source
+    identity (URL or path), so the merge maps it back to the canonical
+    source and evidence instead of registering a duplicate.
+    """
 
     evidence: Evidence
     source_title: str
+    source_url: str | None = None
+    source_path: str | None = None
+    source_kind: SourceKind = "web_page"
     version_date: str | None = None
 
 
@@ -584,11 +605,17 @@ class Section(Record):
 
 
 class ClaimVerdict(Record):
-    """The verifier's judgement of one claim against its evidence."""
+    """The verifier's judgement of one claim against its evidence.
+
+    ``topics_supported`` names the tagged topics the excerpt actually
+    bears on; coverage counts a topic only when the verifier confirmed
+    it, so one claim cannot cover four economics topics by tagging.
+    """
 
     claim_id: str
     verdict: Verdict
     reason: str
+    topics_supported: list[Topic] = pydantic.Field(default_factory=list)
 
 
 class RelationshipVerdict(Record):
@@ -697,7 +724,6 @@ class RunMeta(Record):
     models: dict[str, str]
     limits: Limits
     started_at: str
-    resumes: int = 0
     execution_status: ExecutionStatus = "running"
     report_status: ReportStatus | None = None
     report_path: str | None = None

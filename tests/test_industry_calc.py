@@ -141,3 +141,24 @@ def test_missing_quantity_is_an_error_not_a_guess():
     assert result.status == "error" and "missing_quantity" in str(
         result.message
     )
+
+
+@pytest.mark.parametrize(
+    "start,end,code",
+    [
+        (100, -100, "non_positive_end"),
+        (100, 0, "non_positive_end"),
+        (float("nan"), 100, "non_finite_start"),
+        (100, float("inf"), "non_finite_end"),
+    ],
+)
+def test_growth_rejects_non_positive_or_non_finite_values(start, end, code):
+    inputs = {
+        "C1": cinput("C1", start, period="2020"),
+        "C2": cinput("C2", end, period="2022"),
+    }
+    request = records.CalcRequest(
+        kind="growth", label="g", start_claim_id="C1", end_claim_id="C2"
+    )
+    result = calc.compute("K1", request, inputs)
+    assert result.status == "error" and code in str(result.message)
