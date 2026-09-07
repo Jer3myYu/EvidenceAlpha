@@ -15,6 +15,7 @@ import pathlib
 import re
 import tempfile
 
+from industry import merge
 from industry import records
 from industry import state as state_module
 
@@ -104,13 +105,17 @@ def check_citations(
     sections: list[records.Section],
     claims: dict[str, records.Claim],
     entities: list[str] | None = None,
+    calculations: dict[str, records.Calculation] | None = None,
 ) -> list[CitationProblem]:
     """Find unknown, unreviewed, disallowed, and missing citations.
 
-    A citation must name a claim reviewed ``supported`` or
-    ``qualified``; an uncited sentence that states a number or names a
-    known entity (a claim entity or a map participant) is flagged.
+    A citation must name a claim that may be cited (``merge.citable``:
+    reviewed supported or qualified, and, for a derived claim, still
+    agreeing with the calculation behind it); an uncited sentence that
+    states a number or names a known entity (a claim entity or a map
+    participant) is flagged.
     """
+    live = calculations or {}
     problems: list[CitationProblem] = []
     names = [e for e in (entities or []) if len(e) >= 2]
     for section in sections:
@@ -120,12 +125,18 @@ def check_citations(
                 problems.append(
                     CitationProblem(section.id, f"cites unknown claim {cid}")
                 )
-            elif not claim.is_reviewed():
-                detail = (
-                    "qualified without its qualification on record"
-                    if claim.review == "qualified"
-                    else f"reviewed {claim.review}"
-                )
+            elif not merge.citable(claim, claims, live):
+                if not claim.is_reviewed():
+                    detail = (
+                        "qualified without its qualification on record"
+                        if claim.review == "qualified"
+                        else f"reviewed {claim.review}"
+                    )
+                else:
+                    detail = (
+                        "whose calculation "
+                        f"{claim.calculation_id} is not current"
+                    )
                 problems.append(
                     CitationProblem(
                         section.id, f"cites {cid}, {detail}, as fact"

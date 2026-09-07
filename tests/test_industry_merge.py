@@ -5,9 +5,11 @@ import time
 from industry import budget
 from industry import calc
 from industry import merge
+from industry import coverage
 from industry import records
 from industry import report
 from industry import roles
+from research import persist
 
 NOW = "2026-09-07T00:00:00+00:00"
 LIMITS = records.Limits()
@@ -2013,3 +2015,196 @@ def test_a_derived_claim_keeps_its_restriction_through_a_repeat():
     assert kept.review == "qualified"
     assert "merchant market only" in kept.review_reason
     assert any("is derived" in line for line in update["route_log"])
+
+
+def test_the_unit_must_be_written_against_this_figure():
+    # C1 round 5, finding 1: an empty unit passed vacuously, the
+    # sentence window borrowed a neighbouring figure's unit, a table
+    # header was matched without column identity, metres were read as
+    # millions, 元 was read out of 元件, a currency could be dropped,
+    # and an operator was discarded.
+    def support(unit, excerpt, as_written="52", value=52):
+        return merge.quantity_support(
+            records.Quantity(
+                value=value, unit=unit, period="2024", as_written=as_written
+            ),
+            [excerpt],
+        )
+
+    assert support("", "Acme employed 52 people.") == "no_unit"
+    assert support("   ", "Acme employed 52 people.") == "no_unit"
+    assert support("///", "Acme employed 52 people.") != "ok"
+    # A neighbouring figure's unit is never borrowed, before or after.
+    assert (
+        support(
+            "USD million",
+            "Acme sold 100 million USD and employed 52 people.",
+        )
+        != "ok"
+    )
+    assert (
+        support(
+            "USD million",
+            "Acme employed 52 people and revenue in USD million was 100.",
+        )
+        != "ok"
+    )
+    # A table states a unit only for its own column.
+    good = "[table]\nRevenue (USD million) | Year\n52 | 2024"
+    wrong = "[table]\nRevenue (USD million) | Employees\n100 | 52"
+    assert support("USD million", good) == "ok"
+    assert support("USD million", wrong) != "ok"
+    # A bare letter is metres as readily as millions.
+    assert support("million", "The cable length was 52 m.") != "ok"
+    assert support("m", "The cable length was 52 m.") == "ok"
+    assert support("USD million", "Acme 2024 revenue was 52m USD") == "ok"
+    # Only a scale may be read as the head of a longer run.
+    assert support("元", "本批包括52元件。") != "ok"
+    assert support("亿", "收入为52亿元。") != "ok"
+    assert support("亿元", "收入为52亿元。") == "ok"
+    # Operators are part of the unit, not noise.
+    assert support("USD", "Price was 52 USD/kg.") != "ok"
+    assert support("USD/kg", "Price was 52 USD/kg.") == "ok"
+    # A figure inside a larger numeric expression is not its own number.
+    assert support("USD", "Acme 2024 revenue was 52 × 10⁶ USD") != "ok"
+    # And plain, complete statements still pass.
+    assert support("USD", "Acme 2024 revenue was 52 USD") == "ok"
+    assert support("people", "Acme employed 52 people.") == "ok"
+    assert (
+        support(
+            "USD",
+            "Acme revenue was 52 USD. Another firm sold 52 million units.",
+        )
+        == "ok"
+    )
+
+
+def test_a_derived_claim_without_its_producer_is_never_citable():
+    # C1 round 5, finding 2: a researcher draft could claim
+    # kind="derived", and an absent calculation id was read as "not
+    # derived at all", so the claim was citable with no arithmetic.
+    orphan = records.Claim(
+        id="C1",
+        statement="a computed-looking claim",
+        kind="derived",
+        review="supported",
+        material=True,
+    )
+    assert not merge.calculation_current(orphan, {})
+    assert not merge.citable(orphan, {"C1": orphan}, {})
+    problems = persist.validate_records({"claims": {"C1": orphan}})
+    assert problems and "no calculations" in problems[0]
+    # A producer named but absent from the registry is refused too.
+    named = orphan.model_copy(
+        update={
+            "calculation_id": "K9",
+            "calculation_version": 1,
+            "quantity": records.Quantity(value=1.0, unit="%", as_written="1.0"),
+        }
+    )
+    assert not merge.producer_chain_intact(named, {"C1": named}, {})
+    # A researcher's draft never becomes a derived claim.
+    state = base_state()
+    result = result_t2(quantity=False)
+    result.findings[0] = result.findings[0].model_copy(
+        update={"kind": "derived"}
+    )
+    update = merge.merge_results(state, [result], LIMITS)
+    assert update["claims"]["C1"].kind == "inference"
+    assert any("kind=derived" in line for line in update["route_log"])
+
+
+def test_a_correction_cannot_detach_a_claim_from_its_producer():
+    # C1 round 5, finding 2: invalidate_claim could clear the binding.
+    state = derived_state()
+    state["calculations"]["K1"] = state["calculations"]["K1"].model_copy(
+        update={"version": 1}
+    )
+    state["claims"]["C3"] = state["claims"]["C3"].model_copy(
+        update={
+            "calculation_version": 1,
+            "quantity": records.Quantity(
+                value=52.0, unit="%", as_written="52.0"
+            ),
+        }
+    )
+    assert not merge.invalidate_claim(
+        state, "C3", calculation_id=None, calculation_version=None
+    )
+    assert state["claims"]["C3"].calculation_id == "K1"
+    # A producer-owned unit is compared with its operators intact.
+    mismatched = state["claims"]["C3"].model_copy(
+        update={
+            "quantity": records.Quantity(
+                value=52.0, unit="USD*kg", as_written="52.0"
+            )
+        }
+    )
+    producer = state["calculations"]["K1"].model_copy(update={"unit": "USD/kg"})
+    assert not merge.calculation_current(mismatched, {"K1": producer})
+
+
+def test_stopping_a_producer_withdraws_its_claim_for_every_reader():
+    # C1 round 5, finding 3: a verdict wrote "supported" over a claim
+    # whose producer the same batch stopped, and coverage and the
+    # citation checker still accepted it while persistence refused it.
+    state = derived_state()
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"review": "qualified", "review_reason": "merchant only"}
+    )
+    request = records.CalcRequest(
+        kind="share",
+        label="share",
+        numerator_claim_id="C1",
+        denominator_claim_id="C2",
+    )
+    produced = calc.compute(
+        "K1", request, calc.inputs_from_claims(state["claims"], {})
+    )
+    state["calculations"] = {"K1": produced}
+    state["claims"]["C3"] = records.Claim(
+        id="C3",
+        kind="derived",
+        material=True,
+        partition="q4",
+        origin="K1",
+        **calc.derived_fields(produced, state["claims"]),
+    )
+    assert state["claims"]["C3"].review == "qualified"
+    applied = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C3", verdict="supported", reason="looks fine"
+                )
+            ]
+        ),
+    )
+    derived = applied["claims"]["C3"]
+    # The record says withdrawn, not just the predicate.
+    assert derived.review == "unreviewed" and derived.review_reason is None
+    assert applied["calculations"]["K1"].status == "error"
+    calculations = applied["calculations"]
+    assert not merge.citable(derived, applied["claims"], calculations)
+    view = coverage._View(  # pylint: disable=protected-access
+        claims=applied["claims"],
+        evidence={},
+        versions={},
+        findings=[],
+        relationships={},
+        industry_map=records.IndustryMap(),
+        issues=[],
+        calculations=calculations,
+    )
+    assert not view.reviewed(derived)
+    sections = [
+        records.Section(
+            id="s1", title="t", text="份额为52.0% [C3]。", claim_ids=["C3"]
+        )
+    ]
+    assert report.check_citations(sections, applied["claims"], [], calculations)
+    # And the state the mutation wrote is one persistence accepts.
+    assert not persist.validate_records(
+        {"claims": applied["claims"], "calculations": calculations}
+    )

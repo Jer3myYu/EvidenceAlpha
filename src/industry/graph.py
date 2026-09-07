@@ -1406,7 +1406,10 @@ def build_graph(
         ]
         issues = dict(state.get("issues", {}))
         for problem in report.check_citations(
-            sections, state.get("claims", {}), report.known_entities(state)
+            sections,
+            state.get("claims", {}),
+            report.known_entities(state),
+            state.get("calculations", {}),
         ):
             issues, _ = merge.open_issue(
                 issues,

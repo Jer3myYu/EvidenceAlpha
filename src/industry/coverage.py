@@ -36,10 +36,13 @@ class _View:
     relationships: dict[str, records.Relationship]
     industry_map: records.IndustryMap
     issues: list[records.Issue]
+    calculations: dict[str, records.Calculation] = dataclasses.field(
+        default_factory=dict
+    )
 
     def reviewed(self, claim: records.Claim) -> bool:
-        """Whether the claim counts at all (``Claim.is_reviewed``)."""
-        return claim.is_reviewed()
+        """Whether the claim counts at all (``merge.citable``)."""
+        return merge.citable(claim, self.claims, self.calculations)
 
     def context_backed(self, claim: records.Claim) -> bool:
         """Supported, with original context whose version is verifiable."""
@@ -370,6 +373,7 @@ def derive(
         relationships=state.get("relationships", {}),
         industry_map=state.get("map", records.IndustryMap()),
         issues=list(state.get("issues", {}).values()),
+        calculations=state.get("calculations", {}),
     )
     proposed = {
         item.question: item for item in (proposal.coverage if proposal else [])

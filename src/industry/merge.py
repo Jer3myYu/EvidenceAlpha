@@ -13,7 +13,6 @@ versions a corrected claim and marks what cites it stale, and
 its attempt count.
 """
 
-import bisect
 import hashlib
 import re
 import unicodedata
@@ -68,7 +67,13 @@ def _label(ref: str) -> str:
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 # The words of a text as scales and units are written: latin runs, CJK
 # runs, the percent sign and currency symbols. Punctuation separates.
-_WORD = re.compile(r"[a-z]+|[^\W\da-z_]+|%|[$€£₩]")
+_WORD = re.compile(r"[a-z]+|[^\W\da-z_]+|%|[$€£₩]|[/*·]")
+# Operators that join the parts of a compound unit (``USD/kg``).
+_OPERATORS = frozenset("/*·")
+# A figure multiplied by another number is part of a larger expression
+# (``52 × 10⁶``), not a number stating its own value.
+_COMPOUND_AFTER = re.compile(r"^\s*[×x*·/]\s*\d")
+_COMPOUND_BEFORE = re.compile(r"\d\s*[×x*·/]\s*$")
 # Minus signs that are not the ASCII one; NFKC leaves them alone.
 _SIGNS = str.maketrans({"\u2212": "-", "\u2010": "-", "\u2011": "-"})
 # Latin scales, matched as whole words: ``52m`` is a scale, ``firm``
@@ -168,9 +173,10 @@ def _pure_scale(word: str) -> str | None:
 def _carried(candidates: list[str], word: str) -> bool:
     """Whether one of the candidate words carries ``word``.
 
-    Whole words, never substrings, so ``m`` is not carried by ``RMB``;
-    a Chinese scale may be the head of a longer run (``亿`` of ``亿元``)
-    and a currency stands for its other spellings (``$`` for ``USD``).
+    Whole words, never substrings, so ``m`` is not carried by ``RMB``
+    and ``元`` is not carried by ``元件``; only a Chinese scale may be
+    read as the head of a longer run (``亿`` of ``亿元``), and a
+    currency stands for its other spellings (``$`` for ``USD``).
     """
     scale = _pure_scale(word)
     for candidate in candidates:
@@ -178,8 +184,12 @@ def _carried(candidates: list[str], word: str) -> bool:
             return True
         if scale is not None and _pure_scale(candidate) == scale:
             return True
-        if not word.isascii() and candidate.startswith(word):
-            return True
+        if scale is not None and not word.isascii():
+            # ``亿`` is the head of ``亿元``; only a scale may be read
+            # as the head of a longer run, so ``元`` is never read out
+            # of ``元件``.
+            if candidate.startswith(word):
+                return True
         if word in _CURRENCY_ALIASES.get(candidate, ()):
             return True
         if candidate in _CURRENCY_ALIASES.get(word, ()):
@@ -229,17 +239,31 @@ def quantity_consistent(quantity: records.Quantity) -> bool:
     return all(_carried(unit, word) for word in residue)
 
 
-def _table_header(excerpt: str) -> list[str]:
-    """The words of a table's header row, or nothing for plain text.
+def _table_column(text: str, at: int) -> list[str]:
+    """The header cell governing the column the offset falls in.
 
-    An extracted table keeps its header (``snapshots._table_block``), so
-    a column whose scale is declared there states it for the numbers
-    underneath. Nothing else in the surrounding prose is read.
+    An extracted table keeps its rows as ``cell | cell``
+    (``snapshots._table_block``), so a scale declared in a column's
+    header states it for the numbers in that column and in no other.
+    Nothing else in the table or the surrounding prose is read.
     """
-    lines = _clean(excerpt).splitlines()
-    if not lines or lines[0].strip() != "[table]" or len(lines) < 2:
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "[table]" or len(lines) < 3:
         return []
-    return [word.group() for word in _WORD.finditer(lines[1])]
+    start = 0
+    row = None
+    for index, line in enumerate(lines):
+        if start <= at < start + len(line):
+            row = index
+            break
+        start += len(line)
+    if row is None or row < 2:
+        return []
+    column = lines[row][: at - start].count("|")
+    header = lines[1].split("|")
+    if column >= len(header):
+        return []
+    return [word.group() for word in _WORD.finditer(header[column])]
 
 
 def _flat_maps(text: str) -> tuple[list[int], list[int]]:
@@ -257,13 +281,51 @@ def _flat_maps(text: str) -> tuple[list[int], list[int]]:
     return to_flat, to_text
 
 
-def _sentence_edge(text: str, start: int, stop: int, forward: bool) -> int:
-    """Where the run holding the number ends, at or before ``stop``."""
-    step = 1 if forward else -1
-    for index in range(start, stop, step):
-        if text[index if forward else index - 1] in _SENTENCE_END:
-            return index
-    return stop
+def _unit_expression(
+    words: list[str], unit: list[str], backwards: bool = False
+) -> list[str]:
+    """The run of words beside a figure that can belong to its unit.
+
+    Collection stops at the first word that could not be part of this
+    unit -- a scale, a currency, an operator, or a word the unit itself
+    names. ``52 people`` therefore carries no unit for a claim of
+    ``USD million``, and the unit words of a neighbouring figure are
+    never reached across the prose between them.
+    """
+    taken: list[str] = []
+    for word in words:
+        if (
+            _carried(unit, word)
+            or _scale_of(word) is not None
+            or word in _OPERATORS
+            or _is_currency(word)
+        ):
+            taken.append(word)
+            continue
+        break
+    return list(reversed(taken)) if backwards else taken
+
+
+def _is_currency(word: str) -> bool:
+    """Whether the word is a currency symbol or code."""
+    return word in _CURRENCY_ALIASES or any(
+        word in spellings for spellings in _CURRENCY_ALIASES.values()
+    )
+
+
+def _ambiguous_alone(expression: list[str], unit: list[str]) -> bool:
+    """Whether a one-letter abbreviation stands with nothing to scale.
+
+    ``52 m`` is metres as readily as millions, so it does not establish
+    a magnitude the unit only spells out (``million``). It does state a
+    unit that is itself ``m``, and beside another part of the unit
+    (``52m USD``) it is a magnitude.
+    """
+    return (
+        len(expression) == 1
+        and expression[0] in ("m", "b", "k")
+        and expression[0] not in unit
+    )
 
 
 def quantity_support(quantity: records.Quantity, excerpts: list[str]) -> str:
@@ -273,28 +335,30 @@ def quantity_support(quantity: records.Quantity, excerpts: list[str]) -> str:
     semantics of a quantity (``value=52``, ``unit="USD million"``), and
     admission only confirms the evidence says so. It is confirmed when
     an excerpt holds the number as a complete number of its own and the
-    words written against it state the unit and no other scale; failing
-    that, the words between it and its neighbours; failing that, for an
-    extracted table, its header row. A scale is never inferred from the
-    surrounding prose, and nothing is ever converted.
+    run of words written against it -- before or after, through
+    punctuation, stopping at the first word that could not belong to
+    this unit -- states that unit and nothing more; failing that, for an
+    extracted table, the header cell of the number's own column. No
+    other part of the excerpt is read, so a neighbouring figure's unit
+    and another column's header state nothing here, and nothing is ever
+    converted.
 
-    Returns ``"ok"``, ``"not_in_excerpt"`` when the number itself is not
-    there, or ``"unresolved"`` when it is but its unit is not
-    established beside it.
+    Returns ``"ok"``; ``"no_unit"`` when the quantity names no unit at
+    all; ``"not_in_excerpt"`` when the number is not there as a number
+    of its own; or ``"unresolved"`` when it is but the evidence does not
+    state its unit beside it.
     """
+    unit = _components(quantity.unit)
+    if not unit:
+        return "no_unit"
     pattern = _needle(quantity.as_written)
     if pattern is None:
         return "not_in_excerpt"
-    unit = _components(quantity.unit)
     found = False
     for excerpt in excerpts:
         text = _clean(excerpt)
-        header = _table_header(excerpt)
-        to_flat, to_text = _flat_maps(text)
+        to_flat, _ = _flat_maps(text)
         flat = "".join(text.split())
-        spans = [m.span() for m in _NUMBER.finditer(flat)]
-        starts = [span[0] for span in spans]
-        ends = [span[1] for span in spans]
         for match in pattern.finditer(text):
             begin, stop = match.span()
             flat_start, flat_end = to_flat[begin], to_flat[stop]
@@ -307,15 +371,12 @@ def quantity_support(quantity: records.Quantity, excerpts: list[str]) -> str:
                     after[:1] == "." and after[1:2].isdigit()
                 ):
                     continue
-            found = True
-            if _states_it_here(
-                text,
-                (starts, ends, to_text),
-                (begin, stop),
-                (flat_start, flat_end),
-                unit,
-                header,
+            if _COMPOUND_AFTER.match(text[stop:]) or _COMPOUND_BEFORE.search(
+                text[:begin]
             ):
+                continue
+            found = True
+            if _states_it_here(text, (begin, stop), unit):
                 return "ok"
     return "unresolved" if found else "not_in_excerpt"
 
@@ -328,48 +389,31 @@ def _needle(as_written: str) -> re.Pattern[str] | None:
     return re.compile(r"\s*".join(re.escape(char) for char in written))
 
 
-def _states_it_here(
-    text: str,
-    maps: tuple[list[int], list[int], list[int]],
-    here: tuple[int, int],
-    flat_here: tuple[int, int],
-    unit: list[str],
-    header: list[str],
-) -> bool:
-    """Whether the evidence states this unit at one occurrence.
+def _states_it_here(text: str, here: tuple[int, int], unit: list[str]) -> bool:
+    """Whether the evidence states this unit beside this figure.
 
-    The words the number is written with (``52亿元`` carries ``亿元``)
-    and those that follow it are read first, so a scale the unit
-    carries settles it there and a different figure's scale elsewhere
-    is never read into this one. Only when that fails are the words
-    back to the previous number considered, and only then, for a
-    table, its header row.
+    The words written against the number are read outwards in both
+    directions and stop at the first word that could not belong to the
+    unit, so nothing is borrowed from another figure. That expression
+    has to state the unit and nothing besides it. Only if there is no
+    such expression is a table consulted, and then only the header cell
+    of this number's own column, where the declaration is prose and so
+    only the unit's presence and the scales are checked.
     """
-    starts, ends, to_text = maps
-    flat_start, flat_end = flat_here
-    after = bisect.bisect_left(starts, flat_end)
-    before = bisect.bisect_right(ends, flat_start) - 1
-    ceiling = to_text[starts[after]] if after < len(starts) else len(text)
-    floor = to_text[ends[before]] if before >= 0 else 0
-    following = [
-        word.group()
-        for word in _WORD.finditer(
-            text[here[0] : _sentence_edge(text, here[1], ceiling, True)]
-        )
-    ]
-    if _states_the_unit(following, unit):
-        return True
-    preceding = [
-        word.group()
-        for word in _WORD.finditer(
-            text[_sentence_edge(text, here[0], floor, False) : here[0]]
-        )
-    ]
-    if _states_the_unit(preceding + following, unit):
-        return True
-    return bool(header) and _states_the_unit(
-        header + preceding + following, unit
-    )
+    # From the match start, so a unit the number is written with
+    # (``52亿元``) is part of its own expression.
+    after = [word.group() for word in _WORD.finditer(text[here[0] :])]
+    before = [word.group() for word in _WORD.finditer(text[: here[0]])]
+    expression = _unit_expression(
+        list(reversed(before)), unit, backwards=True
+    ) + _unit_expression(after, unit)
+    if expression and not _ambiguous_alone(expression, unit):
+        if _states_the_unit(expression, unit) and all(
+            _carried(unit, word) for word in expression
+        ):
+            return True
+    header = _table_column(text, here[0])
+    return bool(header) and _states_the_unit(header, unit)
 
 
 class _Registry:
@@ -735,11 +779,20 @@ def _fold_finding(
             f"{attempt_id}: material quota of {partition} reached; kept "
             f"non-material: {draft.statement[:60]}"
         )
+    kind = draft.kind
+    if kind == "derived":
+        # "derived" belongs to a calculation's own claim; a researcher
+        # reporting arithmetic is stating an inference.
+        registry.log.append(
+            f"{attempt_id}: finding claimed kind=derived; recorded as an "
+            f"inference: {draft.statement[:60]}"
+        )
+        kind = "inference"
     claim_id = registry.add_claim(
         records.Claim(
             id="C0",
             statement=draft.statement,
-            kind=draft.kind,
+            kind=kind,
             evidence_ids=evidence_ids,
             material=material,
             partition=partition,
@@ -1218,7 +1271,11 @@ def invalidate_claim(
     """
     claims = dict(state.get("claims", {}))
     claim = claims[claim_id]
-    if all(
+    for field in ("calculation_id", "calculation_version", "kind"):
+        # The producer owns these. A correction that could detach a
+        # derived claim from its arithmetic is refused, not applied.
+        changes.pop(field, None)
+    if not changes or all(
         getattr(claim, field, None) == value for field, value in changes.items()
     ):
         # Nothing actually changed; a new version here would withdraw
@@ -1353,6 +1410,7 @@ def cascade_changes(
         for cid in touched
         if cid in claims and claims[cid].calculation_id is not None
     }
+    withdrawn: set[str] = set()
     for calc_id, calc in sorted(calculations.items()):
         stale = sorted({i.claim_id for i in calc.inputs} & touched)
         if calc.status == "ok" and calc_id in produced_by and not stale:
@@ -1372,6 +1430,7 @@ def cascade_changes(
                 f"calculation {calc_id} no longer current: "
                 f"{produced_by[calc_id]} was changed"
             )
+            withdrawn.add(produced_by[calc_id])
             continue
         if calc.status == "ok" and stale:
             names = ", ".join(stale)
@@ -1386,6 +1445,26 @@ def cascade_changes(
             log.append(
                 f"calculation {calc_id} no longer current: {names} changed"
             )
+    for cid in sorted(withdrawn):
+        # Its own arithmetic has just been stopped, so whatever this
+        # batch decided about the claim's text no longer stands: the
+        # record has to say so, not only the citability predicate.
+        claim = claims[cid]
+        if claim.review == "unreviewed":
+            continue
+        claims[cid] = claim.model_copy(
+            update={
+                "version": claim.version + 1,
+                "supersedes": f"{cid}@{claim.version}",
+                "review": "unreviewed",
+                "review_reason": None,
+                "reviewed_topics": [],
+            }
+        )
+        log.append(
+            f"claim {cid} lost its review with calculation "
+            f"{claim.calculation_id}; it must be recomputed"
+        )
     if relationships is None:
         relationships = state.get("relationships", {})
     relationships, revoked = revoke_orphaned_relationships(
@@ -1498,7 +1577,9 @@ def calculation_current(
     arithmetic.
     """
     if claim.calculation_id is None:
-        return True
+        # A claim of kind "derived" with no producer is a claim about
+        # arithmetic with no arithmetic behind it, whoever wrote it.
+        return claim.kind != "derived"
     if claim.id in seen:
         return False
     record = calculations.get(claim.calculation_id)
@@ -1534,6 +1615,8 @@ def producer_chain_intact(
         return False
     if claim.calculation_id is None:
         return True
+    if claim.calculation_id not in calculations:
+        return False
     record = calculations[claim.calculation_id]
     deeper = seen | {claim.id}
     for item in record.inputs:

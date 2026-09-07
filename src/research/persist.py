@@ -253,14 +253,16 @@ def _withdrawn_but_citable(values: dict[str, Any]) -> list[str]:
         (cid, claim)
         for cid, claim in claims.items()
         if getattr(claim, "calculation_id", None)
+        or getattr(claim, "kind", None) == "derived"
     ]
     if not derived:
         return []
     calculations = values.get("calculations")
     if not isinstance(calculations, dict):
         return [
-            f"claims[{cid}]: names calculation {claim.calculation_id} but "
-            "the thread carries no calculations"
+            f"claims[{cid}]: reports calculation "
+            f"{claim.calculation_id!r} but the thread carries no "
+            "calculations"
             for cid, claim in derived
         ]
     problems = []
