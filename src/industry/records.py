@@ -62,6 +62,10 @@ IssueCategory = Literal[
 Severity = Literal["material", "minor"]
 RequestedAction = Literal["research", "acquire", "analyze", "edit", "remove"]
 IssueStatus = Literal["open", "resolved", "unresolvable"]
+# An issue that still describes a real problem: open, or retired at the
+# follow-up limit without being answered. Delivery protections (redaction,
+# report status) apply to both; only ``resolved`` issues stop counting.
+UNRESOLVED_ISSUE_STATUSES = ("open", "unresolvable")
 CalcKind = Literal["ratio", "share", "growth"]
 CalcStatus = Literal["ok", "error"]
 FindingStatus = Literal["current", "stale"]
@@ -247,6 +251,24 @@ class Claim(Record):
     # admit_material``); fixed at admission, so a repeat that adds
     # questions never moves a claim into another partition.
     partition: str | None = None
+
+    def is_reviewed(self) -> bool:
+        """Whether the claim may be cited, counted, or calculated with.
+
+        ``supported``, or ``qualified`` with the qualification on record:
+        a qualified claim whose reason is missing (a thread persisted
+        before ``review_reason`` existed) cannot carry its restriction
+        to the report, so it is not citable until reviewed again.
+        """
+        return self.review == "supported" or (
+            self.review == "qualified" and bool(self.review_reason)
+        )
+
+    def needs_review(self) -> bool:
+        """Whether the verifier still has to judge (or re-judge) it."""
+        return self.review == "unreviewed" or (
+            self.review == "qualified" and not self.review_reason
+        )
 
 
 class Relationship(Record):

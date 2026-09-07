@@ -1386,3 +1386,131 @@ def test_review_batch_size_follows_the_run_limits(tmp_path):
         >= -(-reviewed // 3)
         > -(-reviewed // graph_module.REVIEW_BATCH)
     )
+
+
+def test_retired_issues_keep_redaction_and_never_make_a_report_complete():
+    # C0 round 14, finding 1: an issue retired at the follow-up limit
+    # dropped out of redaction and status, so its unit came back as fact.
+    unit = "本行业需求每年增长99%。"
+    section = records.Section(
+        id="intro", title="概览", text=f"{unit}结论 [C1]。", claim_ids=["C1"]
+    )
+    retired = records.Issue(
+        id="I1",
+        key=merge.issue_key("unsupported", "intro", unit),
+        category="unsupported",
+        severity="material",
+        target="intro",
+        description=f"uncited sentence with a number: {unit}",
+        requested_action="edit",
+        attempts=2,
+        status="unresolvable",
+        resolution="follow-up limit",
+        text=unit,
+    )
+    state = {
+        "brief": records.Brief(industry="光掩模", language="zh"),
+        "claims": {
+            "C1": records.Claim(
+                id="C1", statement="s", kind="fact", review="supported"
+            )
+        },
+        "evidence": {},
+        "sources": {},
+        "sections": [section],
+        "issues": {"I1": retired},
+    }
+    rendered = report.render(state, [], "complete_with_limitations")
+    body = rendered.split("## 局限性")[0]
+    assert "99%" not in body and "已移除未经核实的表述" in body
+    assert "99%" in rendered  # still listed under limitations
+    covered = [
+        records.Coverage(question=q, status="covered") for q in range(1, 9)
+    ]
+    assert (
+        coverage.report_status(covered, state, verified=True)
+        == "complete_with_limitations"
+    )
+    vague = retired.model_copy(
+        update={"id": "I2", "text": None, "key": "unsupported:intro"}
+    )
+    state["issues"] = {"I2": vague}
+    assert coverage.report_status(covered, state, verified=True) == "incomplete"
+    assert report.unremovable_section_issues(state) == [vague]
+
+
+def test_follow_up_limit_is_enforced_at_task_admission_and_on_recurrence():
+    # C0 round 14, finding 4: tasks kept being admitted for an exhausted
+    # issue, and a retired unit reopened with a fresh allowance.
+    limits = records.Limits()
+    exhausted = records.Issue(
+        id="I1",
+        key="missing_evidence:Q4",
+        category="missing_evidence",
+        severity="material",
+        target="Q4",
+        description="no payer data",
+        requested_action="research",
+        attempts=limits.issue_follow_ups,
+    )
+    fresh = exhausted.model_copy(
+        update={
+            "id": "I2",
+            "key": "missing_evidence:Q5",
+            "target": "Q5",
+            "attempts": 0,
+        }
+    )
+    state = {
+        "tasks": {},
+        "issues": {"I1": exhausted, "I2": fresh},
+        "evidence": {},
+    }
+    plan = roles.TaskPlan(
+        tasks=[
+            roles.TaskSpec(
+                key="a", role="industry", objective="on I1", issue_id="I1"
+            ),
+            roles.TaskSpec(
+                key="b", role="industry", objective="on I2", issue_id="I2"
+            ),
+            roles.TaskSpec(key="c", role="company", objective="free"),
+        ]
+    )
+    tasks, issues, log = (
+        graph_module._tasks_from_plan(  # pylint: disable=protected-access
+            state, plan, 3, "follow_up", limits
+        )
+    )
+    assert [t.objective for t in tasks.values()] == ["on I2", "free"]
+    assert issues["I1"].attempts == limits.issue_follow_ups
+    assert issues["I2"].attempts == 1
+    assert any("works on I1" in line and "dropped" in line for line in log)
+    # The conditional third attempt is honoured at admission too.
+    productive = exhausted.model_copy(
+        update={"evidence_added": True, "next_step": "fetch the filing"}
+    )
+    tasks, issues, _ = (
+        graph_module._tasks_from_plan(  # pylint: disable=protected-access
+            {**state, "issues": {"I1": productive}},
+            plan,
+            3,
+            "follow_up",
+            limits,
+        )
+    )
+    assert issues["I1"].attempts == limits.issue_follow_ups + 1
+    # A retired unit that recurs refreshes the retired issue, no new id.
+    retired = exhausted.model_copy(
+        update={"status": "unresolvable", "resolution": "limit"}
+    )
+    issues, again = merge.open_issue(
+        {"I1": retired},
+        "missing_evidence",
+        "material",
+        "Q4",
+        "research",
+        "again",
+    )
+    assert again.id == "I1" and again.status == "unresolvable"
+    assert again.attempts == limits.issue_follow_ups and list(issues) == ["I1"]

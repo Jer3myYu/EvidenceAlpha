@@ -400,7 +400,7 @@ def pending_review(
         (
             c
             for c in state.get("claims", {}).values()
-            if c.review == "unreviewed" and c.material
+            if c.needs_review() and c.material
         ),
         key=lambda c: merge.schedule.task_number(c.id),
     )
@@ -485,7 +485,7 @@ def review_remaining(state: state_module.IndustryState) -> int:
     return sum(
         1
         for c in state.get("claims", {}).values()
-        if c.review == "unreviewed" and c.material
+        if c.needs_review() and c.material
     )
 
 
@@ -613,6 +613,7 @@ def _tasks_from_plan(
     plan: roles.TaskPlan,
     slots: int,
     kind: records.TaskKind,
+    limits: records.Limits,
 ) -> tuple[dict[str, records.Task], dict[str, records.Issue], list[str]]:
     tasks = dict(state.get("tasks", {}))
     issues = dict(state.get("issues", {}))
@@ -624,6 +625,17 @@ def _tasks_from_plan(
     for spec in plan.tasks:
         if spec.key in key_to_id:
             log.append(f"prepare_tasks: duplicate key {spec.key!r} dropped")
+            continue
+        issue = issues.get(spec.issue_id or "")
+        if issue is not None and (
+            issue.status != "open" or followups_exhausted(issue, limits)
+        ):
+            # The per-issue allowance is enforced here, where a task is
+            # admitted, not only when issues are retired afterwards.
+            log.append(
+                f"prepare_tasks: {spec.key!r} works on {issue.id}, which "
+                f"is {issue.status} with {issue.attempts} attempts; dropped"
+            )
             continue
         if len(accepted) >= slots:
             log.append(
@@ -671,6 +683,23 @@ def _tasks_from_plan(
     return tasks, issues, log
 
 
+def followups_exhausted(issue: records.Issue, limits: records.Limits) -> bool:
+    """Whether the issue may not be worked on again.
+
+    The one definition of the per-issue limit: ``issue_follow_ups``
+    attempts, one more only when evidence was added and a concrete next
+    step is on record. Used to retire issues and to refuse tasks that
+    would work on an exhausted one.
+    """
+    over = issue.attempts >= limits.issue_follow_ups
+    third_allowed = (
+        issue.attempts == limits.issue_follow_ups
+        and issue.evidence_added
+        and bool(issue.next_step)
+    )
+    return over and not third_allowed
+
+
 def _close_followup_issues(
     issues: dict[str, records.Issue], limits: records.Limits
 ) -> tuple[dict[str, records.Issue], list[str]]:
@@ -680,13 +709,7 @@ def _close_followup_issues(
     for issue in issues.values():
         if issue.status != "open":
             continue
-        over = issue.attempts >= limits.issue_follow_ups
-        third_allowed = (
-            issue.attempts == limits.issue_follow_ups
-            and issue.evidence_added
-            and bool(issue.next_step)
-        )
-        if over and not third_allowed:
+        if followups_exhausted(issue, limits):
             updated[issue.id] = issue.model_copy(
                 update={
                     "status": "unresolvable",
@@ -728,14 +751,10 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
                 resolved = "question covered"
         elif target in claims:
             claim = claims[target]
-            if issue.category == "contradiction" and claim.review in (
-                "supported",
-                "qualified",
-            ):
+            if issue.category == "contradiction" and claim.is_reviewed():
                 resolved = f"claim reviewed {claim.review}"
             elif issue.category == "unsupported" and (
-                claim.review in ("supported", "qualified")
-                or target not in cited
+                claim.is_reviewed() or target not in cited
             ):
                 resolved = (
                     "claim no longer cited"
@@ -947,7 +966,9 @@ def build_graph(
                 kind: records.TaskKind = (
                     "research" if phase == "mapping" else "follow_up"
                 )
-                tasks, issues, log = _tasks_from_plan(state, plan, slots, kind)
+                tasks, issues, log = _tasks_from_plan(
+                    state, plan, slots, kind, limits
+                )
                 update.update({"tasks": tasks, "issues": issues})
                 update["route_log"].extend(log)
                 if plan.rationale:
@@ -1133,8 +1154,7 @@ def build_graph(
             valid = [
                 cid
                 for cid in spec.claim_ids
-                if cid in claims
-                and claims[cid].review in ("supported", "qualified")
+                if cid in claims and claims[cid].is_reviewed()
             ]
             if len(valid) != len(spec.claim_ids) or not valid:
                 update["route_log"].append(

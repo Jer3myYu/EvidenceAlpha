@@ -1087,3 +1087,69 @@ def test_review_reason_persists_on_the_reviewed_version_and_resets():
     repeated = update["claims"]["C1"]
     assert repeated.version == 2 and repeated.review == "unreviewed"
     assert repeated.review_reason is None
+
+
+def test_scale_words_must_be_carried_by_the_unit():
+    # C0 round 14, finding 2: "52 million" with unit "USD" passed the
+    # guard and a share came out as 0.000052%.
+    consistent = merge.quantity_consistent
+    assert not consistent(
+        records.Quantity(value=52, unit="USD", as_written="52 million")
+    )
+    assert consistent(
+        records.Quantity(value=52, unit="USD million", as_written="52 million")
+    )
+    assert consistent(
+        records.Quantity(value=52, unit="亿元", as_written="52亿")
+    )
+    assert consistent(records.Quantity(value=60, unit="%", as_written="60%"))
+    assert consistent(records.Quantity(value=52, unit="亿元", as_written="52"))
+    assert not consistent(
+        records.Quantity(value=52, unit="元", as_written="52亿")
+    )
+
+
+def test_qualified_claim_without_a_reason_is_not_citable_until_reviewed():
+    # C0 round 14, finding 3: a claim persisted as qualified before
+    # review_reason existed stayed citable without its restriction.
+    old = records.Claim(
+        id="C1",
+        statement="85% of the global market",
+        kind="fact",
+        material=True,
+    ).model_copy(update={"review": "qualified"})
+    assert not old.is_reviewed() and old.needs_review()
+    state = {"claims": {"C1": old}, "sections": []}
+    assert not merge.relationship_live(
+        records.Relationship(
+            id="R1",
+            from_entity="a",
+            to_entity="b",
+            relation="supplies",
+            confirmed=True,
+            claim_id="C1",
+        ),
+        state["claims"],
+    )
+    problems = report.check_citations(
+        [records.Section(id="s", title="t", text="x [C1]", claim_ids=["C1"])],
+        state["claims"],
+    )
+    assert any("without its qualification" in p.description for p in problems)
+    # A qualified verdict with an empty reason leaves an explicit marker.
+    applied = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C1", verdict="qualified", reason=" "
+                )
+            ]
+        ),
+    )
+    reviewed = applied["claims"]["C1"]
+    assert (
+        reviewed.is_reviewed()
+        and "without a stated reason" in reviewed.review_reason
+    )
+    assert any("qualified without a reason" in l for l in applied["route_log"])

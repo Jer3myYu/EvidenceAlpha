@@ -38,8 +38,8 @@ class _View:
     issues: list[records.Issue]
 
     def reviewed(self, claim: records.Claim) -> bool:
-        """Whether the claim counts at all."""
-        return claim.review in ("supported", "qualified")
+        """Whether the claim counts at all (``Claim.is_reviewed``)."""
+        return claim.is_reviewed()
 
     def context_backed(self, claim: records.Claim) -> bool:
         """Supported, with original context whose version is verifiable."""
@@ -422,13 +422,15 @@ def report_status(
 ) -> records.ReportStatus:
     """Decide ``complete``, ``complete_with_limitations``, or ``incomplete``.
 
-    ``complete``: every question covered, no material issue open, and
-    ``verified`` (a final review ran on the delivered draft); without
-    verification the best status is ``complete_with_limitations``.
+    ``complete``: every question covered, no material issue unresolved
+    (open, or retired at the follow-up limit: retirement never makes a
+    report complete), and ``verified`` (a final review ran on the
+    delivered draft); without verification the best status is
+    ``complete_with_limitations``.
     ``complete_with_limitations``: every central question at least
-    partial, no open material issue targeting anything counted toward a
-    central question, and no finding cited for a central question
-    resting on an unsupported or contradicted claim.
+    partial, no unresolved material issue targeting anything counted
+    toward a central question, and no finding cited for a central
+    question resting on an unsupported or contradicted claim.
     ``incomplete``: otherwise, including when the coverage does not
     hold exactly the eight required questions (fail closed).
     """
@@ -440,7 +442,8 @@ def report_status(
     issues = [
         i
         for i in state.get("issues", {}).values()
-        if i.status == "open" and i.severity == "material"
+        if i.status in records.UNRESOLVED_ISSUE_STATUSES
+        and i.severity == "material"
     ]
     if all(c.status == "covered" for c in coverage) and not issues:
         return "complete" if verified else "complete_with_limitations"

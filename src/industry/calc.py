@@ -144,7 +144,7 @@ def inputs_from_claims(
         )
         for cid, claim in claims.items()
         if claim.quantity is not None
-        and claim.review in ("supported", "qualified")
+        and claim.is_reviewed()
         and merge.quantity_consistent(claim.quantity)
     }
 

@@ -28,6 +28,9 @@ def claim(cid, review="supported", evidence_ids=("E1",), **kw):
         kind=kw.pop("kind", "fact"),
         evidence_ids=list(evidence_ids),
         review=review,
+        review_reason=kw.pop(
+            "review_reason", "narrowed" if review == "qualified" else None
+        ),
         material=True,
         topics=topics,
         reviewed_topics=kw.pop("reviewed_topics", topics),

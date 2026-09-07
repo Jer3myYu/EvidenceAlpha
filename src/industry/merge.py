@@ -84,12 +84,21 @@ def quantity_consistent(quantity: records.Quantity) -> bool:
     silent conversion such as ``52`` written for a value of 520) is an
     unresolved conversion and the quantity is not usable.
     """
-    numbers = _NUMBER.findall(re.sub(r"[,\s，]", "", quantity.as_written))
+    squashed = re.sub(r"[,\s，]", "", quantity.as_written)
+    numbers = _NUMBER.findall(squashed)
     if len(numbers) != 1:
         return False
     written = float(numbers[0])
     tolerance = 1e-9 * max(1.0, abs(written))
-    return abs(written - quantity.value) <= tolerance
+    if abs(written - quantity.value) > tolerance:
+        return False
+    # Whatever accompanies the number as written (``亿元``, ``million``,
+    # ``%``) is a scale or unit word and must be part of the unit; a
+    # scale word the unit does not carry would make the value's scale
+    # ambiguous (``52 million`` with unit ``USD``).
+    residue = squashed.replace(numbers[0], "", 1).lower()
+    unit = re.sub(r"[,\s，]", "", quantity.unit).lower()
+    return not residue or residue in unit
 
 
 class _Registry:
@@ -777,10 +786,17 @@ def apply_review(
         if claim is None:
             log.append(f"review names unknown claim {verdict.claim_id}")
             continue
+        reason = verdict.reason.strip() or None
+        if verdict.verdict == "qualified" and reason is None:
+            # Without a reason the qualification could not reach the
+            # report; the marker keeps the claim citable only with an
+            # explicit "unstated" restriction and is logged.
+            reason = "qualified by the verifier without a stated reason"
+            log.append(f"claim {claim.id} qualified without a reason")
         claims[claim.id] = claim.model_copy(
             update={
                 "review": verdict.verdict,
-                "review_reason": verdict.reason.strip() or None,
+                "review_reason": reason,
                 "reviewed_topics": [
                     t for t in verdict.topics_supported if t in claim.topics
                 ],
@@ -799,10 +815,7 @@ def apply_review(
             )
             continue
         parent = claims.get(relation.claim_id)
-        parent_ok = parent is not None and parent.review in (
-            "supported",
-            "qualified",
-        )
+        parent_ok = parent is not None and parent.is_reviewed()
         confirmed = (
             verdict.supported
             and relation.relation != "generic_dependency"
@@ -981,11 +994,7 @@ def relationship_live(
 ) -> bool:
     """Confirmed and resting on a currently supported/qualified parent."""
     parent = claims.get(relation.claim_id)
-    return (
-        relation.confirmed
-        and parent is not None
-        and parent.review in ("supported", "qualified")
-    )
+    return relation.confirmed and parent is not None and parent.is_reviewed()
 
 
 def revoke_orphaned_relationships(
@@ -1023,16 +1032,21 @@ def open_issue(
     draft_version: int | None = None,
     text: str | None = None,
 ) -> tuple[dict[str, records.Issue], records.Issue]:
-    """Return the open issue with this key, or add a new one.
+    """Return the unresolved issue with this key, or add a new one.
 
-    An existing issue keeps its attempt count; only the description,
+    An existing open issue keeps its attempt count; only the description,
     next step, and draft version are refreshed, so repeats never reset
-    the limit.
+    the limit. An issue retired at the follow-up limit (``unresolvable``)
+    is refreshed the same way and stays retired: the same problem
+    recurring never starts a fresh allowance.
     """
     key = issue_key(category, target, text)
     updated = dict(issues)
     for issue in issues.values():
-        if issue.key == key and issue.status == "open":
+        if (
+            issue.key == key
+            and issue.status in records.UNRESOLVED_ISSUE_STATUSES
+        ):
             refreshed = issue.model_copy(
                 update={
                     "description": description,

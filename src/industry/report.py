@@ -62,7 +62,8 @@ def redact(
     """
     for issue in issues:
         if (
-            issue.target == section_id
+            issue.status in records.UNRESOLVED_ISSUE_STATUSES
+            and issue.target == section_id
             and issue.severity == "material"
             and issue.category in ("unsupported", "contradiction")
             and issue.text
@@ -75,17 +76,18 @@ def redact(
 def unremovable_section_issues(
     state: state_module.IndustryState,
 ) -> list[records.Issue]:
-    """Open material section issues without a removable unit.
+    """Unresolved material section issues without a removable unit.
 
     A final-review issue names a section and a problem but not the exact
-    unit; while one is open the report cannot be delivered as complete
-    with limitations, because the offending text would stay.
+    unit; while one is open, or retired unanswered at the follow-up
+    limit, the report cannot be delivered as complete with limitations,
+    because the offending text would stay.
     """
     section_ids = {s.id for s in state.get("sections", [])}
     return [
         i
         for i in state.get("issues", {}).values()
-        if i.status == "open"
+        if i.status in records.UNRESOLVED_ISSUE_STATUSES
         and i.severity == "material"
         and i.category in ("unsupported", "contradiction")
         and i.target in section_ids
@@ -118,11 +120,15 @@ def check_citations(
                 problems.append(
                     CitationProblem(section.id, f"cites unknown claim {cid}")
                 )
-            elif claim.review not in ("supported", "qualified"):
+            elif not claim.is_reviewed():
+                detail = (
+                    "qualified without its qualification on record"
+                    if claim.review == "qualified"
+                    else f"reviewed {claim.review}"
+                )
                 problems.append(
                     CitationProblem(
-                        section.id,
-                        f"cites {cid}, reviewed {claim.review}, as fact",
+                        section.id, f"cites {cid}, {detail}, as fact"
                     )
                 )
         for stripped in factual_units(section.text):
@@ -281,24 +287,23 @@ def render(
         f"cutoff: {brief.cutoff}; report status: {_STATUS_TEXT[status]}"
     )
     parts += [scope_line, ""]
-    open_issues = [
-        i for i in state.get("issues", {}).values() if i.status == "open"
+    unresolved = [
+        i
+        for i in state.get("issues", {}).values()
+        if i.status in records.UNRESOLVED_ISSUE_STATUSES
     ]
     removed_note = (
         "[已移除未经核实的表述]" if zh else "[unverified statement removed]"
     )
     for section in state.get("sections", []):
-        text = redact(section.text, open_issues, section.id, removed_note)
+        # Open and retired (unresolvable) issues both redact: retiring
+        # an issue at the follow-up limit never makes its unit deliverable.
+        text = redact(section.text, unresolved, section.id, removed_note)
         text = _CITATION.sub(lambda m: _cite(m, claims, evidence, order), text)
         parts += [f"## {section.title}", "", text, ""]
-    unresolvable = [
-        i
-        for i in state.get("issues", {}).values()
-        if i.status == "unresolvable"
-    ]
-    if open_issues or unresolvable:
+    if unresolved:
         parts += ["## " + ("局限性" if zh else "Limitations"), ""]
-        for issue in open_issues + unresolvable:
+        for issue in unresolved:
             parts.append(
                 f"- [{issue.severity}] {issue.category} on {issue.target}: "
                 f"{issue.description}"

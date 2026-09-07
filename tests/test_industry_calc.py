@@ -190,6 +190,7 @@ def test_inputs_come_only_from_reviewed_consistent_quantities():
             statement="s",
             kind="fact",
             review=review,
+            review_reason="scope narrowed" if review == "qualified" else None,
             quantity=records.Quantity(
                 value=value, unit="亿元", period="2024", as_written=as_written
             ),

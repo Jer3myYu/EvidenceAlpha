@@ -156,7 +156,7 @@ def review_batches(
     unreviewed = sum(
         1
         for c in state.get("claims", {}).values()
-        if c.review == "unreviewed" and c.material
+        if c.needs_review() and c.material
     )
     return -(-unreviewed // limits.review_batch)
 
