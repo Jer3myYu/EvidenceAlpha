@@ -14,6 +14,7 @@ and answers through the state reducers, so it is never done.
 """
 
 import contextlib
+import sqlite3
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -23,20 +24,31 @@ from langgraph.checkpoint.sqlite import aio
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
 
+from industry import records as industry_records
+
+# The legacy (Phase 6-9) state classes; they stay importable so the
+# recorded threads can be read after the old graph is gone.
+LEGACY_CLASSES = [
+    ("research.plan", "Candidate"),
+    ("research.plan", "ResearchPlan"),
+    ("research.sources", "SourceRecord"),
+    ("research.verify", "ClaimCheck"),
+    ("research.verify", "Conflict"),
+    ("research.verify", "SourceRating"),
+    ("research.verify", "Verification"),
+]
+
 # The default serializer rebuilds dataclasses and pydantic models by
-# importing them, and refuses classes that are not listed. These are the
-# ones that live in ResearchState.
+# importing them, and refuses classes that are not listed: the legacy
+# classes plus every Phase 10 record (``industry.records.PERSISTED``).
 SERIALIZER = jsonplus.JsonPlusSerializer(
-    allowed_msgpack_modules=[
-        ("research.plan", "Candidate"),
-        ("research.plan", "ResearchPlan"),
-        ("research.sources", "SourceRecord"),
-        ("research.verify", "ClaimCheck"),
-        ("research.verify", "Conflict"),
-        ("research.verify", "SourceRating"),
-        ("research.verify", "Verification"),
-    ]
+    allowed_msgpack_modules=LEGACY_CLASSES
+    + [("industry.records", cls.__name__) for cls in industry_records.PERSISTED]
 )
+
+
+class LegacyThreadError(LookupError):
+    """The thread was recorded by another workflow version."""
 
 
 def new_thread_id() -> str:
@@ -70,6 +82,69 @@ async def load_state(
     if not snapshot.values:
         raise LookupError(f"No workflow found for thread {thread_id!r}.")
     return snapshot
+
+
+def thread_version(snapshot: StateSnapshot) -> str | None:
+    """The workflow version a thread was recorded with; ``None`` if legacy."""
+    meta = snapshot.values.get("meta")
+    return getattr(meta, "workflow_version", None)
+
+
+async def load_industry_state(
+    graph: CompiledStateGraph, thread_id: str, expected_version: str
+) -> StateSnapshot:
+    """Return a Phase 10 thread's latest checkpoint, or refuse clearly.
+
+    Raises:
+      LookupError: If the thread has no checkpoint.
+      LegacyThreadError: If the thread was recorded by the Phase 6-9
+        workflow (no ``meta``) or by another workflow version; such a
+        thread can be replayed read-only in Studio but not resumed.
+    """
+    snapshot = await load_state(graph, thread_id)
+    version = thread_version(snapshot)
+    if version is None:
+        raise LegacyThreadError(
+            f"Thread {thread_id!r} was recorded by the Phase 6-9 workflow; "
+            "replay it read-only in Studio, it cannot be resumed here."
+        )
+    if version != expected_version:
+        raise LegacyThreadError(
+            f"Thread {thread_id!r} was recorded by workflow "
+            f"{version!r}; this program runs {expected_version!r}."
+        )
+    return snapshot
+
+
+def resume_config(thread_id: str, snapshot: StateSnapshot) -> dict[str, Any]:
+    """The run config for resuming a thread at its unfinished node.
+
+    ``interrupted_node`` names the node that did not complete, so a
+    single-call node can charge the conservative reservation of its
+    lost attempt when it runs again (``industry.graph``).
+    """
+    config = thread_config(thread_id)
+    config["configurable"]["interrupted_node"] = (
+        snapshot.next[0] if snapshot.next else None
+    )
+    return config
+
+
+def backup(path: str, destination: str) -> None:
+    """Copy the checkpoint database consistently with SQLite's backup API.
+
+    Safe while another process holds the file (WAL included); a plain
+    file copy of an active database is not.
+    """
+    source = sqlite3.connect(path)
+    try:
+        target = sqlite3.connect(destination)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
 
 
 # One SQLite file next to the Chroma store; gitignored like it.

@@ -23,8 +23,10 @@ between roles is the typed workflow state, mediated by LangGraph.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import os
+from collections.abc import Callable
 from typing import Any
 
 import claude_agent_sdk
@@ -51,6 +53,13 @@ CONTEXT_WINDOW = 200_000
 # CrewAI's executor accepts a plain-text answer only behind this marker
 # and strips it; a structured answer needs none.
 FINAL_ANSWER = "Final Answer: "
+# How long a cancelled call may take to wind down before run_task gives
+# up waiting for CrewAI's worker thread.
+CANCEL_GRACE_SECONDS = 30.0
+
+
+class RoleTimeout(TimeoutError):
+    """A role's model call exceeded its deadline and was cancelled."""
 
 
 def split_messages(messages: str | list[dict[str, Any]]) -> tuple[str, str]:
@@ -80,8 +89,23 @@ class ClaudeLLM(crewai.BaseLLM):
     auto-memory.
     """
 
-    def __init__(self) -> None:
-        super().__init__(model=MODEL)
+    def __init__(self, model: str | None = None, max_turns: int = 5) -> None:
+        super().__init__(model=model or MODEL)
+        self.max_turns = max_turns
+        # What the last completed call consumed, as the SDK reported it.
+        self.last_usage: dict[str, Any] | None = None
+        self._cancel: Callable[[], None] | None = None
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        """Cancel the call in flight, or the next one, from any thread.
+
+        A request that arrives before ``call`` has installed its handle
+        is latched, so the call ends as soon as it starts.
+        """
+        self._cancel_requested = True
+        if self._cancel is not None:
+            self._cancel()
 
     async def acall(
         self,
@@ -104,12 +128,12 @@ class ClaudeLLM(crewai.BaseLLM):
         del tools, callbacks, available_functions, from_task, from_agent
         system_prompt, prompt = split_messages(messages)
         options = claude_agent_sdk.ClaudeAgentOptions(
-            model=MODEL,
+            model=self.model,
             system_prompt=system_prompt,
             tools=[],
             # Structured output arrives through an extra SDK turn and may
             # need a second attempt (Phase 6.2); text is one turn.
-            max_turns=1 if response_model is None else 5,
+            max_turns=1 if response_model is None else self.max_turns,
             setting_sources=[],
             env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
         )
@@ -124,6 +148,14 @@ class ClaudeLLM(crewai.BaseLLM):
         ):
             if isinstance(message, claude_agent_sdk.ResultMessage):
                 result = message
+        if result is not None:
+            self.last_usage = {
+                "turns": result.num_turns,
+                "usage": result.usage,
+                "cost_usd": result.total_cost_usd,
+                "duration_ms": result.duration_ms,
+                "is_error": result.is_error,
+            }
         if result is None or result.is_error:
             errors = result.errors if result else "no result"
             raise RuntimeError(f"Model call failed: {errors}")
@@ -149,18 +181,31 @@ class ClaudeLLM(crewai.BaseLLM):
 
         That thread has no event loop, so the SDK call gets a private
         one for its duration; the workflow's own loop is not involved.
+        The call runs as a task on that loop so ``cancel`` can end it
+        from the workflow's thread (``run_task`` does, on a deadline).
         """
-        return asyncio.run(
-            self.acall(
-                messages,
-                tools,
-                callbacks,
-                available_functions,
-                from_task,
-                from_agent,
-                response_model,
+        if self._cancel_requested:
+            raise asyncio.CancelledError("cancelled before the call started")
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_task(
+                self.acall(
+                    messages,
+                    tools,
+                    callbacks,
+                    available_functions,
+                    from_task,
+                    from_agent,
+                    response_model,
+                )
             )
-        )
+            self._cancel = lambda: loop.call_soon_threadsafe(task.cancel)
+            if self._cancel_requested:
+                task.cancel()
+            return loop.run_until_complete(task)
+        finally:
+            self._cancel = None
+            loop.close()
 
     def supports_stop_words(self) -> bool:
         """Stop sequences are not forwarded; the call is one turn anyway."""
@@ -194,6 +239,7 @@ async def run_task(
     description: str,
     expected_output: str,
     llm: crewai.BaseLLM | None = None,
+    deadline: float | None = None,
 ) -> str | pydantic.BaseModel:
     """Run one task as a crew of one agent and return its output.
 
@@ -206,11 +252,17 @@ async def run_task(
       description: The task's full prompt text.
       expected_output: One sentence on what the task must return.
       llm: The model seam; ``ClaudeLLM`` unless a test injects a fake.
+      deadline: Seconds after which the call is cancelled. CrewAI runs
+        the model call in a worker thread, so on timeout the LLM's
+        ``cancel`` is called and the crew is awaited until that thread
+        has finished (bounded by ``CANCEL_GRACE_SECONDS``) before
+        ``RoleTimeout`` is raised; nothing keeps running unobserved.
 
     Returns:
       The task's text, or an instance of ``role.output`` when it has one.
 
     Raises:
+      RoleTimeout: If ``deadline`` passed.
       RuntimeError: If the model call fails, or a structured task did
         not produce its model.
     """
@@ -243,7 +295,18 @@ async def run_task(
         process=crewai.Process.sequential,
         verbose=False,
     )
-    output = await crew.akickoff()
+    kickoff = asyncio.ensure_future(crew.akickoff())
+    try:
+        output = await asyncio.wait_for(asyncio.shield(kickoff), deadline)
+    except asyncio.TimeoutError:
+        cancel = getattr(llm, "cancel", None)
+        if cancel is not None:
+            cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(kickoff, CANCEL_GRACE_SECONDS)
+        raise RoleTimeout(
+            f"{role.name} exceeded {deadline:.0f} s and was cancelled."
+        ) from None
     task_output = output.tasks_output[0]
     if role.output is None:
         return task_output.raw
