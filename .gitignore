@@ -235,3 +235,11 @@ data/workflow.db
 # chromadb downgrade is verified against them. Never committed.
 data/chroma-backup-*/
 data/workflow-backup-*.db
+
+# SQLite sidecars of the workflow checkpoint database while a process holds it.
+data/workflow.db-wal
+data/workflow.db-shm
+
+# Phase 10: fetched source snapshots and delivered reports are runtime data.
+data/sources/
+data/reports/
