@@ -430,7 +430,7 @@ async def get_thread(request: requests.Request) -> responses.Response:
         payload = await replay_legacy(checkpointer, thread_id)
     else:
         payload = await replay_industry(
-            graph, thread_id, request.app.state.runtime.limits
+            graph, thread_id, snapshot.values["meta"].limits
         )
     return responses.JSONResponse(payload)
 

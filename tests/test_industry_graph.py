@@ -604,7 +604,9 @@ def test_initial_state_carries_meta_so_an_early_interruption_resumes(tmp_path):
 
 
 def test_resume_updates_apply_admission_and_reserve_only_what_fits():
-    limits = records.Limits(model_calls=8, model_call_reserve=0)
+    limits = records.Limits(
+        model_calls=8, model_call_reserve=0, turns_per_exchange=1
+    )
     state = {
         "attempts": {},
         "single_calls": {
@@ -635,6 +637,7 @@ def test_resume_updates_apply_admission_and_reserve_only_what_fits():
     updates = graph_module.resume_updates(writing, "write", limits)
     assert updates["single_calls"]["write.2"].reserved.turns == 3
     assert budget.ledger({"attempts": {}, **updates}).turns == 8
+    assert budget.max_turns_for(3, limits) == 3
 
 
 def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
@@ -755,4 +758,60 @@ def test_review_loops_in_batches_until_nothing_material_is_left(tmp_path):
     assert all(
         len(c) <= graph_module.REVIEW_BATCH
         for c in [graph_module.pending_review(state)]
+    )
+
+
+def test_inconsistent_final_review_without_issues_fails_closed(tmp_path):
+    runtime, api, _, compiled = make(tmp_path)
+
+    async def final_review(state, max_turns, deadline):
+        del state, max_turns, deadline
+        api.calls.append("final")
+        return (
+            records.DraftReview(
+                issues=[], consistent=False, summary="tables disagree"
+            ),
+            USAGE,
+        )
+
+    api.final_review = final_review
+    config = persist.thread_config("t14")
+    runtime.begin("t14")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    assert state["meta"].report_status != "complete"
+    assert any(
+        i.target == "draft" and i.status == "open"
+        for i in state["issues"].values()
+    )
+
+
+def test_editor_citations_of_unreviewed_claims_are_rejected(tmp_path):
+    runtime, api, _, compiled = make(tmp_path)
+    api.review_verdict = "supported"
+    original_write = api.write
+
+    async def write(state, instructions, max_turns, deadline):
+        unreviewed = [
+            c.id for c in state["claims"].values() if c.review == "unreviewed"
+        ]
+        target = unreviewed[0] if unreviewed else "C999"
+        api.draft_text = f"结论 [C1]。另一句 [{target}]。"
+        return await original_write(state, instructions, max_turns, deadline)
+
+    api.write = write
+    config = persist.thread_config("t15")
+    runtime.begin("t15")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    assert any(
+        i.category == "unsupported" and "cites" in i.description
+        for i in state["issues"].values()
+    )
+
+
+def test_initial_state_records_the_fixture():
+    payload = graph_module.initial_state("q", records.Limits(), fixture="tmp/f")
+    assert payload["meta"].fixture == "tmp/f"
+    assert (
+        graph_module.initial_state("q", records.Limits())["meta"].fixture
+        is None
     )

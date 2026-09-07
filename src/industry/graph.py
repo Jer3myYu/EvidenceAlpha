@@ -196,13 +196,16 @@ class LiveRoles:
 WorkerFunction = Callable[..., Awaitable[records.TaskResult]]
 
 
-def initial_state(question: str, limits: records.Limits) -> dict[str, Any]:
+def initial_state(
+    question: str, limits: records.Limits, fixture: str | None = None
+) -> dict[str, Any]:
     """The graph input: the question and the run metadata.
 
-    ``meta`` (workflow and schema version, models, limits) is
-    checkpointed with the input, before the first interruptible call,
-    so an interruption during ``scope`` still leaves a resumable,
-    correctly versioned thread.
+    ``meta`` (workflow and schema version, models, limits, the fixture
+    directory of a fixed-evidence run) is checkpointed with the input,
+    before the first interruptible call, so an interruption during
+    ``scope`` still leaves a resumable, correctly versioned thread and a
+    resume rebuilds the same backend.
     """
     return {
         "question": question,
@@ -212,6 +215,7 @@ def initial_state(question: str, limits: records.Limits) -> dict[str, Any]:
             models=dict(roles.ROLE_MODELS),
             limits=limits,
             started_at=records.now_iso(),
+            fixture=fixture,
         ),
     }
 
@@ -691,7 +695,7 @@ def build_graph(
         reservation = running_reservation(state, node)
         if reservation is None:
             return None, {"route_log": [f"{node}: skipped (no reservation)"]}
-        max_turns = max(1, reservation.reserved.turns)
+        max_turns = budget.max_turns_for(reservation.reserved.turns, limits)
         output, usage = await call(max_turns, reservation.reserved.seconds)
         return output, {"single_calls": _complete(state, reservation, usage)}
 
@@ -1094,6 +1098,11 @@ def build_graph(
         update["review_rounds"] = state.get("review_rounds", 0) + 1
         if outcome is None:
             return update
+        outcome = outcome.model_copy(
+            update={
+                "claims": [v for v in outcome.claims if v.claim_id in pending]
+            }
+        )
         applied = merge.apply_review(state, outcome)
         update.update(
             {
@@ -1247,7 +1256,7 @@ def build_graph(
         ]
         issues = dict(state.get("issues", {}))
         for problem in report.check_citations(
-            sections, state.get("claims", {})
+            sections, state.get("claims", {}), report.known_entities(state)
         ):
             issues, _ = merge.open_issue(
                 issues,
@@ -1321,6 +1330,18 @@ def build_graph(
                     update["route_log"].append(
                         f"{issue.id} resolved: draft {version} reviewed clean"
                     )
+            if not outcome.consistent and not outcome.issues:
+                issues, _ = merge.open_issue(
+                    issues,
+                    "contradiction",
+                    "material",
+                    "draft",
+                    "edit",
+                    f"[draft {version}] the final review judged the draft "
+                    "inconsistent without naming a section: "
+                    + (outcome.summary or "no summary"),
+                    draft_version=version,
+                )
             update["final_review"] = outcome
             update["final_review_version"] = version
         derived = coverage_module.derive(state, state.get("assessment"))
@@ -1352,9 +1373,13 @@ def build_graph(
 
     async def deliver(state: state_module.IndustryState) -> dict[str, Any]:
         derived = coverage_module.derive(state, state.get("assessment"))
-        verified = state.get("final_review") is not None and state.get(
-            "final_review_version"
-        ) == state.get("draft_version", 0)
+        review = state.get("final_review")
+        verified = (
+            review is not None
+            and review.consistent
+            and state.get("final_review_version")
+            == state.get("draft_version", 0)
+        )
         status = coverage_module.report_status(derived, state, verified)
         text = report.render(state, derived, status)
         path = report.write_report(_thread_id(), text, runtime.reports_dir)

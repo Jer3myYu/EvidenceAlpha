@@ -49,10 +49,18 @@ class CitationProblem:
 
 
 def check_citations(
-    sections: list[records.Section], claims: dict[str, records.Claim]
+    sections: list[records.Section],
+    claims: dict[str, records.Claim],
+    entities: list[str] | None = None,
 ) -> list[CitationProblem]:
-    """Find unknown, disallowed, and missing citations per section."""
+    """Find unknown, unreviewed, disallowed, and missing citations.
+
+    A citation must name a claim reviewed ``supported`` or
+    ``qualified``; an uncited sentence that states a number or names a
+    known entity (a claim entity or a map participant) is flagged.
+    """
     problems: list[CitationProblem] = []
+    names = [e for e in (entities or []) if len(e) >= 2]
     for section in sections:
         for cid in cited_claims(section.text):
             claim = claims.get(cid)
@@ -60,7 +68,7 @@ def check_citations(
                 problems.append(
                     CitationProblem(section.id, f"cites unknown claim {cid}")
                 )
-            elif claim.review in ("unsupported", "contradicted"):
+            elif claim.review not in ("supported", "qualified"):
                 problems.append(
                     CitationProblem(
                         section.id,
@@ -70,18 +78,40 @@ def check_citations(
         for sentence in _SENTENCE.findall(section.text):
             stripped = sentence.strip()
             if (
-                stripped
-                and _DIGITS.search(stripped)
-                and not _CITATION.search(stripped)
-                and not stripped.startswith(("|", "#", "-", "*"))
+                not stripped
+                or _CITATION.search(stripped)
+                or stripped.startswith(("|", "#", "-", "*"))
             ):
+                continue
+            if _DIGITS.search(stripped):
                 problems.append(
                     CitationProblem(
                         section.id,
                         "uncited sentence with a number: " f"{stripped[:80]}",
                     )
                 )
+            elif any(name in stripped for name in names):
+                problems.append(
+                    CitationProblem(
+                        section.id,
+                        "uncited sentence naming an entity: "
+                        f"{stripped[:80]}",
+                    )
+                )
     return problems
+
+
+def known_entities(state: state_module.IndustryState) -> list[str]:
+    """Entity names the citation check watches for in uncited sentences."""
+    names: set[str] = set()
+    for claim in state.get("claims", {}).values():
+        if claim.entity:
+            names.add(claim.entity)
+    industry_map = state.get("map")
+    if industry_map is not None:
+        for participant in industry_map.participants:
+            names.add(participant.name)
+    return sorted(names)
 
 
 def _source_index(

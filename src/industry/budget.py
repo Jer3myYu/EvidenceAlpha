@@ -131,7 +131,7 @@ def remaining(
 def reservation_for(limits: records.Limits) -> records.Reservation:
     """The allowance one tool-using attempt is charged until observed."""
     return records.Reservation(
-        turns=limits.max_turns,
+        turns=limits.attempt_turns(),
         tool_calls=limits.tools_per_attempt,
         seconds=limits.task_timeout_s,
     )
@@ -171,7 +171,7 @@ def dispatchable(
     """
     left = remaining(state, limits)
     executions = left.task_executions - (1 if keep_acquisition_slot else 0)
-    turns = (left.turns - limits.model_call_reserve) // limits.max_turns
+    turns = (left.turns - limits.model_call_reserve) // limits.attempt_turns()
     tools = left.tool_calls // limits.tools_per_attempt
     seconds = left.seconds - limits.time_reserve_s
     expected = expected_task_s(state, limits)
@@ -183,24 +183,30 @@ def dispatchable(
 def admit_single_call(
     state: state_module.IndustryState, limits: records.Limits, node: str
 ) -> int:
-    """Return the ``max_turns`` a single-call node may use now, or 0.
+    """Return the ``num_turns`` a single-call node may reserve now, or 0.
 
-    Intermediate nodes need a full call's turns left after the
+    Intermediate nodes need a full call's worst case left after the
     model-call reserve and some wall clock left after the time reserve;
     the reserved nodes (``write``, ``final_review``) may spend the
-    reserve itself. A result of 0 means the node is skipped.
+    reserve itself. A result of 0 means the node is skipped. The
+    session's ``max_turns`` is derived from the reservation by
+    ``max_turns_for``.
     """
     left = remaining(state, limits)
+    full = limits.single_call_reserved()
     if node in state_module.RESERVED_NODES:
         if left.seconds <= 0:
             return 0
-        return min(limits.single_call_turns, left.turns)
+        return min(full, left.turns)
     if left.seconds - limits.time_reserve_s <= 0:
         return 0
-    allowed = min(
-        limits.single_call_turns, left.turns - limits.model_call_reserve
-    )
-    return allowed if allowed >= limits.single_call_turns else 0
+    allowed = min(full, left.turns - limits.model_call_reserve)
+    return allowed if allowed >= full else 0
+
+
+def max_turns_for(reserved_turns: int, limits: records.Limits) -> int:
+    """The SDK ``max_turns`` that keeps a call within its reservation."""
+    return max(1, reserved_turns // limits.turns_per_exchange)
 
 
 class RunMeter:

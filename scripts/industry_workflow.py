@@ -73,6 +73,18 @@ def limits_from(overrides: list[str]) -> records.Limits:
     return records.Limits(**values)
 
 
+def fixture_backend(directory: str) -> tools.FixtureBackend:
+    """The fixed-evidence backend over a temporary index and store."""
+    scratch = tempfile.mkdtemp(prefix="fixture-run-")
+    backend = tools.FixtureBackend(
+        directory,
+        snapshots.vector_store(f"{scratch}/chroma"),
+        f"{scratch}/sources",
+    )
+    print(f"FIXTURE: {len(backend.pages)} pages from {directory}")
+    return backend
+
+
 def show(title: str, body: str) -> None:
     """Print one stage with a rule under its title."""
     rule = "-" * len(title)
@@ -124,15 +136,7 @@ async def main() -> None:
         except RuntimeError as error:
             sys.exit(str(error))
     runtime = budget.Runtime(limits_from(args.limit))
-    backend = None
-    if args.fixture:
-        scratch = tempfile.mkdtemp(prefix="fixture-run-")
-        backend = tools.FixtureBackend(
-            args.fixture,
-            snapshots.vector_store(f"{scratch}/chroma"),
-            f"{scratch}/sources",
-        )
-        print(f"FIXTURE: {len(backend.pages)} pages from {args.fixture}")
+    backend = fixture_backend(args.fixture) if args.fixture else None
     async with persist.open_checkpointer() as checkpointer:
         graph = graph_module.build_graph(
             runtime, backend=backend, checkpointer=checkpointer
@@ -144,7 +148,9 @@ async def main() -> None:
             )
             show("QUESTION", args.question)
             config = persist.thread_config(thread_id)
-            payload = graph_module.initial_state(args.question, runtime.limits)
+            payload = graph_module.initial_state(
+                args.question, runtime.limits, fixture=args.fixture
+            )
         else:
             if args.limit:
                 sys.exit(
@@ -158,8 +164,17 @@ async def main() -> None:
                 )
             except LookupError as error:
                 sys.exit(str(error))
-            runtime = budget.Runtime(snapshot.values["meta"].limits)
-            graph = graph_module.build_graph(runtime, checkpointer=checkpointer)
+            meta = snapshot.values["meta"]
+            if args.fixture and args.fixture != meta.fixture:
+                sys.exit(
+                    f"This thread was recorded with fixture {meta.fixture!r}; "
+                    "a resume keeps it."
+                )
+            runtime = budget.Runtime(meta.limits)
+            backend = fixture_backend(meta.fixture) if meta.fixture else None
+            graph = graph_module.build_graph(
+                runtime, backend=backend, checkpointer=checkpointer
+            )
             show("THREAD", thread_id)
             show("QUESTION", snapshot.values["question"])
             if not snapshot.next:

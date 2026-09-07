@@ -30,9 +30,40 @@ TRANSPORT_ERRORS = (
     claude_agent_sdk.CLINotFoundError,
     claude_agent_sdk.ProcessError,
 )
-# The SDK raises this when its own structured-output retries are
-# exhausted: a schema failure with the session's work already spent.
-SCHEMA_ERRORS = (claude_agent_sdk.ResultError,)
+# ResultError terminal reasons that are the service's, not the session's.
+TRANSPORT_REASONS = ("api_error",)
+
+
+def classify_result_error(error: Any) -> tuple[str, records.Usage | None]:
+    """Name a ``ResultError`` and recover the usage its payload carries.
+
+    The CLI ends a failed session with a ``result`` message; the SDK
+    raises ``ResultError`` with that payload (``data``). An API failure
+    is transport (the task may be re-queued); anything else, such as
+    exhausted structured-output attempts or ``error_max_turns``, is a
+    schema failure the session itself produced and is never retried by
+    the graph. The payload's ``num_turns`` is observed usage.
+    """
+    data = getattr(error, "data", None) or {}
+    reason = str(
+        getattr(error, "terminal_reason", None)
+        or data.get("terminal_reason")
+        or ""
+    )
+    subtype = str(getattr(error, "subtype", None) or data.get("subtype") or "")
+    kind = "transport" if reason in TRANSPORT_REASONS else "schema"
+    usage = None
+    if isinstance(data.get("num_turns"), int):
+        tokens = data.get("usage") or {}
+        usage = records.Usage(
+            turns=int(data["num_turns"]),
+            input_tokens=int(tokens.get("input_tokens", 0) or 0),
+            output_tokens=int(tokens.get("output_tokens", 0) or 0),
+            cost_usd=data.get("total_cost_usd"),
+        )
+    name = subtype or reason or "unknown"
+    return f"{kind}: ResultError[{name}]", usage
+
 
 SYSTEM_COMMON = """\
 You research one bounded task for an investment-research system whose
@@ -356,14 +387,25 @@ async def run_attempt(
                 usage,
                 error=f"timeout: no result within {seconds} s",
             )
-        except SCHEMA_ERRORS as error:
+        except claude_agent_sdk.ResultError as error:
+            label, recovered = classify_result_error(error)
             usage = _usage(session, meter, collector, started, True)
+            if recovered is not None:
+                usage = usage.model_copy(
+                    update={
+                        "turns": recovered.turns,
+                        "input_tokens": recovered.input_tokens,
+                        "output_tokens": recovered.output_tokens,
+                        "cost_usd": recovered.cost_usd,
+                        "unknown": False,
+                    }
+                )
             return _result(
                 work,
                 collector,
                 "failed",
                 usage,
-                error=f"schema: {type(error).__name__}: {error}",
+                error=f"{label}: {error}",
             )
         except TRANSPORT_ERRORS as error:
             usage = _usage(session, meter, collector, started, True)

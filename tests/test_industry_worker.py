@@ -357,3 +357,35 @@ def test_reference_version_is_registered_in_the_collector():
     )
     assert out.source_versions[0].id == "v4"
     assert out.source_versions[0].source_id == out.sources[0].id
+
+
+def test_result_error_is_classified_and_its_usage_recovered():
+    exhausted = claude_agent_sdk.ResultError(
+        "Failed to provide valid structured output after 5 attempts",
+        data={
+            "subtype": "error_during_execution",
+            "num_turns": 13,
+            "usage": {"input_tokens": 9, "output_tokens": 4},
+            "total_cost_usd": 0.2,
+        },
+        exit_code=1,
+    )
+    label, usage = worker.classify_result_error(exhausted)
+    assert label.startswith("schema:") and usage.turns == 13
+    api_error = claude_agent_sdk.ResultError(
+        "overloaded",
+        data={
+            "subtype": "error",
+            "terminal_reason": "api_error",
+            "num_turns": 2,
+        },
+        exit_code=1,
+    )
+    label, usage = worker.classify_result_error(api_error)
+    assert label.startswith("transport:") and usage.turns == 2
+    query, _ = fake_query([], raise_error=exhausted)
+    out = run(work_input(), query, runtime_with_admission())
+    assert out.status == "failed" and out.error.startswith(
+        "schema: ResultError"
+    )
+    assert out.usage.turns == 13 and not out.usage.unknown

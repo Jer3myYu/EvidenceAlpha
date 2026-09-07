@@ -78,11 +78,15 @@ def test_dispatchable_respects_every_limit_and_reserve():
         concurrency=2,
     )
     empty = {"attempts": {}, "single_calls": {}}
-    # executions 12; turns (200-12)//12 = 15; tools 150//24 = 6;
-    # time (5400-900)/600 = 7 waves * 2 = 14. Tools bind.
-    assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 6
-    assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 6
-    tight = records.Limits(**{**limits.model_dump(), "tool_calls": 1000})
+    # executions 12; turns (200-12)//34 = 5 (an attempt reserves the
+    # SDK's worst case: 2*12 + 2*5 num_turns); tools 150//24 = 6;
+    # time (5400-900)/600 = 7 waves * 2 = 14. Turns bind.
+    assert limits.attempt_turns() == 34
+    assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 5
+    assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 5
+    tight = records.Limits(
+        **{**limits.model_dump(), "tool_calls": 1000, "model_calls": 1000}
+    )
     assert budget.dispatchable(empty, tight, keep_acquisition_slot=True) == 11
     spent = {
         "attempts": {},
@@ -104,7 +108,9 @@ def test_dispatchable_respects_every_limit_and_reserve():
 
 
 def test_admit_single_call_intermediate_versus_reserved():
-    limits = records.Limits(model_calls=20, model_call_reserve=12)
+    limits = records.Limits(
+        model_calls=20, model_call_reserve=12, turns_per_exchange=1
+    )
     state = {
         "attempts": {},
         "single_calls": {
@@ -217,6 +223,14 @@ def test_begin_revokes_admissions_of_an_earlier_invocation():
     assert runtime.meter_for("t") is None
     fresh = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
     assert not fresh.is_admitted("T1.1")
+
+
+def test_reservations_are_in_sdk_turn_units():
+    limits = records.Limits()
+    assert budget.reservation_for(limits).turns == 34
+    assert limits.single_call_reserved() == 10
+    assert budget.max_turns_for(10, limits) == 5
+    assert budget.max_turns_for(3, limits) == 1
 
 
 def test_unknown_observed_usage_charges_the_reservation():

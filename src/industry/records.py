@@ -702,7 +702,15 @@ class LeadAssessment(Record):
 
 
 class Limits(Record):
-    """The configurable safety limits of one run."""
+    """The configurable safety limits of one run.
+
+    ``model_calls`` and every turn count are in the SDK's ``num_turns``
+    unit, which counts assistant turns and tool-result turns alike (a
+    session with ``max_turns`` model exchanges reports about twice that,
+    plus the structured-output attempts). ``turns_per_exchange`` and
+    ``structured_output_attempts`` size the worst case one session can
+    report, which is what an attempt reserves.
+    """
 
     wall_clock_s: float = 5400.0
     time_reserve_s: float = 900.0
@@ -721,6 +729,19 @@ class Limits(Record):
     single_call_turns: int = 5
     expected_task_s: float = 600.0
     task_attempts: int = 2
+    turns_per_exchange: int = 2
+    structured_output_attempts: int = 5
+
+    def attempt_turns(self) -> int:
+        """The most ``num_turns`` a tool session can report."""
+        return (
+            self.turns_per_exchange * self.max_turns
+            + self.turns_per_exchange * self.structured_output_attempts
+        )
+
+    def single_call_reserved(self) -> int:
+        """The most ``num_turns`` a single call can report."""
+        return self.turns_per_exchange * self.single_call_turns
 
 
 class RunMeta(Record):
@@ -735,6 +756,7 @@ class RunMeta(Record):
     execution_status: ExecutionStatus = "running"
     report_status: ReportStatus | None = None
     report_path: str | None = None
+    fixture: str | None = None
 
 
 # Every class that can appear in a checkpoint; the serializer allowlist.

@@ -412,6 +412,15 @@ def _claim_line(
     return "\n".join(parts)
 
 
+def reviewed_claim_ids(state: state_module.IndustryState) -> list[str]:
+    """Ids of claims reviewed supported or qualified: what may be cited."""
+    return [
+        c.id
+        for c in state.get("claims", {}).values()
+        if c.review in ("supported", "qualified")
+    ]
+
+
 def render_claims(
     state: state_module.IndustryState,
     claim_ids: list[str] | None,
@@ -861,7 +870,12 @@ def draft_description(
             render_map(state.get("map", records.IndustryMap())),
             render_findings(state),
             render_calculations(state),
-            render_claims(state, None, False, MAX_CONTEXT_CHARS["editor"]),
+            render_claims(
+                state,
+                reviewed_claim_ids(state),
+                False,
+                MAX_CONTEXT_CHARS["editor"],
+            ),
             render_relationships(state),
             render_coverage(state),
             render_issues(state),
@@ -873,7 +887,8 @@ def draft_description(
             "versus China and company comparison; conclusions, risks, "
             "monitoring, limitations. Use concise tables where they help "
             "(Markdown). Every factual sentence ends with its [C#] "
-            "citations. Section ids are short slugs.",
+            "citations; only the claims listed above may be cited (they "
+            "are the reviewed ones). Section ids are short slugs.",
         ]
     )
 
@@ -903,7 +918,12 @@ def final_review_description(state: state_module.IndustryState) -> str:
     return "\n\n".join(
         [
             f"Industry: {brief.industry}",
-            render_claims(state, None, False, MAX_CONTEXT_CHARS["verifier"]),
+            render_claims(
+                state,
+                reviewed_claim_ids(state),
+                False,
+                MAX_CONTEXT_CHARS["verifier"],
+            ),
             render_findings(state),
             render_sections(state.get("sections", [])),
             "Check the exact draft: every factual sentence must be "
