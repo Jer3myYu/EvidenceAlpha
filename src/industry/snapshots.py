@@ -644,3 +644,38 @@ def acquire(
     canonical = sources_module.canonical_url(url)
     index_version(store, version, canonical, chunks)
     return version, chunks
+
+
+LOCAL_SCHEME = "file://"
+
+
+def ingest_local(
+    path: str, store: Chroma, root: str = SOURCES_DIR
+) -> tuple[records.SourceVersion, int]:
+    """Snapshot and index one local file (``.txt``, ``.md``, ``.pdf``).
+
+    The file's absolute path under ``file://`` is its identity, so a
+    changed file becomes a new version beside the old one, exactly as a
+    re-fetched page does.
+    """
+    file = pathlib.Path(path).resolve()
+    suffix = file.suffix.lower()
+    if suffix not in (".pdf", ".md", ".txt"):
+        raise ValueError(f"Unsupported file type {suffix!r}: {file}")
+    content = file.read_bytes()
+    content_type = {
+        ".pdf": "application/pdf",
+        ".md": "text/markdown",
+    }.get(suffix, "text/plain")
+    url = f"{LOCAL_SCHEME}{file}"
+    fetched = Fetched(
+        url=url,
+        final_url=url,
+        content_type=content_type,
+        content=content,
+        retrieved_at=records.now_iso(),
+    )
+    chunks = chunk_blocks(extract(fetched))
+    version = store_snapshot(fetched, "local", root, chunk_count=len(chunks))
+    count = index_version(store, version, url, chunks)
+    return version, count

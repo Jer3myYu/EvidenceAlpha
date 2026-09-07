@@ -7,6 +7,7 @@ Usage::
     .venv/bin/python scripts/industry_workflow.py --resume 3f9c2a1b
     .venv/bin/python scripts/industry_workflow.py --backup backup.db
     .venv/bin/python scripts/industry_workflow.py "q" --limit wall_clock_s=3600
+    .venv/bin/python scripts/industry_workflow.py "q" --fixture tmp/.../fixture
 
 Every run is checkpointed to ``data/workflow.db`` under a thread id,
 printed first. An interrupted run resumes with ``--resume`` at the
@@ -19,11 +20,14 @@ the budget as the run goes.
 import argparse
 import asyncio
 import sys
+import tempfile
 
 from industry import budget
 from industry import graph as graph_module
 from industry import records
+from industry import snapshots
 from industry import state as state_module
+from industry import tools
 from industry import trace
 from research import persist
 from research import web
@@ -39,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     target.add_argument("--resume", metavar="THREAD_ID", help="resume a thread")
     target.add_argument(
         "--backup", metavar="PATH", help="copy the checkpoint database"
+    )
+    parser.add_argument(
+        "--fixture",
+        metavar="DIR",
+        help="fixed evidence: search and fetch only the pages recorded in "
+        "DIR/sources.json (a temporary index; no network)",
     )
     parser.add_argument(
         "--limit",
@@ -108,13 +118,25 @@ async def main() -> None:
         persist.backup(persist.DB_PATH, args.backup)
         print(f"Backed up {persist.DB_PATH} to {args.backup}")
         return
-    try:
-        web.api_key()
-    except RuntimeError as error:
-        sys.exit(str(error))
+    if not args.fixture:
+        try:
+            web.api_key()
+        except RuntimeError as error:
+            sys.exit(str(error))
     runtime = budget.Runtime(limits_from(args.limit))
+    backend = None
+    if args.fixture:
+        scratch = tempfile.mkdtemp(prefix="fixture-run-")
+        backend = tools.FixtureBackend(
+            args.fixture,
+            snapshots.vector_store(f"{scratch}/chroma"),
+            f"{scratch}/sources",
+        )
+        print(f"FIXTURE: {len(backend.pages)} pages from {args.fixture}")
     async with persist.open_checkpointer() as checkpointer:
-        graph = graph_module.build_graph(runtime, checkpointer=checkpointer)
+        graph = graph_module.build_graph(
+            runtime, backend=backend, checkpointer=checkpointer
+        )
         if args.resume is None:
             thread_id = persist.new_thread_id()
             show(

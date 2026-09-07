@@ -17,6 +17,8 @@ excerpt, never the distance alone.
 
 import asyncio
 import dataclasses
+import json
+import pathlib
 from typing import Any, Protocol
 
 import claude_agent_sdk
@@ -108,6 +110,111 @@ class LiveBackend:
             url, source_id, self.sources_dir
         )
         return version, chunks, sources_module.canonical_url(url)
+
+    def index(
+        self,
+        version: records.SourceVersion,
+        canonical_url: str,
+        chunks: list[snapshots.Chunk],
+    ) -> int:
+        return snapshots.index_version(
+            self.store, version, canonical_url, chunks
+        )
+
+    def search_documents(
+        self, query: str, k: int, source_url: str | None
+    ) -> list[snapshots.Hit]:
+        return snapshots.search(self.store, query, k=k, source_url=source_url)
+
+
+class FixtureBackend:
+    """Fixed evidence: the fixture pages are the whole web.
+
+    ``search_web`` ranks the fixture pages by similarity to the query
+    (best chunk per page) and returns them as hits with that chunk as
+    the extract; ``fetch`` serves the recorded bytes; the index is the
+    same versioned collection code the live backend uses, in the store
+    the caller supplies (a temporary directory for evaluations). Every
+    page is indexed at construction so search_documents can find text
+    before a fetch, exactly as a pre-fetched source would.
+
+    The manifest is ``sources.json`` in the directory: records with
+    ``url``, ``blob`` (file name), ``content_type``, and ``status``;
+    records without status 200 are unavailable.
+    """
+
+    def __init__(self, directory: str, store: Any, sources_dir: str) -> None:
+        self.directory = pathlib.Path(directory)
+        self.store = store
+        self.sources_dir = sources_dir
+        manifest = json.loads(
+            (self.directory / "sources.json").read_text(encoding="utf-8")
+        )
+        self.pages: dict[str, dict[str, Any]] = {}
+        for record in manifest:
+            if record.get("status") == 200 and record.get("blob"):
+                canonical = sources_module.canonical_url(record["url"])
+                self.pages[canonical] = record
+        self.titles: dict[str, str] = {}
+        for canonical, record in self.pages.items():
+            version, chunks, _ = self.fetch(canonical, "fixture")
+            self.index(version, canonical, chunks)
+            self.titles[canonical] = (
+                chunks[0].section or record.get("title") or canonical
+                if chunks
+                else canonical
+            )
+
+    def _fetched(self, canonical: str) -> snapshots.Fetched:
+        record = self.pages.get(canonical)
+        if record is None:
+            raise snapshots.FetchError(f"{canonical} is not in the fixture")
+        content = (self.directory / record["blob"]).read_bytes()
+        return snapshots.Fetched(
+            url=record["url"],
+            final_url=record.get("final_url", record["url"]),
+            content_type=str(record.get("content_type", "")).lower(),
+            content=content,
+            retrieved_at=record.get("retrieved_at", records.now_iso()),
+        )
+
+    def search_web(self, query: str, max_results: int) -> list[web.WebResult]:
+        hits = snapshots.search(self.store, query, k=max(20, max_results * 4))
+        best: dict[str, snapshots.Hit] = {}
+        for hit in hits:
+            source = str(hit.metadata.get("source", ""))
+            if source not in best or hit.distance < best[source].distance:
+                best[source] = hit
+        ranked = sorted(best.items(), key=lambda item: item[1].distance)
+        return [
+            web.WebResult(
+                title=self.titles.get(source, source),
+                url=source,
+                snippet=hit.text[:300],
+            )
+            for source, hit in ranked[:max_results]
+        ]
+
+    def fetch(
+        self, url: str, source_id: str
+    ) -> tuple[records.SourceVersion, list[snapshots.Chunk], str]:
+        canonical = sources_module.canonical_url(url)
+        fetched = self._fetched(canonical)
+        chunks = snapshots.chunk_blocks(snapshots.extract(fetched))
+        publisher = published = None
+        if not snapshots.is_pdf(
+            fetched.content_type, fetched.final_url, fetched.content
+        ):
+            publisher, published = snapshots.html_metadata(fetched.content)
+        version = snapshots.store_snapshot(
+            fetched,
+            source_id,
+            self.sources_dir,
+            chunk_count=len(chunks),
+            publisher=publisher,
+            published=published,
+        )
+        return version, chunks, canonical
 
     def index(
         self,

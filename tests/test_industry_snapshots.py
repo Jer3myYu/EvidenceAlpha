@@ -287,3 +287,22 @@ def test_html_metadata_and_acquire_bytes_record_publisher_and_count(tmp_path):
         "Sina Finance",
         "2025-05-19T08:00:00+08:00",
     )
+
+
+def test_ingest_local_snapshots_and_indexes_a_file(tmp_path):
+    document = tmp_path / "note.md"
+    document.write_text(
+        "# Intro\n\nAcme makes robots for warehouses.", encoding="utf-8"
+    )
+    store = FakeStore()
+    version, count = snapshots.ingest_local(
+        str(document), store, str(tmp_path / "sources")
+    )
+    assert count == 1 and version.chunk_count == 1
+    assert version.final_url.startswith(
+        "file://"
+    ) and version.final_url.endswith("note.md")
+    assert pathlib.Path(version.blob_path).exists()
+    assert list(store.docs.values())[0].metadata["section"] == "Intro"
+    with pytest.raises(ValueError, match="Unsupported"):
+        snapshots.ingest_local(str(tmp_path / "x.docx"), store, str(tmp_path))

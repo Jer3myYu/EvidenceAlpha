@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from industry import budget
 from industry import records
 from industry import snapshots
@@ -220,3 +222,82 @@ def test_bands_come_from_the_calibration_table_only():
     assert tools.band(0.9, "zh", "zh") == "doubtful"
     assert tools.band(0.2, "fr", "zh") == "uncalibrated"
     assert tools.band(0.2, "en", "") == "uncalibrated"
+
+
+class FakeVectorStore:
+    """Enough of Chroma for the fixture backend: upsert and search."""
+
+    def __init__(self):
+        self.docs = {}
+
+    def add_documents(self, documents, ids):
+        for doc, doc_id in zip(documents, ids):
+            self.docs[doc_id] = doc
+
+    def similarity_search_with_score(self, query, k, **kwargs):
+        del query
+        where = kwargs.get("filter")
+        hits = []
+        for doc in self.docs.values():
+            if where and doc.metadata.get("source") != where["source"]:
+                continue
+            hits.append((doc, 0.3 if "HOYA" in doc.page_content else 0.6))
+        return sorted(hits, key=lambda h: h[1])[:k]
+
+
+def test_fixture_backend_serves_only_the_recorded_pages(tmp_path):
+    page = (
+        b"<html><body><h1>Blanks</h1><p>HOYA supplies EUV mask blanks to "
+        b"leading foundries worldwide.</p></body></html>"
+    )
+    other = (
+        b"<html><body><h1>Other</h1><p>An unrelated page about coffee "
+        b"shops and their rent.</p></body></html>"
+    )
+    (tmp_path / "a.html").write_bytes(page)
+    (tmp_path / "b.html").write_bytes(other)
+    import json  # pylint: disable=import-outside-toplevel
+
+    (tmp_path / "sources.json").write_text(
+        json.dumps(
+            [
+                {
+                    "url": "https://a.example/x",
+                    "blob": "a.html",
+                    "content_type": "text/html",
+                    "status": 200,
+                },
+                {
+                    "url": "https://b.example/y",
+                    "blob": "b.html",
+                    "content_type": "text/html",
+                    "status": 200,
+                },
+                {
+                    "url": "https://c.example/z",
+                    "blob": "c.html",
+                    "content_type": "text/html",
+                    "status": 403,
+                },
+            ]
+        )
+    )
+    store = FakeVectorStore()
+    backend = tools.FixtureBackend(
+        str(tmp_path), store, str(tmp_path / "sources")
+    )
+    assert set(backend.pages) == {"https://a.example/x", "https://b.example/y"}
+    assert len(store.docs) == 2
+    hits = backend.search_web("HOYA blanks", 5)
+    assert hits[0].url == "https://a.example/x" and "HOYA" in hits[0].snippet
+    version, chunks, canonical = backend.fetch("https://a.example/x", "S1")
+    assert (
+        canonical == "https://a.example/x"
+        and version.chunk_count == len(chunks) == 1
+    )
+    with pytest.raises(snapshots.FetchError, match="not in the fixture"):
+        backend.fetch("https://c.example/z", "S1")
+    with pytest.raises(snapshots.FetchError):
+        backend.fetch("https://live.example/", "S1")
+    docs = backend.search_documents("blanks", 5, "https://a.example/x")
+    assert len(docs) == 1 and "HOYA" in docs[0].text
