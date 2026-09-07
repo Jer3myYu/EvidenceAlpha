@@ -729,7 +729,9 @@ def test_material_findings_beyond_the_question_quota_stay_non_material():
         c for c in update["claims"].values() if c.statement.startswith("fact ")
     ]
     assert sum(c.material for c in added) == 2 and len(added) == 4
-    assert any("material quota reached" in line for line in update["route_log"])
+    assert any(
+        "material quota of q4 reached" in line for line in update["route_log"]
+    )
 
 
 def test_map_segments_links_and_participants_are_capped():
@@ -812,43 +814,55 @@ def test_relationship_needs_a_supported_parent_to_confirm():
     assert any("parent claim" in line for line in applied["route_log"])
 
 
-def test_material_partitions_are_disjoint_and_cover_map_and_derived():
+def test_material_partitions_are_disjoint_and_fixed_at_admission():
     limits = records.Limits(
-        map_claims=2, material_per_question=1, material_other=1
+        map_segments=1,
+        map_links=1,
+        map_participants_per_stage=1,
+        material_per_question=1,
+        material_other=1,
     )
     claims = {}
 
-    def add(cid, questions, map_ref=None, material=True):
+    def add(cid, questions, partition, map_ref=None):
         claims[cid] = records.Claim(
             id=cid,
             statement=cid,
             kind="map" if map_ref else "fact",
             questions=questions,
             map_ref=map_ref,
-            material=material,
+            material=True,
+            partition=partition,
         )
 
-    add("C1", [1], map_ref="G1")
-    add("C2", [2], map_ref="L1")
-    # The map partition is full: a late map item is not material.
-    assert not merge.admit_material(claims, limits, [3], True)
+    add("C1", [1], "map:segment", map_ref="G1")
+    assert not merge.admit_material(claims, limits, "map:segment")
+    assert merge.admit_material(claims, limits, "map:link")
+    assert merge.admit_material(claims, limits, "map:participant:upstream")
+    add("C2", [3], "map:participant:upstream", map_ref="P1")
+    assert not merge.admit_material(claims, limits, "map:participant:upstream")
+    assert merge.admit_material(claims, limits, "map:participant:midstream")
     # Q4 and Q5 are untouched by the full map and a full Q1.
-    add("C3", [1])
-    assert not merge.admit_material(claims, limits, [1], False)
-    assert merge.admit_material(claims, limits, [4], False)
-    assert merge.admit_material(claims, limits, [5], False)
-    add("C4", [4])
+    add("C3", [1], "q1")
+    assert not merge.admit_material(claims, limits, "q1")
+    assert merge.admit_material(claims, limits, "q4")
+    add("C4", [4], "q4")
     # A derived claim counts against Q4 too: overflow is non-material.
-    assert not merge.admit_material(claims, limits, [4], False)
-    assert merge.admit_material(claims, limits, [7], False)
-    add("C5", [7])
-    assert not merge.admit_material(claims, limits, [8], False)
-    assert limits.material_claims() == 2 + 5 * 1 + 1
+    assert not merge.admit_material(claims, limits, "q4")
+    assert merge.admit_material(claims, limits, "other")
+    # A repeat adding Q1 to the Q4 claim does not move it into Q1.
+    claims["C4"] = claims["C4"].model_copy(update={"questions": [1, 4]})
+    assert merge.material_partition(claims["C4"]) == "q4"
+    assert (
+        sum(1 for c in claims.values() if merge.material_partition(c) == "q1")
+        == 1
+    )
+    assert limits.material_claims() == (1 + 1 + 4) + 5 * 1 + 1
 
 
-def test_late_map_items_beyond_the_map_partition_stay_non_material():
+def test_map_items_beyond_their_sub_quota_are_not_added():
     state = base_state()
-    limits = records.Limits(**{**LIMITS.model_dump(), "map_claims": 1})
+    limits = records.Limits(**{**LIMITS.model_dump(), "map_segments": 1})
     draft = records.MapDraft(
         segments=[
             records.SegmentDraft(
@@ -873,5 +887,86 @@ def test_late_map_items_beyond_the_map_partition_stay_non_material():
     )
     update = merge.merge_results(state, [result], limits)
     map_claims = [c for c in update["claims"].values() if c.map_ref]
-    assert len(map_claims) == 2 and sum(c.material for c in map_claims) == 1
-    assert any("map partition full" in line for line in update["route_log"])
+    assert len(map_claims) == 1 and map_claims[0].partition == "map:segment"
+    assert len(update["map"].segments) == 1
+    assert any("segments is the cap" in line for line in update["route_log"])
+
+
+def test_repeat_cannot_promote_a_claim_past_its_partition():
+    state = base_state()
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "material_per_question": 1}
+    )
+    first = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "fact text", "va")],
+        findings=[
+            records.FindingDraft(
+                statement="fact A",
+                material=True,
+                evidence_refs=["E1"],
+                questions=[4],
+            ),
+            records.FindingDraft(
+                statement="fact B",
+                material=True,
+                evidence_refs=["E1"],
+                questions=[4],
+            ),
+            # A repeat of B, now also claiming Q1: it joins B (non-material,
+            # Q4 full) and may not become material through Q1.
+            records.FindingDraft(
+                statement="fact B",
+                material=True,
+                evidence_refs=["E1"],
+                questions=[1, 4],
+            ),
+        ],
+    )
+    update = merge.merge_results(state, [first], limits)
+    by_text = {c.statement: c for c in update["claims"].values()}
+    assert by_text["fact A"].material and by_text["fact A"].partition == "q4"
+    assert not by_text["fact B"].material
+    assert by_text["fact B"].questions == [1, 4]
+    assert merge.material_partition(by_text["fact B"]) == "q4"
+
+
+def test_relationships_are_revoked_when_the_parent_stops_being_supported():
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    supported = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(claim_id="C1", verdict="supported", reason="r")
+        ],
+        relationships=[
+            records.RelationshipVerdict(
+                relationship_id="R1", supported=True, reason="r"
+            )
+        ],
+    )
+    state.update(merge.apply_review(state, supported))
+    assert state["relationships"]["R1"].confirmed
+    # A later batch rejects the parent without repeating the verdict.
+    rejected = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1", verdict="unsupported", reason="r"
+            )
+        ]
+    )
+    later = merge.apply_review(state, rejected)
+    assert not later["relationships"]["R1"].confirmed
+    assert any("unconfirmed" in line for line in later["route_log"])
+    # And a corrected (re-versioned) parent takes its relationships too.
+    state.update(merge.apply_review(state, supported))
+    corrected = merge.invalidate_claim(state, "C1", statement="corrected")
+    assert corrected["claims"]["C1"].review == "unreviewed"
+    assert not corrected["relationships"]["R1"].confirmed
+    assert not merge.relationship_live(
+        state["relationships"]["R1"], corrected["claims"]
+    )

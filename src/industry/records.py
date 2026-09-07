@@ -27,6 +27,7 @@ import pydantic
 # toward cost_structure only.
 SCHEMA_VERSION = 2
 
+STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
 ParticipantRole = Literal[
     "supplier", "manufacturer", "customer", "equipment", "service", "other"
@@ -237,6 +238,10 @@ class Claim(Record):
     dimension: str | None = None
     origin: str = ""
     map_ref: str | None = None
+    # The material partition the claim was admitted to (``merge.
+    # admit_material``); fixed at admission, so a repeat that adds
+    # questions never moves a claim into another partition.
+    partition: str | None = None
 
 
 class Relationship(Record):
@@ -747,15 +752,17 @@ class Limits(Record):
     # (segments, links, participants, each also capped), each central
     # question, and the rest. No partition can consume another's
     # capacity, so the economics questions keep their share however
-    # large the map grows. 24 + 5 * 6 + 6 = 60 claims = 6 review batches
+    # large the map grows. 28 + 5 * 6 + 6 = 64 claims = 7 review batches
     # (headline run 3 reviewed 90 of 130 material claims in nine
     # batches and had no time left for analysis).
-    map_claims: int = pydantic.Field(default=24, ge=0)
     material_per_question: int = pydantic.Field(default=6, ge=0)
     material_other: int = pydantic.Field(default=6, ge=0)
-    map_segments: int = pydantic.Field(default=12, ge=0)
-    map_links: int = pydantic.Field(default=16, ge=0)
-    map_participants_per_stage: int = pydantic.Field(default=8, ge=0)
+    # The map partition is the sum of its sub-quotas: segments, links,
+    # and participants per stage (four stages), each admitted by kind,
+    # so segments and links can never crowd the participants out.
+    map_segments: int = pydantic.Field(default=6, ge=0)
+    map_links: int = pydantic.Field(default=6, ge=0)
+    map_participants_per_stage: int = pydantic.Field(default=4, ge=0)
     calc_requests_per_call: int = pydantic.Field(default=8, ge=0)
     # Acquisition tasks one review batch may create, and how many
     # acquisition attempts a run may execute in all; each is a task
@@ -784,6 +791,7 @@ class Limits(Record):
             "material_claims",
             "material_per_attempt",
             "map_participants",
+            "map_claims",
         }
         if isinstance(data, dict) and legacy & set(data):
             data = {k: v for k, v in data.items() if k not in legacy}
@@ -807,10 +815,18 @@ class Limits(Record):
             raise ValueError("model_calls must be at least model_call_reserve")
         return self
 
+    def map_claims(self) -> int:
+        """The map partition: its sub-quotas summed over the stages."""
+        return (
+            self.map_segments
+            + self.map_links
+            + len(STAGES) * self.map_participants_per_stage
+        )
+
     def material_claims(self) -> int:
         """The whole material budget: the sum of its partitions."""
         return (
-            self.map_claims
+            self.map_claims()
             + len(CENTRAL_QUESTIONS) * self.material_per_question
             + self.material_other
         )

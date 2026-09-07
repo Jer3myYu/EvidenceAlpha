@@ -16,6 +16,7 @@ missing question fails closed.
 
 import dataclasses
 
+from industry import merge
 from industry import records
 from industry import state as state_module
 
@@ -100,6 +101,13 @@ class _View:
         wanted = entity.casefold()
         for participant in self.industry_map.participants:
             if participant.name.casefold() == wanted:
+                # Only a reviewed participant claim may classify others.
+                backing = self.claims.get(participant.claim_id)
+                if backing is None or backing.review not in (
+                    "supported",
+                    "qualified",
+                ):
+                    return None
                 region = (participant.region or "").casefold()
                 if not region:
                     return None
@@ -183,7 +191,11 @@ def _q3(
         # with original context behind it, completes the requirement.
         if view.context_backed(claim) and flows.get(claim.map_ref, False):
             per_stage_backed[stage] = per_stage_backed.get(stage, 0) + 1
-    confirmed = [r.id for r in view.relationships.values() if r.confirmed]
+    confirmed = [
+        r.id
+        for r in view.relationships.values()
+        if merge.relationship_live(r, view.claims)
+    ]
     unavailable = any(
         issue.category == "unavailable"
         and issue.status != "resolved"

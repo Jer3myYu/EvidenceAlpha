@@ -135,6 +135,7 @@ class FakeWorker:
         self.crash_once: set[str] = set()
         self.fail_once: set[str] = set()
         self.order: list[str] = []
+        self.duration_s = 2.0
 
     async def __call__(self, work, runtime, backend, on_event=None):
         del backend, on_event
@@ -181,7 +182,9 @@ class FakeWorker:
                     "HOYA 供应 TSMC 掩模基板，市场规模 52亿元（2024）。",
                 )
             ],
-            "usage": records.Usage(turns=3, tool_calls=2, duration_s=2.0),
+            "usage": records.Usage(
+                turns=3, tool_calls=2, duration_s=self.duration_s
+            ),
         }
         if work.task.kind == "map":
             return records.TaskResult(
@@ -860,7 +863,7 @@ def test_pending_review_orders_by_citability_priority():
             id="C3",
             statement="map",
             kind="fact",
-            material=False,
+            material=True,
             map_ref="stage:upstream",
             questions=[1],
         ),
@@ -889,9 +892,9 @@ def test_pending_review_interleaves_map_and_central_questions():
     claims = {
         "C1": claim("C1", material=True, questions=[7]),
         "C2": claim("C2", material=True, questions=[4]),
-        "C3": claim("C3", material=False, map_ref="P1", questions=[3]),
+        "C3": claim("C3", material=True, map_ref="P1", questions=[3]),
         "C4": claim("C4", material=True, questions=[4, 5]),
-        "C5": claim("C5", material=False, map_ref="P2", questions=[3]),
+        "C5": claim("C5", material=True, map_ref="P2", questions=[3]),
         "C6": claim("C6", material=True, questions=[2]),
         "C7": claim("C7", material=False),
     }
@@ -1219,3 +1222,102 @@ def test_acquisition_attempts_are_capped_for_the_run(tmp_path):
     assert all(
         "acquisition attempts is the cap" in t.skip_reason for t in skipped
     )
+
+
+def test_non_material_map_claims_are_not_reviewable():
+    claims = {
+        "C1": records.Claim(
+            id="C1", statement="m", kind="map", material=False, map_ref="P9"
+        ),
+        "C2": records.Claim(id="C2", statement="f", kind="fact", material=True),
+    }
+    state = {"claims": claims}
+    assert graph_module.pending_review(state) == ["C2"]
+    assert graph_module.review_remaining(state) == 1
+    assert budget.review_batches(state, records.Limits()) == 1
+
+
+def test_q6_needs_a_reviewed_participant_claim_for_the_region():
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="中游",
+                stage="midstream",
+                description="d",
+                claim_id="C1",
+            )
+        ],
+        participants=[
+            records.Participant(
+                id="P1",
+                name="清溢光电",
+                segment_id="G1",
+                role="manufacturer",
+                region="中国",
+                selection_rationale="r",
+                claim_id="C2",
+            ),
+            records.Participant(
+                id="P2",
+                name="HOYA",
+                segment_id="G1",
+                role="manufacturer",
+                region="Japan",
+                selection_rationale="r",
+                claim_id="C3",
+            ),
+        ],
+    )
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="s",
+            kind="map",
+            review="supported",
+            map_ref="G1",
+            material=True,
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="p",
+            kind="map",
+            review="unreviewed",
+            map_ref="P1",
+            material=True,
+        ),
+        "C3": records.Claim(
+            id="C3",
+            statement="p",
+            kind="map",
+            review="supported",
+            map_ref="P2",
+            material=True,
+        ),
+    }
+    view = coverage._View(  # pylint: disable=protected-access
+        industry_map=industry_map,
+        claims=claims,
+        evidence={},
+        versions={},
+        findings=[],
+        relationships={},
+        issues=[],
+    )
+    assert view.entity_region("清溢光电") is None
+    assert view.entity_region("HOYA") == "global"
+
+
+def test_default_budget_keeps_analysis_and_delivery_reachable(tmp_path):
+    """Attempts that each consume most of a reservation cannot crowd out
+    review, analysis, coverage, writing and final review."""
+    runtime, api, worker, compiled = make(tmp_path)
+    worker.duration_s = 850.0
+    config = persist.thread_config("t20")
+    runtime.begin("t20")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    for call in ("review", "analyze", "assess", "write:full", "final"):
+        assert call in api.calls, call
+    assert state["meta"].report_status == "complete"
+    spent = budget.ledger(state)
+    assert spent.wall_clock_s <= runtime.limits.wall_clock_s

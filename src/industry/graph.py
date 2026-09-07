@@ -397,7 +397,7 @@ def pending_review(state: state_module.IndustryState) -> list[str]:
         (
             c
             for c in state.get("claims", {}).values()
-            if c.review == "unreviewed" and (c.material or c.map_ref)
+            if c.review == "unreviewed" and c.material
         ),
         key=lambda c: merge.schedule.task_number(c.id),
     )
@@ -478,11 +478,11 @@ def scope_review(
 
 
 def review_remaining(state: state_module.IndustryState) -> int:
-    """How many material or map claims are still unreviewed."""
+    """How many material claims are still unreviewed."""
     return sum(
         1
         for c in state.get("claims", {}).values()
-        if c.review == "unreviewed" and (c.material or c.map_ref)
+        if c.review == "unreviewed" and c.material
     )
 
 
@@ -1085,9 +1085,8 @@ def build_graph(
                         kind="derived",
                         evidence_ids=evidence_ids,
                         calculation_id=calc_id,
-                        material=merge.admit_material(
-                            claims, limits, [4], False
-                        ),
+                        material=merge.admit_material(claims, limits, "q4"),
+                        partition="q4",
                         review=(
                             "qualified"
                             if result.alignment_note

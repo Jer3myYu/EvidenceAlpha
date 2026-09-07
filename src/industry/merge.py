@@ -92,21 +92,9 @@ class _Registry:
         # (findings, sections) are marked stale by merge_results.
         self.changed: set[str] = set()
 
-    def material_quota(
-        self, questions: list[int], is_map: bool = False
-    ) -> bool:
-        """Whether one more material claim fits its partition."""
-        return admit_material(self.claims, self.limits, questions, is_map)
-
-    def map_material(self, attempt_id: str, name: str) -> bool:
-        """Admit a map claim to the map partition, or keep it non-material."""
-        if self.material_quota([], is_map=True):
-            return True
-        self.log.append(
-            f"{attempt_id}: map partition full ({self.limits.map_claims}); "
-            f"{name} kept non-material"
-        )
-        return False
+    def material_quota(self, partition: str) -> bool:
+        """Whether one more material claim fits ``partition``."""
+        return admit_material(self.claims, self.limits, partition)
 
     def source_id(self, local: records.Source) -> str:
         """Find the canonical source for a local one, or register it."""
@@ -215,13 +203,20 @@ class _Registry:
                 tuple(sorted(existing.evidence_ids)),
             ) != key:
                 continue
+            # The repeat's questions join the claim, but its partition is
+            # fixed at admission; a non-material claim becomes material
+            # only if its own partition still has room.
+            material = existing.material or (
+                claim.material
+                and self.material_quota(material_partition(existing))
+            )
             update: dict[str, Any] = {
                 "questions": sorted(
                     set(existing.questions) | set(claim.questions)
                 ),
                 "topics": existing.topics
                 + [t for t in claim.topics if t not in existing.topics],
-                "material": existing.material or claim.material,
+                "material": material,
             }
             meaning_changed = False
             conflicts = []
@@ -394,13 +389,14 @@ def _fold_finding(
     if draft.milestone and not draft.milestone_date:
         limitations.append("undated_milestone")
     material = draft.material
-    if material and not registry.material_quota(draft.questions):
+    partition = partition_for(draft.questions)
+    if material and not registry.material_quota(partition):
         # Beyond its quota a finding is kept as non-material: it stays
         # in the registry but does not enter the bounded review.
         material = False
         registry.log.append(
-            f"{attempt_id}: material quota reached for questions "
-            f"{draft.questions}; kept non-material: {draft.statement[:60]}"
+            f"{attempt_id}: material quota of {partition} reached; kept "
+            f"non-material: {draft.statement[:60]}"
         )
     claim_id = registry.add_claim(
         records.Claim(
@@ -409,6 +405,7 @@ def _fold_finding(
             kind=draft.kind,
             evidence_ids=evidence_ids,
             material=material,
+            partition=partition,
             entity=draft.entity,
             period=draft.period,
             quantity=quantity,
@@ -449,8 +446,8 @@ def _fold_map(
     by_name = {normalize_text(s.name): s.id for s in segments}
     key_to_id: dict[str, str] = {}
     for item in draft.segments:
-        if len(segments) >= registry.limits.map_segments and (
-            normalize_text(item.name) not in by_name
+        if normalize_text(item.name) not in by_name and (
+            not registry.material_quota("map:segment")
         ):
             registry.log.append(
                 f"{attempt_id}: map segment {item.name} not added: "
@@ -469,7 +466,6 @@ def _fold_map(
             key_to_id[item.key] = by_name[name]
             continue
         seg_id = next_id("G", {s.id: s for s in segments})
-        item_name = item.name
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -479,7 +475,8 @@ def _fold_map(
                 ),
                 kind="map",
                 evidence_ids=evidence_ids,
-                material=registry.map_material(attempt_id, item_name),
+                material=True,
+                partition="map:segment",
                 questions=[1],
                 origin=attempt_id,
                 map_ref=seg_id,
@@ -500,7 +497,7 @@ def _fold_map(
     seg_stage = {s.id: s.stage for s in segments}
     existing_links = {(l.from_segment, l.to_segment) for l in links}
     for item in draft.links:
-        if len(links) >= registry.limits.map_links:
+        if not registry.material_quota("map:link"):
             registry.log.append(
                 f"{attempt_id}: map link {item.from_key}->{item.to_key} not "
                 f"added: {registry.limits.map_links} links is the cap"
@@ -518,7 +515,6 @@ def _fold_map(
         if (from_id, to_id) in existing_links:
             continue
         link_id = next_id("L", {l.id: l for l in links})
-        item_name = f"{seg_name[from_id]} -> {seg_name[to_id]}"
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -528,7 +524,8 @@ def _fold_map(
                 ),
                 kind="map",
                 evidence_ids=evidence_ids,
-                material=registry.map_material(attempt_id, item_name),
+                material=True,
+                partition="map:link",
                 questions=[2],
                 origin=attempt_id,
                 map_ref=link_id,
@@ -559,12 +556,7 @@ def _fold_map(
         if (normalize_text(item.name), seg_id) in existing_participants:
             continue
         stage = seg_stage.get(seg_id, "adjacent")
-        in_stage = sum(
-            1
-            for p in participants
-            if seg_stage.get(p.segment_id, "adjacent") == stage
-        )
-        if in_stage >= registry.limits.map_participants_per_stage:
+        if not registry.material_quota(f"map:participant:{stage}"):
             registry.log.append(
                 f"{attempt_id}: map participant {item.name} not added: "
                 f"{registry.limits.map_participants_per_stage} {stage} "
@@ -582,7 +574,6 @@ def _fold_map(
             )
             if part
         )
-        item_name = item.name
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -593,7 +584,8 @@ def _fold_map(
                 ),
                 kind="map",
                 evidence_ids=evidence_ids,
-                material=registry.map_material(attempt_id, item_name),
+                material=True,
+                partition=f"map:participant:{stage}",
                 entity=item.name,
                 questions=[3],
                 origin=attempt_id,
@@ -764,6 +756,11 @@ def apply_review(
                 ],
             }
         )
+    # A parent that this batch rejected takes its relationships with it.
+    relationships, revoked = revoke_orphaned_relationships(
+        relationships, claims
+    )
+    log.extend(revoked)
     for verdict in review.relationships:
         relation = relationships.get(verdict.relationship_id)
         if relation is None:
@@ -842,6 +839,9 @@ def invalidate_claim(
         }
     )
     findings = stale_findings(state.get("findings", {}), {claim_id})
+    relationships, _ = revoke_orphaned_relationships(
+        state.get("relationships", {}), claims
+    )
     sections = [
         (
             section.model_copy(update={"stale": True})
@@ -850,7 +850,12 @@ def invalidate_claim(
         )
         for section in state.get("sections", [])
     ]
-    return {"claims": claims, "findings": findings, "sections": sections}
+    return {
+        "claims": claims,
+        "findings": findings,
+        "relationships": relationships,
+        "sections": sections,
+    }
 
 
 def stale_findings(
@@ -873,46 +878,94 @@ def issue_key(category: str, target: str) -> str:
     return f"{category}:{target}"
 
 
-def material_partition(claim: records.Claim) -> str:
-    """The partition a material claim counts against."""
-    if claim.map_ref is not None:
-        return "map"
-    central = [q for q in claim.questions if q in records.CENTRAL_QUESTIONS]
+def partition_for(questions: list[int]) -> str:
+    """The partition of a non-map claim: its lowest central question."""
+    central = [q for q in questions if q in records.CENTRAL_QUESTIONS]
     return f"q{min(central)}" if central else "other"
+
+
+def material_partition(claim: records.Claim) -> str:
+    """The partition a claim counts against (fixed at admission)."""
+    if claim.partition:
+        return claim.partition
+    if claim.map_ref is not None:
+        return "map:legacy"
+    return partition_for(claim.questions)
+
+
+def partition_cap(partition: str, limits: records.Limits) -> int:
+    """How many material claims ``partition`` may hold."""
+    if partition == "map:segment":
+        return limits.map_segments
+    if partition == "map:link":
+        return limits.map_links
+    if partition.startswith("map:participant:"):
+        return limits.map_participants_per_stage
+    if partition == "other":
+        return limits.material_other
+    if partition.startswith("q"):
+        return limits.material_per_question
+    return 0
 
 
 def admit_material(
     claims: dict[str, records.Claim],
     limits: records.Limits,
-    questions: list[int],
-    is_map: bool,
+    partition: str,
 ) -> bool:
-    """The one authority admitting a material claim to its partition.
+    """The one authority admitting a material claim to a partition.
 
-    Findings, map items, and derived claims all pass through here: a
-    map claim counts against ``map_claims``; any other claim against
-    the lowest central question it serves (``material_per_question``
-    each) or, serving none, against ``material_other``. The partitions
-    are disjoint, so a full map never starves an economics question.
+    Findings, map items, and derived claims all pass through here. A
+    map segment, link, or participant counts against its own sub-quota
+    (participants per stage); any other claim against the lowest
+    central question it serves (``material_per_question`` each) or,
+    serving none, against ``material_other``. The partitions are
+    disjoint and fixed at admission (``Claim.partition``), so a full
+    map never starves an economics question and a repeat that adds
+    questions never moves a claim.
     """
-    probe = records.Claim(
-        id="C0",
-        statement="",
-        kind="fact",
-        questions=list(questions),
-        map_ref="probe" if is_map else None,
-    )
-    partition = material_partition(probe)
     used = sum(
         1
         for c in claims.values()
         if c.material and material_partition(c) == partition
     )
-    if partition == "map":
-        return used < limits.map_claims
-    if partition == "other":
-        return used < limits.material_other
-    return used < limits.material_per_question
+    return used < partition_cap(partition, limits)
+
+
+def relationship_live(
+    relation: records.Relationship, claims: dict[str, records.Claim]
+) -> bool:
+    """Confirmed and resting on a currently supported/qualified parent."""
+    parent = claims.get(relation.claim_id)
+    return (
+        relation.confirmed
+        and parent is not None
+        and parent.review in ("supported", "qualified")
+    )
+
+
+def revoke_orphaned_relationships(
+    relationships: dict[str, records.Relationship],
+    claims: dict[str, records.Claim],
+) -> tuple[dict[str, records.Relationship], list[str]]:
+    """Unconfirm every relationship whose parent left supported/qualified."""
+    updated = dict(relationships)
+    log: list[str] = []
+    for rel in relationships.values():
+        parent = claims.get(rel.claim_id)
+        parent_ok = parent is not None and parent.review in (
+            "supported",
+            "qualified",
+        )
+        if rel.confirmed and not parent_ok:
+            updated[rel.id] = rel.model_copy(
+                update={"confirmed": False, "review": "unreviewed"}
+            )
+            log.append(
+                f"relationship {rel.id} unconfirmed: its parent claim "
+                f"{rel.claim_id} is no longer supported/qualified"
+            )
+    return updated, log
 
 
 def open_issue(

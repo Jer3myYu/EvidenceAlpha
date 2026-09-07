@@ -17,6 +17,7 @@ from typing import Any, Literal
 import pydantic
 
 from industry import budget
+from industry import merge
 from industry import records
 from industry import state as state_module
 from research import crew
@@ -521,7 +522,10 @@ def render_relationships(
         rel
         for rel in state.get("relationships", {}).values()
         if (claim_ids is None or rel.claim_id in claim_ids)
-        and (not confirmed_only or rel.confirmed)
+        and (
+            not confirmed_only
+            or merge.relationship_live(rel, state.get("claims", {}))
+        )
     ]
     if not items:
         return "Relationships: none."

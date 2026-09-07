@@ -346,7 +346,7 @@ def test_limits_reject_zero_divisors_and_incoherent_totals():
             "map_participants": 24,
         }
     )
-    assert legacy.map_claims == 24
+    assert legacy.map_claims() == 28 and legacy.material_claims() == 64
 
 
 def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
