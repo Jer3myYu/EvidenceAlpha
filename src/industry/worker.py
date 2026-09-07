@@ -30,6 +30,9 @@ TRANSPORT_ERRORS = (
     claude_agent_sdk.CLINotFoundError,
     claude_agent_sdk.ProcessError,
 )
+# The SDK raises this when its own structured-output retries are
+# exhausted: a schema failure with the session's work already spent.
+SCHEMA_ERRORS = (claude_agent_sdk.ResultError,)
 
 SYSTEM_COMMON = """\
 You research one bounded task for an investment-research system whose
@@ -352,6 +355,15 @@ async def run_attempt(
                 "failed",
                 usage,
                 error=f"timeout: no result within {seconds} s",
+            )
+        except SCHEMA_ERRORS as error:
+            usage = _usage(session, meter, collector, started, True)
+            return _result(
+                work,
+                collector,
+                "failed",
+                usage,
+                error=f"schema: {type(error).__name__}: {error}",
             )
         except TRANSPORT_ERRORS as error:
             usage = _usage(session, meter, collector, started, True)

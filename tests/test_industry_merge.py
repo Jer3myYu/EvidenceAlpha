@@ -375,7 +375,7 @@ def test_failed_attempt_requeues_once_then_fails():
     assert update["attempts"]["T2.2"].observed is None
 
 
-def test_schema_failure_is_not_requeued():
+def test_schema_failure_is_requeued_once_like_any_failure():
     state = base_state()
     failed = records.TaskResult(
         attempt_id="T2.1",
@@ -385,7 +385,9 @@ def test_schema_failure_is_not_requeued():
         error="schema: no structured output",
     )
     update = merge.merge_results(state, [failed], LIMITS)
-    assert update["tasks"]["T2"].status == "failed"
+    assert update["tasks"]["T2"].status == "pending"
+    charged = budget.ledger({"attempts": update["attempts"]})
+    assert charged.turns == 12 + 12  # observed T2.1 + running T1.1
 
 
 def test_results_fold_in_task_order_regardless_of_arrival():

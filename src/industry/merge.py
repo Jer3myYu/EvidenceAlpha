@@ -615,10 +615,10 @@ def merge_results(
         if result.status == "done":
             status: records.TaskStatus = "done"
             _fold_result(registry, result)
-        elif (
-            not (result.error or "").startswith("schema")
-            and task.attempts < limits.task_attempts
-        ):
+        elif task.attempts < limits.task_attempts:
+            # Any failure gets one more attempt with a fresh reservation
+            # (the headline live run's T6.1 schema failure succeeded on
+            # T6.2); the attempt cap bounds it.
             status = "pending"
             reason = result.error or "no usage observed"
             registry.log.append(

@@ -30,7 +30,8 @@ def budget_line(state: state_module.IndustryState, limits: Any) -> str:
 def render_update(
     node: str, update: dict[str, Any], state: state_module.IndustryState
 ) -> list[str]:
-    """Lines for one completed node."""
+    """Lines for one completed node (``state`` may predate the update)."""
+    state = {**state, **update}
     lines: list[str] = []
     upper = node.upper()
     if node.startswith("reserve_"):

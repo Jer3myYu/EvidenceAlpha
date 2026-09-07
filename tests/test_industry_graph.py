@@ -713,3 +713,46 @@ def test_final_review_issue_stays_open_until_a_later_clean_review(tmp_path):
     assert issue.status == "open" and issue.draft_version >= 1
     assert state["meta"].report_status == "complete_with_limitations"
     assert "write:revise" in api.calls  # the cycle rewrote and re-reviewed
+
+
+def test_review_loops_in_batches_until_nothing_material_is_left(tmp_path):
+    runtime, api, worker, compiled = make(tmp_path)
+    original = worker.__call__
+
+    async def many_findings(work, rt, backend, on_event=None):
+        result = await original(work, rt, backend, on_event)
+        if work.task.kind != "map":
+            extra = [fakes_finding(f"claim number {n}", n) for n in range(60)]
+            result = result.model_copy(
+                update={"findings": result.findings + extra}
+            )
+        return result
+
+    def fakes_finding(statement, n):
+        return records.FindingDraft(
+            statement=statement,
+            evidence_refs=["E1"],
+            material=True,
+            topics=["other"],
+            questions=[8],
+            entity=f"co{n}",
+        )
+
+    worker_fn = many_findings
+    compiled = graph_module.build_graph(
+        runtime,
+        backend=object(),
+        api=api,
+        worker_fn=worker_fn,
+        checkpointer=MemorySaver(),
+    )
+    config = persist.thread_config("t13")
+    runtime.begin("t13")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    reviews = [c for c in api.calls if c == "review"]
+    assert len(reviews) >= 3
+    assert graph_module.review_remaining(state) == 0
+    assert all(
+        len(c) <= graph_module.REVIEW_BATCH
+        for c in [graph_module.pending_review(state)]
+    )

@@ -371,13 +371,35 @@ def _material_open_issues(
     ]
 
 
+# How many claims one verifier call judges; the review loops over
+# reservations until nothing material is left or the budget refuses.
+REVIEW_BATCH = 40
+
+
 def pending_review(state: state_module.IndustryState) -> list[str]:
-    """The claims the verifier judges next: unreviewed material or map."""
-    return [
-        c.id
+    """The claims the verifier judges next: unreviewed material or map.
+
+    Material non-map claims first, then map claims, each in id order;
+    at most ``REVIEW_BATCH`` per call.
+    """
+    unreviewed = [
+        c
         for c in state.get("claims", {}).values()
         if c.review == "unreviewed" and (c.material or c.map_ref)
     ]
+    unreviewed.sort(
+        key=lambda c: (c.map_ref is not None, merge.schedule.task_number(c.id))
+    )
+    return [c.id for c in unreviewed[:REVIEW_BATCH]]
+
+
+def review_remaining(state: state_module.IndustryState) -> int:
+    """How many material or map claims are still unreviewed."""
+    return sum(
+        1
+        for c in state.get("claims", {}).values()
+        if c.review == "unreviewed" and (c.material or c.map_ref)
+    )
 
 
 def write_instructions(state: state_module.IndustryState) -> str:
@@ -1147,9 +1169,11 @@ def build_graph(
         update["issues"] = issues
         if created:
             update["phase"] = "acquisition"
+        remaining = review_remaining({**state, **update})
         update["route_log"].append(
             f"review: {len(outcome.claims)} verdicts, {len(newly_bad)} "
-            f"unsupported/contradicted, {created} acquisition tasks"
+            f"unsupported/contradicted, {created} acquisition tasks, "
+            f"{remaining} claims still unreviewed"
         )
         return update
 
@@ -1162,6 +1186,13 @@ def build_graph(
         _, ready = schedule.ready(schedule.validate(state.get("tasks", {})))
         if ready and budget.dispatchable(state, limits, False) > 0:
             return "dispatch"
+        last = running_reservation(state, "review")
+        if (
+            review_remaining(state) > 0
+            and last is None
+            and budget.admit_single_call(state, limits, "review") > 0
+        ):
+            return "again"
         return "analyze"
 
     async def remediate(state: state_module.IndustryState) -> dict[str, Any]:
@@ -1368,7 +1399,11 @@ def build_graph(
     graph.add_conditional_edges(
         "review",
         after_review,
-        {"dispatch": "dispatch", "analyze": "reserve_analyze"},
+        {
+            "dispatch": "dispatch",
+            "again": "reserve_review",
+            "analyze": "reserve_analyze",
+        },
     )
     graph.add_conditional_edges(
         "analyze",
