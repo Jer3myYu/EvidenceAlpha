@@ -1,4 +1,4 @@
-"""Workflow Studio: a local page that shows the research workflow at work.
+"""Workflow Studio: a local page that shows the industry workflow at work.
 
 Usage::
 
@@ -8,18 +8,22 @@ Usage::
 
 The page (``scripts/studio.html``) draws the architecture and the
 graph, then drives the graph two ways. *Live*: a question starts a real
-run on a new thread, checkpointed exactly like ``scripts/workflow.py``,
-and every completed node, plus each tool call inside the research
-node, streams to the page as it happens. *Replay*: a recorded thread in
+run on a new thread, checkpointed exactly like
+``scripts/industry_workflow.py``, and every completed node, every
+concurrent task attempt, and each tool call inside an attempt streams
+to the page as it happens. *Replay*: a recorded thread in
 ``data/workflow.db`` is stepped through checkpoint by checkpoint with
-no model call.
+no model call; a Phase 6-9 thread replays read-only as states and
+updates, labelled legacy.
 
 Both produce the same event sequence. A ``node`` event carries what
 the node returned, the merged state after it, the trace lines the CLI
-would print, the next node, and the node's *context window*: the
-system and user text its model call received, rebuilt from the state
-before the node with the same prompt builders and the CrewAI framing
-that ``tests/test_crew.py`` pins. Nothing here changes the graph.
+prints, the budget ledger (through the one ``budget.ledger``), and the
+node's *context window*: the system and user text its model call
+received, rebuilt from the state before the node with the same prompt
+builders the graph uses and the CrewAI framing that ``tests/test_crew.py``
+pins. Every reconstruction is labelled as such; Studio never changes
+what the workflow does and never re-implements a routing decision.
 """
 
 import argparse
@@ -39,15 +43,16 @@ from starlette import requests
 from starlette import responses
 from starlette import routing
 
-from research import agent
-from research import crew
-from research import evaluate
+from industry import budget
+from industry import graph as graph_module
+from industry import records
+from industry import roles
+from industry import state as state_module
+from industry import tools
+from industry import trace
+from industry import worker
 from research import persist
-from research import synthesize
-from research import trace
-from research import verify
 from research import web
-from research import workflow
 
 PAGE = pathlib.Path(__file__).with_name("studio.html")
 
@@ -62,25 +67,12 @@ USER_FRAME = (
     "not a summary.\n\n"
     "Provide your complete response:"
 )
-
-# The expected-output sentence each role function passes to run_task.
-EXPECTED = {
-    "plan": "The structured research plan.",
-    "evaluate": "The structured evaluation.",
-    "finish": "The answer as plain prose, citing [S#] labels only.",
-    "verify": "The structured verification.",
-}
-ROLES = {
-    "plan": crew.PLANNER,
-    "evaluate": crew.EVALUATOR,
-    "finish": crew.REPORTER,
-    "verify": crew.VERIFIER,
-}
-TOOLS = ["search_documents", "search_web", "ingest_url"]
+DETERMINISTIC = "deterministic (Python, no model call)"
+LIST_KEYS = ("task_results", "route_log")
 
 
 def encode(value: Any) -> Any:
-    """Turn state values into JSON-ready data: dataclasses and models too."""
+    """Turn state values into JSON-ready data: models and dataclasses too."""
     if isinstance(value, pydantic.BaseModel):
         return value.model_dump()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -93,152 +85,107 @@ def encode(value: Any) -> Any:
 
 
 def derive_update(
-    node: str, before: dict[str, Any], after: dict[str, Any]
+    before: dict[str, Any], after: dict[str, Any]
 ) -> dict[str, Any]:
-    """Rebuild what ``node`` returned from the states around it.
-
-    Replay only has checkpoints, so the node's return value is read back
-    from the difference: accumulated lists give their new items, other
-    keys the value after the node.
-
-    Args:
-      node: The node that ran between the two states.
-      before: The state the node saw.
-      after: The state after LangGraph merged the node's return value.
-
-    Returns:
-      The update in the shape the node function returns it.
-    """
-    if node == "plan":
-        return {"research_plan": after["research_plan"]}
-    if node == "research":
-        old_evidence = len(before.get("evidence", []))
-        old_answers = len(before.get("answers", []))
-        return {
-            "evidence": after["evidence"][old_evidence:],
-            "sources": after["sources"],
-            "answers": after["answers"][old_answers:],
-            "research_round": after["research_round"],
-        }
-    if node == "evaluate":
-        return {
-            "evidence_sufficient": after["evidence_sufficient"],
-            "evidence_gaps": after["evidence_gaps"],
-        }
-    if node == "finish":
-        return {
-            "synthesis": after["synthesis"],
-            "final_answer": after["final_answer"],
-            "revision_round": after["revision_round"],
-        }
-    if node == "verify":
-        update = {
-            "citation_issues": after["citation_issues"],
-            "verification": after["verification"],
-        }
-        if after["final_answer"] != before.get("final_answer"):
-            update["final_answer"] = after["final_answer"]
-        return update
-    raise ValueError(f"Unknown node {node!r}.")
+    """What changed between two states: new list items, changed values."""
+    update: dict[str, Any] = {}
+    for key, value in after.items():
+        if key in LIST_KEYS:
+            old = len(before.get(key, []))
+            if len(value) > old:
+                update[key] = value[old:]
+        elif before.get(key) != value:
+            update[key] = value
+    return update
 
 
-def next_node(node: str, after: dict[str, Any]) -> str:
-    """Name the node that follows ``node``, or ``"end"``, from the state."""
-    if node == "plan":
-        return "research"
-    if node == "research":
-        return "evaluate"
-    if node == "evaluate":
-        return workflow.route_after_evaluate(after)
-    if node == "finish":
-        return "verify"
-    if node == "verify":
-        route = workflow.route_after_verify(after)
-        return "finish" if route == "revise" else "end"
-    raise ValueError(f"Unknown node {node!r}.")
-
-
-def role_context(node: str, before: dict[str, Any]) -> dict[str, Any]:
-    """Rebuild the context window of the model call ``node`` makes.
-
-    Every call's text is a pure function of the state the node saw:
-    the role's system prompt inside CrewAI's framing, and the stage's
-    prompt builder inside the task framing. The research node's context
-    is the agent's system prompt, its tools, and the round's message.
-
-    Args:
-      node: The node about to run.
-      before: The state it sees.
-
-    Returns:
-      ``who`` (what executes the call), ``model``, ``system``, ``user``,
-      and for the crew roles ``schema`` (the structured output model's
-      JSON schema, or ``None`` for plain text); for the research node
-      ``tools`` and ``max_turns`` instead.
-    """
-    question = before["question"]
-    if node == "research":
-        completed = before.get("research_round", 0)
-        if completed == 0:
-            prompt = agent.research_prompt(question, before["research_plan"])
-        else:
-            prompt = agent.followup_prompt(
-                question,
-                before["research_plan"],
-                before["evidence"],
-                before["evidence_gaps"],
-            )
-        return {
-            "who": "Research Agent (Claude Agent SDK tool loop)",
-            "model": agent.MODEL,
-            "system": agent.SYSTEM_PROMPT,
-            "user": prompt,
-            "tools": TOOLS,
-            "max_turns": agent.MAX_TURNS,
-        }
-    if node == "plan":
-        description = question
-    elif node == "evaluate":
-        description = evaluate.build_prompt(
-            question,
-            before["research_plan"],
-            before["answers"][-1],
-            before["evidence"],
+def description_for(
+    node: str, before: dict[str, Any], limits: records.Limits
+) -> str:
+    """The task text a single-call node sends, from the state it saw."""
+    if node == "scope":
+        return roles.scope_description(before["question"])
+    if node == "prepare_tasks":
+        return roles.plan_description(
+            before,
+            limits,
+            graph_module.planning_slots(before, limits),
+            graph_module.planning_purpose(before),
         )
-    elif node == "finish":
-        verification = before.get("verification")
-        draft = findings = None
-        if verification is not None:
-            draft = before["synthesis"]
-            findings = verify.format_verification_notes(
-                before["citation_issues"], verification
-            )
-        description = synthesize.build_prompt(
-            question,
-            before["research_plan"],
-            before["answers"],
-            before["evidence"],
-            draft,
-            findings,
+    if node == "assess_coverage":
+        return roles.coverage_description(before)
+    if node == "analyze":
+        return roles.analysis_description(before, graph_module.ANALYSIS_NOTE)
+    if node == "review":
+        return roles.review_description(
+            before, graph_module.pending_review(before)
         )
-    elif node == "verify":
-        description = verify.build_prompt(
-            question, before["synthesis"], before["evidence"], before["sources"]
+    if node == "write":
+        return roles.draft_description(
+            before, graph_module.write_instructions(before)
         )
-    else:
-        raise ValueError(f"Unknown node {node!r}.")
-    role = ROLES[node]
+    if node == "final_review":
+        return roles.final_review_description(before)
+    raise ValueError(f"{node} makes no single call")
+
+
+def role_context(
+    node: str, before: dict[str, Any], limits: records.Limits
+) -> dict[str, Any]:
+    """Rebuild the context window of a single-call node."""
+    role = roles.ROLE_FOR[node]
+    key = roles.ROLE_KEY[node]
+    description = description_for(node, before, limits)
     return {
         "who": f"{role.name} (CrewAI crew of one, via ClaudeLLM)",
-        "model": crew.MODEL,
+        "model": roles.ROLE_MODELS[key],
         "system": SYSTEM_FRAME.format(
             name=role.name, backstory=role.backstory, goal=role.goal
         ),
         "user": USER_FRAME.format(
-            description=description, expected=EXPECTED[node]
+            description=description, expected=roles.EXPECTED[node]
         ),
-        "schema": (role.output.model_json_schema() if role.output else None),
+        "schema": role.output.model_json_schema() if role.output else None,
+        "reconstructed": True,
     }
+
+
+def attempt_context(
+    before: dict[str, Any], attempt_id: str, thread_id: str
+) -> dict[str, Any]:
+    """Rebuild the context window of one tool-using attempt."""
+    attempt = before["attempts"][attempt_id]
+    work = graph_module.build_worker_input(before, attempt, thread_id)
+    collector = tools.Collector(attempt.id, attempt.task_id)
+    return {
+        "who": f"{work.task.role} researcher (Claude Agent SDK tool loop)",
+        "model": work.model,
+        "system": worker.system_prompt(work),
+        "user": worker.user_prompt(work, collector),
+        "tools": list(tools.TOOL_NAMES),
+        "max_turns": work.allowance.turns,
+        "schema": worker.TaskOutput.model_json_schema(),
+        "reconstructed": True,
+    }
+
+
+def context_for(
+    node: str,
+    update: dict[str, Any],
+    before: dict[str, Any],
+    thread_id: str,
+    limits: records.Limits,
+) -> dict[str, Any]:
+    """The context window of any completed node."""
+    if node in state_module.SINGLE_CALL_NODES:
+        if graph_module.running_reservation(before, node) is None:
+            return {"who": "skipped: no reservation (budget)", "model": None}
+        return role_context(node, before, limits)
+    if node == "run_task":
+        results = update.get("task_results", [])
+        if results and results[0].attempt_id in before.get("attempts", {}):
+            return attempt_context(before, results[0].attempt_id, thread_id)
+    return {"who": DETERMINISTIC, "model": None}
 
 
 def node_event(
@@ -246,80 +193,163 @@ def node_event(
     update: dict[str, Any],
     before: dict[str, Any],
     after: dict[str, Any],
-    following: str,
+    thread_id: str,
+    limits: records.Limits,
 ) -> dict[str, Any]:
     """Build the ``node`` event the page renders for one completed node."""
-    lines = trace.render_update(
-        node,
-        update,
-        after.get("research_round", 0),
-        after.get("revision_round", 0),
-    )
+    ledger = budget.ledger(after)
     return {
         "type": "node",
         "node": node,
+        "attempt_id": (
+            update["task_results"][0].attempt_id
+            if node == "run_task" and update.get("task_results")
+            else None
+        ),
         "update": encode(update),
         "state": encode(after),
-        "trace": lines,
-        "next": following,
-        "context": role_context(node, before),
+        "trace": trace.render_update(node, update, after),
+        "budget": {
+            **dataclasses.asdict(ledger),
+            "limits": limits.model_dump(),
+        },
+        "context": context_for(node, update, before, thread_id, limits),
     }
 
 
-async def replay(graph: CompiledStateGraph, thread_id: str) -> dict[str, Any]:
-    """Rebuild a recorded thread's events from its checkpoints.
-
-    Args:
-      graph: The graph compiled with the checkpointer holding the thread.
-      thread_id: The thread to replay.
-
-    Returns:
-      ``thread_id``, ``question``, ``completed``, and ``events``: one
-      ``node`` event per completed node in run order, then a ``pending``
-      event naming the unfinished node when the run was interrupted.
-
-    Raises:
-      LookupError: If the thread has no checkpoint.
-    """
+async def replay_industry(
+    graph: CompiledStateGraph, thread_id: str, limits: records.Limits
+) -> dict[str, Any]:
+    """Rebuild a Phase 10 thread's events from its checkpoints."""
     config = persist.thread_config(thread_id)
-    history = [snapshot async for snapshot in graph.aget_state_history(config)]
-    if not history:
-        raise LookupError(f"No workflow found for thread {thread_id!r}.")
-    history.reverse()  # Oldest first.
-    events = []
+    history = [s async for s in graph.aget_state_history(config)]
+    history.reverse()
+    events: list[dict[str, Any]] = []
     for earlier, later in zip(history, history[1:]):
-        node = earlier.next[0]
-        if node == "__start__":
+        if not earlier.next or earlier.next[0] == "__start__":
             continue
-        update = derive_update(node, earlier.values, later.values)
-        following = later.next[0] if later.next else "end"
+        update = derive_update(earlier.values, later.values)
+        nodes = list(earlier.next)
+        if nodes[0] == "run_task":
+            for result in update.get("task_results", []):
+                events.append(
+                    node_event(
+                        "run_task",
+                        {"task_results": [result]},
+                        earlier.values,
+                        later.values,
+                        thread_id,
+                        limits,
+                    )
+                )
+            continue
         events.append(
-            node_event(node, update, earlier.values, later.values, following)
+            node_event(
+                nodes[0],
+                update,
+                earlier.values,
+                later.values,
+                thread_id,
+                limits,
+            )
         )
-    last = history[-1]
-    if last.next:
+    last = history[-1] if history else None
+    if last is not None and last.next:
         events.append({"type": "pending", "node": last.next[0]})
+    meta = last.values.get("meta") if last else None
     return {
         "thread_id": thread_id,
-        "question": last.values.get("question", ""),
-        "completed": not last.next,
+        "version": state_module.WORKFLOW_VERSION,
+        "question": last.values.get("question", "") if last else "",
+        "completed": bool(last) and not last.next,
+        "report_status": meta.report_status if meta else None,
+        "report_path": meta.report_path if meta else None,
+        "events": events,
+    }
+
+
+LEGACY_NODE_BY_KEY = (
+    ("verification", "verify"),
+    ("synthesis", "finish"),
+    ("evidence_sufficient", "evaluate"),
+    ("research_round", "research"),
+    ("research_plan", "plan"),
+)
+
+
+def legacy_node(update: dict[str, Any]) -> str | None:
+    """Name the Phase 6-9 node from the keys its checkpoint changed."""
+    for key, node in LEGACY_NODE_BY_KEY:
+        if key in update:
+            return node
+    return None
+
+
+async def replay_legacy(checkpointer: Any, thread_id: str) -> dict[str, Any]:
+    """Read-only replay of a Phase 6-9 thread: node, update, state.
+
+    Rebuilt from the checkpoints' channel values alone (the saver
+    records no per-node writes): the node is named from the keys that
+    changed between consecutive checkpoints. No legacy graph code runs
+    and no context window is reconstructed.
+    """
+    config = persist.thread_config(thread_id)
+    saved = [item async for item in checkpointer.alist(config)]
+    saved.reverse()
+    if not saved:
+        raise LookupError(f"No workflow found for thread {thread_id!r}.")
+    events: list[dict[str, Any]] = []
+    previous: dict[str, Any] = {}
+    for item in saved:
+        values = {
+            k: v
+            for k, v in item.checkpoint.get("channel_values", {}).items()
+            if not k.startswith("branch:") and k != "__start__"
+        }
+        update = {k: v for k, v in values.items() if previous.get(k) != v}
+        node = legacy_node(update)
+        if node is not None:
+            events.append(
+                {
+                    "type": "node",
+                    "node": node,
+                    "legacy": True,
+                    "update": encode(update),
+                    "state": encode(values),
+                    "trace": [f"{node.upper()}: legacy checkpoint"],
+                    "context": {
+                        "who": "legacy thread: context window not "
+                        "reconstructed",
+                        "model": None,
+                    },
+                }
+            )
+        previous = values
+    return {
+        "thread_id": thread_id,
+        "version": "legacy",
+        "question": previous.get("question", ""),
+        "completed": bool(previous.get("final_answer")),
         "events": events,
     }
 
 
 async def run(
-    graph: CompiledStateGraph, question: str, thread_id: str
+    graph: CompiledStateGraph,
+    runtime: budget.Runtime,
+    question: str,
+    thread_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run a question on a new thread and yield events as they happen.
 
-    Streams ``updates`` (the node's return value), ``values`` (the merged
-    state, which closes the node event) and ``custom`` (the research
-    node's tool loop, forwarded as ``tool_use``, ``tool_result``, and
-    ``assistant_text`` events).
+    Streams ``updates`` (one per completed node or task attempt),
+    ``values`` (the merged state, which closes the superstep's events)
+    and ``custom`` (each attempt's tool loop, with ``attempt_id``).
     """
     yield {"type": "thread", "thread_id": thread_id, "question": question}
     before: dict[str, Any] = {}
-    pending: tuple[str, dict[str, Any]] | None = None
+    pending: list[tuple[str, dict[str, Any]]] = []
+    runtime.begin(thread_id)
     async for mode, chunk in graph.astream(
         {"question": question},
         persist.thread_config(thread_id),
@@ -327,18 +357,18 @@ async def run(
         durability="sync",
     ):
         if mode == "custom":
-            yield {"type": chunk["event"], **chunk}
+            yield {"type": chunk.get("event", "custom"), **chunk}
         elif mode == "updates":
             node, update = next(iter(chunk.items()))
-            pending = (node, update)
-        elif pending is None:
-            before = chunk  # The input step: the question alone.
+            pending.append((node, update or {}))
+        elif not pending:
+            before = chunk
         else:
-            node, update = pending
-            pending = None
-            yield node_event(
-                node, update, before, chunk, next_node(node, chunk)
-            )
+            for node, update in pending:
+                yield node_event(
+                    node, update, before, chunk, thread_id, runtime.limits
+                )
+            pending = []
             before = chunk
     yield {"type": "end"}
 
@@ -354,25 +384,33 @@ async def page(_: requests.Request) -> responses.Response:
 
 
 async def list_threads(request: requests.Request) -> responses.Response:
-    """List every recorded thread, newest first."""
-    graph = request.app.state.graph
+    """List every recorded thread, newest first, with its version."""
     checkpointer = request.app.state.checkpointer
-    latest: dict[str, str] = {}
+    latest: dict[str, tuple[str, dict[str, Any]]] = {}
     async for saved in checkpointer.alist(None):
         thread_id = saved.config["configurable"]["thread_id"]
-        latest[thread_id] = max(
-            latest.get(thread_id, ""), saved.checkpoint["ts"]
-        )
+        stamp = saved.checkpoint["ts"]
+        if thread_id not in latest or stamp > latest[thread_id][0]:
+            latest[thread_id] = (
+                stamp,
+                saved.checkpoint.get("channel_values", {}),
+            )
     threads = []
-    for thread_id, stamp in sorted(
-        latest.items(), key=lambda item: item[1], reverse=True
+    for thread_id, (stamp, values) in sorted(
+        latest.items(), key=lambda item: item[1][0], reverse=True
     ):
-        snapshot = await graph.aget_state(persist.thread_config(thread_id))
+        meta = values.get("meta")
+        version = getattr(meta, "workflow_version", None) or "legacy"
+        if version == "legacy":
+            completed = bool(values.get("final_answer"))
+        else:
+            completed = meta.execution_status == "completed"
         threads.append(
             {
                 "thread_id": thread_id,
-                "question": snapshot.values.get("question", ""),
-                "completed": not snapshot.next,
+                "version": version,
+                "question": values.get("question", ""),
+                "completed": completed,
                 "updated": stamp,
             }
         )
@@ -380,23 +418,25 @@ async def list_threads(request: requests.Request) -> responses.Response:
 
 
 async def get_thread(request: requests.Request) -> responses.Response:
-    """Replay one recorded thread."""
+    """Replay one recorded thread, industry or legacy."""
+    thread_id = request.path_params["thread_id"]
+    graph = request.app.state.graph
+    checkpointer = request.app.state.checkpointer
     try:
-        payload = await replay(
-            request.app.state.graph, request.path_params["thread_id"]
-        )
+        snapshot = await persist.load_state(graph, thread_id)
     except LookupError as error:
         return responses.JSONResponse({"error": str(error)}, status_code=404)
+    if persist.thread_version(snapshot) is None:
+        payload = await replay_legacy(checkpointer, thread_id)
+    else:
+        payload = await replay_industry(
+            graph, thread_id, request.app.state.runtime.limits
+        )
     return responses.JSONResponse(payload)
 
 
 async def run_question(request: requests.Request) -> responses.Response:
-    """Start a live run and stream its events; one run at a time.
-
-    Every outcome is a stream, so the page shows a refusal (no question,
-    no Tavily key, a run already in progress) as an error event rather
-    than a dropped connection.
-    """
+    """Start a live run and stream its events; one run at a time."""
     question = request.query_params.get("question", "").strip()
     lock: asyncio.Lock = request.app.state.lock
     refusal = None
@@ -418,12 +458,13 @@ async def run_question(request: requests.Request) -> responses.Response:
             thread_id = persist.new_thread_id()
             try:
                 async for event in run(
-                    request.app.state.graph, question, thread_id
+                    request.app.state.graph,
+                    request.app.state.runtime,
+                    question,
+                    thread_id,
                 ):
                     yield sse(event)
             except Exception as error:  # pylint: disable=broad-exception-caught
-                # The page must learn why the run stopped; the thread is
-                # checkpointed and resumable from the CLI.
                 yield sse(
                     {
                         "type": "error",
@@ -444,7 +485,10 @@ async def lifespan(app: applications.Starlette) -> AsyncIterator[None]:
     """Open the checkpointer and compile the graph for the server's life."""
     async with persist.open_checkpointer() as checkpointer:
         app.state.checkpointer = checkpointer
-        app.state.graph = workflow.build_graph(checkpointer=checkpointer)
+        app.state.runtime = budget.Runtime()
+        app.state.graph = graph_module.build_graph(
+            app.state.runtime, checkpointer=checkpointer
+        )
         app.state.lock = asyncio.Lock()
         yield
 

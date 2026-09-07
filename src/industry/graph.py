@@ -56,6 +56,11 @@ from industry import worker as worker_module
 from research import crew
 
 SINGLE_CALL_NODES = state_module.SINGLE_CALL_NODES
+# What the analyst is told about calculations (one call per reservation).
+ANALYSIS_NOTE = (
+    "Derived claims from earlier calculations, if any, are listed with the "
+    "claims above (kind derived)."
+)
 # Purposes prepare_tasks plans for, by the phase it is entered from.
 PURPOSES = {
     "mapping": "the first research wave after the industry map: cover "
@@ -329,6 +334,45 @@ def _material_open_issues(
         for i in state.get("issues", {}).values()
         if i.status == "open" and i.severity == "material"
     ]
+
+
+def pending_review(state: state_module.IndustryState) -> list[str]:
+    """The claims the verifier judges next: unreviewed material or map."""
+    return [
+        c.id
+        for c in state.get("claims", {}).values()
+        if c.review == "unreviewed" and (c.material or c.map_ref)
+    ]
+
+
+def write_instructions(state: state_module.IndustryState) -> str:
+    """Full draft, or a revision when sections are stale or issues open."""
+    stale = [s for s in state.get("sections", []) if s.stale]
+    pending = [
+        i
+        for i in state.get("issues", {}).values()
+        if i.status == "open" and i.requested_action in ("edit", "remove")
+    ]
+    if state.get("sections") and (stale or pending):
+        return (
+            "Revise the draft: rewrite the stale sections and fix the open "
+            "edit/remove issues with the smallest change; keep every other "
+            "section as it is."
+        )
+    return "Write the full report."
+
+
+def planning_purpose(state: state_module.IndustryState) -> str:
+    """What prepare_tasks plans for in the state's phase."""
+    return PURPOSES.get(state.get("phase", "mapping"), PURPOSES["remediation"])
+
+
+def planning_slots(
+    state: state_module.IndustryState, limits: records.Limits
+) -> int:
+    """How many tasks prepare_tasks may create now."""
+    keep_slot = state.get("review_rounds", 0) == 0
+    return budget.dispatchable(state, limits, keep_slot)
 
 
 def issue_stage(issues: list[records.Issue]) -> str | None:
@@ -710,9 +754,8 @@ def build_graph(
         state: state_module.IndustryState,
     ) -> dict[str, Any]:
         phase = state.get("phase", "mapping")
-        purpose = PURPOSES.get(phase, PURPOSES["remediation"])
-        keep_slot = state.get("review_rounds", 0) == 0
-        slots = budget.dispatchable(state, limits, keep_slot)
+        purpose = planning_purpose(state)
+        slots = planning_slots(state, limits)
         update: dict[str, Any] = {"route_log": []}
         if slots <= 0:
             update["single_calls"] = _release(state, "prepare_tasks")
@@ -816,10 +859,7 @@ def build_graph(
         return "write"
 
     async def analyze(state: state_module.IndustryState) -> dict[str, Any]:
-        note = (
-            "Derived claims from earlier calculations, if any, are listed "
-            "with the claims above (kind derived)."
-        )
+        note = ANALYSIS_NOTE
         calculations = dict(state.get("calculations", {}))
         claims = dict(state.get("claims", {}))
         log: list[str] = []
@@ -977,11 +1017,7 @@ def build_graph(
 
     async def review(state: state_module.IndustryState) -> dict[str, Any]:
         claims = state.get("claims", {})
-        pending = [
-            c.id
-            for c in claims.values()
-            if c.review == "unreviewed" and (c.material or c.map_ref)
-        ]
+        pending = pending_review(state)
         if not pending:
             return {
                 "review_rounds": state.get("review_rounds", 0) + 1,
@@ -1119,20 +1155,7 @@ def build_graph(
         }[state.get("return_to", "write")]
 
     async def write(state: state_module.IndustryState) -> dict[str, Any]:
-        stale = [s for s in state.get("sections", []) if s.stale]
-        pending = [
-            i
-            for i in state.get("issues", {}).values()
-            if i.status == "open" and i.requested_action in ("edit", "remove")
-        ]
-        if state.get("sections") and (stale or pending):
-            instructions = (
-                "Revise the draft: rewrite the stale sections and fix the "
-                "open edit/remove issues with the smallest change; keep "
-                "every other section as it is."
-            )
-        else:
-            instructions = "Write the full report."
+        instructions = write_instructions(state)
 
         async def call(max_turns: int, deadline: float):
             return await api.write(state, instructions, max_turns, deadline)

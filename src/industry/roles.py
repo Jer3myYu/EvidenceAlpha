@@ -251,6 +251,41 @@ EDITOR = crew.Role(
 )
 
 
+# The expected-output sentence of each single-call node, and the role
+# with the output model it runs as (Studio rebuilds the framing from it).
+EXPECTED = {
+    "scope": "The structured brief.",
+    "prepare_tasks": "The structured task plan.",
+    "assess_coverage": "The structured coverage assessment.",
+    "analyze": "The structured analysis.",
+    "review": "The structured claim review.",
+    "write": "The structured draft.",
+    "final_review": "The structured draft review.",
+}
+ROLE_FOR = {
+    "scope": crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, BriefOutput),
+    "prepare_tasks": crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, TaskPlan),
+    "assess_coverage": crew.Role(
+        LEAD.name, LEAD.goal, LEAD.backstory, records.LeadAssessment
+    ),
+    "analyze": ANALYST,
+    "review": VERIFIER,
+    "write": EDITOR,
+    "final_review": crew.Role(
+        VERIFIER.name, VERIFIER.goal, VERIFIER.backstory, records.DraftReview
+    ),
+}
+ROLE_KEY = {
+    "scope": "lead",
+    "prepare_tasks": "lead",
+    "assess_coverage": "lead",
+    "analyze": "analyst",
+    "review": "verifier",
+    "write": "editor",
+    "final_review": "verifier",
+}
+
+
 def llm_for(role: str, max_turns: int) -> crew.ClaudeLLM:
     """The adapter for one role with its configured model."""
     return crew.ClaudeLLM(model=ROLE_MODELS[role], max_turns=max_turns)
@@ -574,25 +609,12 @@ async def scope(
 ) -> records.Brief:
     """The Lead's brief on top of the deterministic defaults."""
     defaults = default_brief(question)
-    description = (
-        f"User request: {question}\n\n"
-        "Produce the brief for an investor-oriented industry report. The "
-        "defaults are already set: language "
-        f"{LANGUAGE_NAMES[defaults.language]}, mode brief, geography "
-        f"'{defaults.geography}', cutoff {defaults.cutoff}. Set "
-        "explicit_language, explicit_mode, or explicit_geography ONLY "
-        "when the user's request explicitly asks for them, quoting the "
-        "request in constraints. Name the industry precisely, what is "
-        "inside and outside its boundary, and up to three boundary "
-        "alternatives only if the boundary is genuinely ambiguous. List "
-        "explicit user constraints (companies, depth, exclusions). One "
-        "sentence of budget policy."
-    )
+    description = scope_description(question)
     role = crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, BriefOutput)
     output = await crew.run_task(
         role,
         description,
-        "The structured brief.",
+        EXPECTED["scope"],
         llm or llm_for("lead", max_turns),
         deadline,
     )
@@ -613,6 +635,25 @@ async def scope(
     return defaults.model_copy(update=updates)
 
 
+def scope_description(question: str) -> str:
+    """The Lead's scoping task text (pure)."""
+    defaults = default_brief(question)
+    return (
+        f"User request: {question}\n\n"
+        "Produce the brief for an investor-oriented industry report. The "
+        "defaults are already set: language "
+        f"{LANGUAGE_NAMES[defaults.language]}, mode brief, geography "
+        f"'{defaults.geography}', cutoff {defaults.cutoff}. Set "
+        "explicit_language, explicit_mode, or explicit_geography ONLY "
+        "when the user's request explicitly asks for them, quoting the "
+        "request in constraints. Name the industry precisely, what is "
+        "inside and outside its boundary, and up to three boundary "
+        "alternatives only if the boundary is genuinely ambiguous. List "
+        "explicit user constraints (companies, depth, exclusions). One "
+        "sentence of budget policy."
+    )
+
+
 async def plan_tasks(
     state: state_module.IndustryState,
     limits: records.Limits,
@@ -623,7 +664,25 @@ async def plan_tasks(
     deadline: float | None = None,
 ) -> TaskPlan:
     """The Lead's task allocation for the next wave(s)."""
-    description = "\n\n".join(
+    description = plan_description(state, limits, slots, purpose)
+    role = crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, TaskPlan)
+    return await crew.run_task(
+        role,
+        description,
+        EXPECTED["prepare_tasks"],
+        llm or llm_for("lead", max_turns),
+        deadline,
+    )
+
+
+def plan_description(
+    state: state_module.IndustryState,
+    limits: records.Limits,
+    slots: int,
+    purpose: str,
+) -> str:
+    """The Lead's planning task text (pure)."""
+    return "\n\n".join(
         [
             render_brief(state["brief"]),
             render_map(state.get("map", records.IndustryMap())),
@@ -644,14 +703,6 @@ async def plan_tasks(
             "addresses an open issue, set issue_id.",
         ]
     )
-    role = crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, TaskPlan)
-    return await crew.run_task(
-        role,
-        description,
-        "The structured task plan.",
-        llm or llm_for("lead", max_turns),
-        deadline,
-    )
 
 
 async def assess_coverage(
@@ -661,7 +712,21 @@ async def assess_coverage(
     deadline: float | None = None,
 ) -> records.LeadAssessment:
     """The Lead's coverage proposal; Python clamps it afterwards."""
-    description = "\n\n".join(
+    role = crew.Role(
+        LEAD.name, LEAD.goal, LEAD.backstory, records.LeadAssessment
+    )
+    return await crew.run_task(
+        role,
+        coverage_description(state),
+        EXPECTED["assess_coverage"],
+        llm or llm_for("lead", max_turns),
+        deadline,
+    )
+
+
+def coverage_description(state: state_module.IndustryState) -> str:
+    """The Lead's coverage task text (pure)."""
+    return "\n\n".join(
         [
             render_brief(state["brief"]),
             render_map(state.get("map", records.IndustryMap())),
@@ -679,16 +744,6 @@ async def assess_coverage(
             "exists.",
         ]
     )
-    role = crew.Role(
-        LEAD.name, LEAD.goal, LEAD.backstory, records.LeadAssessment
-    )
-    return await crew.run_task(
-        role,
-        description,
-        "The structured coverage assessment.",
-        llm or llm_for("lead", max_turns),
-        deadline,
-    )
 
 
 async def analyze(
@@ -699,7 +754,20 @@ async def analyze(
     deadline: float | None = None,
 ) -> Analysis:
     """The Analyst's findings, calculation requests, evidence requests."""
-    description = "\n\n".join(
+    return await crew.run_task(
+        ANALYST,
+        analysis_description(state, calculations_note),
+        EXPECTED["analyze"],
+        llm or llm_for("analyst", max_turns),
+        deadline,
+    )
+
+
+def analysis_description(
+    state: state_module.IndustryState, calculations_note: str
+) -> str:
+    """The Analyst's task text (pure)."""
+    return "\n\n".join(
         [
             render_brief(state["brief"]),
             render_map(state.get("map", records.IndustryMap())),
@@ -719,13 +787,6 @@ async def analyze(
             "next step. Do not restate claims as findings.",
         ]
     )
-    return await crew.run_task(
-        ANALYST,
-        description,
-        "The structured analysis.",
-        llm or llm_for("analyst", max_turns),
-        deadline,
-    )
 
 
 async def review_claims(
@@ -735,9 +796,22 @@ async def review_claims(
     max_turns: int = 5,
     deadline: float | None = None,
 ) -> records.ClaimReview:
-    """The Verifier's judgement of the named claims and all relations."""
+    """The Verifier's judgement of the named claims and their relations."""
+    return await crew.run_task(
+        VERIFIER,
+        review_description(state, claim_ids),
+        EXPECTED["review"],
+        llm or llm_for("verifier", max_turns),
+        deadline,
+    )
+
+
+def review_description(
+    state: state_module.IndustryState, claim_ids: list[str]
+) -> str:
+    """The Verifier's claim-review task text (pure)."""
     brief = state["brief"]
-    description = "\n\n".join(
+    return "\n\n".join(
         [
             f"Industry: {brief.industry}; language "
             f"{LANGUAGE_NAMES.get(brief.language, brief.language)}",
@@ -758,13 +832,6 @@ async def review_claims(
             "needing the original, with the URL when an excerpt names one.",
         ]
     )
-    return await crew.run_task(
-        VERIFIER,
-        description,
-        "The structured claim review.",
-        llm or llm_for("verifier", max_turns),
-        deadline,
-    )
 
 
 async def write(
@@ -775,7 +842,20 @@ async def write(
     deadline: float | None = None,
 ) -> Draft:
     """The Editor's draft or revision."""
-    description = "\n\n".join(
+    return await crew.run_task(
+        EDITOR,
+        draft_description(state, instructions),
+        EXPECTED["write"],
+        llm or llm_for("editor", max_turns),
+        deadline,
+    )
+
+
+def draft_description(
+    state: state_module.IndustryState, instructions: str
+) -> str:
+    """The Editor's task text (pure)."""
+    return "\n\n".join(
         [
             render_brief(state["brief"]),
             render_map(state.get("map", records.IndustryMap())),
@@ -796,13 +876,6 @@ async def write(
             "citations. Section ids are short slugs.",
         ]
     )
-    return await crew.run_task(
-        EDITOR,
-        description,
-        "The structured draft.",
-        llm or llm_for("editor", max_turns),
-        deadline,
-    )
 
 
 async def final_review(
@@ -815,8 +888,19 @@ async def final_review(
     role = crew.Role(
         VERIFIER.name, VERIFIER.goal, VERIFIER.backstory, records.DraftReview
     )
+    return await crew.run_task(
+        role,
+        final_review_description(state),
+        EXPECTED["final_review"],
+        llm or llm_for("verifier", max_turns),
+        deadline,
+    )
+
+
+def final_review_description(state: state_module.IndustryState) -> str:
+    """The Verifier's draft-review task text (pure)."""
     brief = state["brief"]
-    description = "\n\n".join(
+    return "\n\n".join(
         [
             f"Industry: {brief.industry}",
             render_claims(state, None, False, MAX_CONTEXT_CHARS["verifier"]),
@@ -832,11 +916,4 @@ async def final_review(
             "where one applies, the claim id. Set consistent=false if any "
             "material issue exists.",
         ]
-    )
-    return await crew.run_task(
-        role,
-        description,
-        "The structured draft review.",
-        llm or llm_for("verifier", max_turns),
-        deadline,
     )
