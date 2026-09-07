@@ -168,8 +168,8 @@ def test_fetch_then_search_documents_yields_passages_with_versions():
             )
         )
     )
-    assert "[E1]" in out and "distance 0.210 (strong)" in out
-    assert "[E2]" in out and "(weak)" in out and "page 3" in out
+    assert "[E1]" in out and "distance 0.210 (uncalibrated)" in out
+    assert "[E2]" in out and "page 3" in out
     passage, table = collector.evidence
     assert passage.kind == "passage" and passage.source_version_id == "v1"
     assert table.kind == "table" and table.limitations == ["table_merged_cells"]
@@ -214,6 +214,13 @@ def test_meter_refuses_when_allowance_is_spent():
     assert meter2.counts("T2.1") == (0, 1)
 
 
-def test_bands():
-    assert tools.band(0.2) == "strong" and tools.band(0.5) == "weak"
-    assert tools.band(0.9) == "doubtful"
+def test_bands_are_uncalibrated_until_a_table_exists():
+    assert tools.band(0.2, "zh", "zh") == "uncalibrated"
+    tools.CALIBRATION[("zh", "zh")] = ((0.35, "strong"), (0.60, "weak"))
+    try:
+        assert tools.band(0.2, "zh", "zh") == "strong"
+        assert tools.band(0.5, "zh", "zh") == "weak"
+        assert tools.band(0.9, "zh", "zh") == "doubtful"
+        assert tools.band(0.2, "en", "zh") == "uncalibrated"
+    finally:
+        tools.CALIBRATION.clear()

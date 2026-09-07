@@ -69,8 +69,20 @@ class RoleHung(RuntimeError):
     """A cancelled call did not stop within the grace period.
 
     Raised instead of routing onward, so nothing keeps running
-    unobserved; the run is left resumable.
+    unobserved; the run is left resumable. The live kickoff is kept in
+    ``HUNG_CALLS`` and ``run_task`` refuses to start another call while
+    any of them is still alive.
     """
+
+
+# Kickoff tasks that outlived their cancellation; pruned when they end.
+HUNG_CALLS: list[asyncio.Future] = []
+
+
+def hung_calls() -> list[asyncio.Future]:
+    """The cancelled calls still running in this process."""
+    HUNG_CALLS[:] = [task for task in HUNG_CALLS if not task.done()]
+    return list(HUNG_CALLS)
 
 
 def split_messages(messages: str | list[dict[str, Any]]) -> tuple[str, str]:
@@ -281,6 +293,11 @@ async def run_task(
       RuntimeError: If the model call fails, or a structured task did
         not produce its model.
     """
+    if hung_calls():
+        raise RoleHung(
+            f"{len(HUNG_CALLS)} earlier call(s) are still live after their "
+            "cancellation; no new call starts until they end."
+        )
     llm = llm or ClaudeLLM()
     agent = crewai.Agent(
         role=role.name,
@@ -321,6 +338,7 @@ async def run_task(
         try:
             await asyncio.wait_for(asyncio.shield(kickoff), grace)
         except asyncio.TimeoutError:
+            HUNG_CALLS.append(kickoff)
             raise RoleHung(
                 f"{role.name} exceeded {deadline:.0f} s and did not stop "
                 f"within {grace:.0f} s after cancellation."

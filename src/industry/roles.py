@@ -347,9 +347,11 @@ def _claim_line(
         fields.append("questions=" + ",".join(map(str, claim.questions)))
     if claim.limitations:
         fields.append("limitations=" + ",".join(claim.limitations))
-    header = f"[{claim.id}] ({'; '.join(fields)}) {claim.statement}"
+    joined = "; ".join(fields)
+    header = f"[{claim.id}] ({joined}) {claim.statement}"
     if not with_excerpts:
-        return header + f" <- {', '.join(claim.evidence_ids)}"
+        cited = ", ".join(claim.evidence_ids)
+        return header + f" <- {cited}"
     evidence = state.get("evidence", {})
     sources = state.get("sources", {})
     versions = state.get("source_versions", {})
@@ -364,11 +366,9 @@ def _claim_line(
         version = versions.get(item.source_version_id or "")
         retrieved = version.retrieved_at[:10] if version else "no snapshot"
         origin = source.origin if source else "unknown"
-        limits = (
-            f"; limitations: {', '.join(item.limitations)}"
-            if item.limitations
-            else ""
-        )
+        limits = ""
+        if item.limitations:
+            limits = "; limitations: " + ", ".join(item.limitations)
         parts.append(
             f"    [{eid}] {item.kind} from {title} ({where}; {origin}; "
             f"{item.locator}; retrieved {retrieved}{limits})\n"
@@ -403,9 +403,8 @@ def render_claims(
         lines.append(text)
         used += len(text) + 1
     if omitted:
-        lines.append(
-            f"Omitted for length ({len(omitted)} claims): {', '.join(omitted)}"
-        )
+        names = ", ".join(omitted)
+        lines.append(f"Omitted for length ({len(omitted)} claims): {names}")
     return "\n".join(lines) if lines else "Claims: none."
 
 
@@ -415,21 +414,48 @@ def budget_number(identifier: str) -> int:
     return int(digits) if digits else 0
 
 
-def render_relationships(state: state_module.IndustryState) -> str:
-    """Proposed and confirmed relationships with their evidence ids."""
-    items = state.get("relationships", {})
+def render_relationships(
+    state: state_module.IndustryState,
+    claim_ids: list[str] | None = None,
+    with_excerpts: bool = False,
+) -> str:
+    """Relationships with their parent claim and, on request, excerpts.
+
+    Args:
+      state: The state.
+      claim_ids: When given, only relationships whose parent claim is
+        among them are rendered, so the verifier judges relations
+        beside the claims it was handed.
+      with_excerpts: Render each cited excerpt with its locator and
+        kind, so a judgement is bound to the exact text.
+    """
+    items = [
+        rel
+        for rel in state.get("relationships", {}).values()
+        if claim_ids is None or rel.claim_id in claim_ids
+    ]
     if not items:
         return "Relationships: none."
+    evidence = state.get("evidence", {})
     lines = ["Relationships:"]
     unknown = "?"
-    for rel in items.values():
+    for rel in items:
         status = "confirmed" if rel.confirmed else rel.review
         evidence_ids = ", ".join(rel.evidence_ids) or "-"
         lines.append(
             f"  [{rel.id}] {rel.from_entity} --{rel.relation}--> "
-            f"{rel.to_entity} ({status}; evidence {evidence_ids}; "
-            f"date {rel.date or unknown})"
+            f"{rel.to_entity} ({status}; claim {rel.claim_id}; evidence "
+            f"{evidence_ids}; date {rel.date or unknown})"
         )
+        if with_excerpts:
+            for eid in rel.evidence_ids:
+                item = evidence.get(eid)
+                if item is None:
+                    continue
+                lines.append(
+                    f"      [{eid}] {item.kind} @ {item.locator}: "
+                    f'"{item.excerpt}"'
+                )
     return "\n".join(lines)
 
 
@@ -718,11 +744,15 @@ async def review_claims(
             render_claims(
                 state, claim_ids, True, MAX_CONTEXT_CHARS["verifier"]
             ),
-            render_relationships(state),
-            "Judge every claim listed (a verdict per claim id), every "
-            "relationship (supported only if an excerpt names both parties "
-            "and the direction), and the origin of each source you can "
-            "tell from its excerpts. List contradictions between excerpts "
+            render_relationships(state, claim_ids, with_excerpts=True),
+            "Judge every claim listed (a verdict per claim id, with "
+            "topics_supported naming which of its tagged topics the "
+            "excerpts actually bear on), every relationship listed "
+            "(supported only if one of its cited excerpts names both "
+            "parties and the direction of that relation; a co-mention, a "
+            "compatibility statement, a competitor list, or speculation "
+            "is not support), and the origin of each source you can tell "
+            "from its excerpts. List contradictions between excerpts "
             "as sentences naming the claim ids. Request acquisition only "
             "for material claims resting on snippets or contradictions "
             "needing the original, with the URL when an excerpt names one.",

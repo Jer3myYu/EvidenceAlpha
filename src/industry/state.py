@@ -1,10 +1,11 @@
 """The checkpointed state of the industry research workflow.
 
 Every key is owned by the node kind that writes it. Registries are
-dictionaries replaced whole by ``merge``; the three ``Annotated`` lists
+dictionaries replaced whole by ``merge``; the two ``Annotated`` lists
 accumulate through LangGraph's reducer, so a concurrent worker returns
 only its own items and a resumed superstep never appends twice (the
-``merged`` list names the attempts already folded).
+``merged`` list names the attempts already folded). Budget accounting
+lives in ``attempts`` and ``single_calls`` only.
 """
 
 import hashlib
@@ -57,9 +58,12 @@ class IndustryState(TypedDict, total=False):
     review: records.ClaimReview | None
     final_review: records.DraftReview | None
     assessment: records.LeadAssessment | None
-    usage_events: Annotated[list[records.Usage], operator.add]
     cycle: int
     follow_up_rounds: int
+    review_rounds: int
+    analysis_rounds: int
+    return_to: str
+    last_signature: str
     route_log: Annotated[list[str], operator.add]
 
 

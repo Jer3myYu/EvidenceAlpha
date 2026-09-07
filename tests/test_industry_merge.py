@@ -601,3 +601,98 @@ def test_apply_review_keeps_only_confirmed_topics():
     )
     update = merge.apply_review(state, review)
     assert update["claims"]["C1"].reviewed_topics == ["demand_driver"]
+
+
+def test_reference_reuse_and_indexed_passage_keep_their_version():
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    # T3 cites the same passage (a reference, or a fresh retrieval of the
+    # chunk T2 indexed) without carrying the version record itself.
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    reuse = records.TaskResult(
+        attempt_id="T3.1",
+        task_id="T3",
+        status="done",
+        sources=[source("S1", "https://a.example/x")],
+        evidence=[
+            evidence(
+                "E1", "S1", "Acme revenue reached 52亿元 in 2024, up 12%.", "va"
+            )
+        ],
+        findings=[
+            records.FindingDraft(
+                statement="downstream reuse", evidence_refs=["E1"]
+            )
+        ],
+    )
+    update = merge.merge_results(state, [reuse], LIMITS)
+    assert list(update["evidence"]) == ["E1"]
+    assert "C2" in update["claims"] and update["claims"]["C2"].evidence_ids == [
+        "E1"
+    ]
+
+
+def test_snippet_only_relationship_is_supported_but_not_confirmed():
+    state = base_state()
+    result = result_t2()
+    result.source_versions = []
+    result.evidence[0] = evidence(
+        "E1", "S1", "Acme supplies Beta with blanks (52亿元).", None, "snippet"
+    )
+    state.update(merge.merge_results(state, [result], LIMITS))
+    review = records.ClaimReview(
+        relationships=[
+            records.RelationshipVerdict(
+                relationship_id="R1", supported=True, reason="named"
+            )
+        ]
+    )
+    update = merge.apply_review(state, review)
+    rel = update["relationships"]["R1"]
+    assert rel.review == "supported" and rel.confirmed is False
+    assert any("not confirmed" in line for line in update["route_log"])
+
+
+def test_meaning_change_stales_dependants_and_conflicts_are_kept():
+    state = base_state()
+    plain = result_t2(quantity=False)
+    state.update(merge.merge_results(state, [plain], LIMITS))
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"review": "supported"}
+    )
+    state["findings"] = {
+        "F1": records.Finding(
+            id="F1",
+            conclusion="",
+            claim_ids=["C1"],
+            mechanism="",
+            implication="",
+            counterargument="",
+            uncertainty="",
+            monitor="",
+        )
+    }
+    state["sections"] = [
+        records.Section(id="s1", title="t", text="[C1]", claim_ids=["C1"])
+    ]
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    richer = result_t2().model_copy(
+        update={"attempt_id": "T3.1", "task_id": "T3"}
+    )
+    update = merge.merge_results(state, [richer], LIMITS)
+    assert update["claims"]["C1"].version == 2
+    assert update["findings"]["F1"].status == "stale"
+    assert update["sections"][0].stale
+    # A repeat that disagrees keeps the existing value and records it.
+    state.update(update)
+    state["tasks"]["T4"] = task("T4")
+    state["attempts"]["T4.1"] = attempt("T4.1", "T4")
+    other = result_t2().model_copy(
+        update={"attempt_id": "T4.1", "task_id": "T4"}
+    )
+    other.findings[0] = other.findings[0].model_copy(update={"period": "2023"})
+    update = merge.merge_results(state, [other], LIMITS)
+    assert update["claims"]["C1"].period == "2024"
+    assert "conflicting_repeat:period" in update["claims"]["C1"].limitations

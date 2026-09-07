@@ -492,6 +492,7 @@ class Reference(Record):
     source_url: str | None = None
     source_path: str | None = None
     source_kind: SourceKind = "web_page"
+    version: SourceVersion | None = None
     version_date: str | None = None
 
 

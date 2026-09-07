@@ -93,11 +93,21 @@ def elapsed_years(start: Period, end: Period) -> int:
     return years
 
 
+def _same_period(a: str | None, b: str | None) -> bool:
+    """Whether two period labels denote the same period once normalized."""
+    if a == b:
+        return True
+    try:
+        return parse_period(a).key() == parse_period(b).key()
+    except CalcError:
+        return False
+
+
 def _same_period_and_scope(
     a: records.CalcInput, b: records.CalcInput, note: str | None
 ) -> str | None:
     """Check ratio/share alignment; return a qualification or raise."""
-    if a.period != b.period or a.scope != b.scope:
+    if not _same_period(a.period, b.period) or a.scope != b.scope:
         if note:
             return note
         raise CalcError(

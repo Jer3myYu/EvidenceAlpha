@@ -1,0 +1,185 @@
+"""Run the industry research workflow on a question, or resume a thread.
+
+Usage::
+
+    set -a; source .env; set +a
+    .venv/bin/python scripts/industry_workflow.py "光掩模产业调研"
+    .venv/bin/python scripts/industry_workflow.py --resume 3f9c2a1b
+    .venv/bin/python scripts/industry_workflow.py --backup backup.db
+    .venv/bin/python scripts/industry_workflow.py "q" --limit wall_clock_s=3600
+
+Every run is checkpointed to ``data/workflow.db`` under a thread id,
+printed first. An interrupted run resumes with ``--resume`` at the
+node that did not finish; a Phase 6-9 thread cannot be resumed here
+(replay it in Studio). The report is written to
+``data/reports/<thread_id>.md``; the trace shows every node, task, and
+the budget as the run goes.
+"""
+
+import argparse
+import asyncio
+import sys
+
+from industry import budget
+from industry import graph as graph_module
+from industry import records
+from industry import state as state_module
+from industry import trace
+from research import persist
+from research import web
+
+
+def parse_args() -> argparse.Namespace:
+    """A question, ``--resume``, or ``--backup``; optional limit overrides."""
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", maxsplit=1)[0]
+    )
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("question", nargs="?", help="start a new thread")
+    target.add_argument("--resume", metavar="THREAD_ID", help="resume a thread")
+    target.add_argument(
+        "--backup", metavar="PATH", help="copy the checkpoint database"
+    )
+    parser.add_argument(
+        "--limit",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="override one limit, e.g. wall_clock_s=3600 (repeatable)",
+    )
+    return parser.parse_args()
+
+
+def limits_from(overrides: list[str]) -> records.Limits:
+    """Apply ``NAME=VALUE`` overrides to the default limits."""
+    values = {}
+    defaults = records.Limits()
+    for item in overrides:
+        name, _, raw = item.partition("=")
+        if not hasattr(defaults, name):
+            sys.exit(f"Unknown limit {name!r}.")
+        kind = type(getattr(defaults, name))
+        values[name] = kind(raw)
+    return records.Limits(**values)
+
+
+def show(title: str, body: str) -> None:
+    """Print one stage with a rule under its title."""
+    rule = "-" * len(title)
+    print(f"\n{title}\n{rule}\n{body}")
+
+
+async def stream(graph, payload, config, runtime) -> state_module.IndustryState:
+    """Stream the graph, print trace lines, return the final state."""
+    state: state_module.IndustryState = {}
+    thread_id = config["configurable"]["thread_id"]
+    try:
+        async for mode, chunk in graph.astream(
+            payload,
+            config,
+            stream_mode=["updates", "values"],
+            durability="sync",
+        ):
+            if mode == "values":
+                state = chunk
+                continue
+            for node, update in chunk.items():
+                for line in trace.render_update(node, update or {}, state):
+                    print(line)
+                if node in ("merge", "deliver"):
+                    print(
+                        trace.budget_line(
+                            {**state, **(update or {})}, runtime.limits
+                        )
+                    )
+    except asyncio.CancelledError:
+        print(
+            "\nInterrupted. The last completed node is saved; continue with:"
+            f"\n  scripts/industry_workflow.py --resume {thread_id}"
+        )
+        raise
+    return state
+
+
+async def main() -> None:
+    """Start, resume, or back up."""
+    args = parse_args()
+    if args.backup:
+        persist.backup(persist.DB_PATH, args.backup)
+        print(f"Backed up {persist.DB_PATH} to {args.backup}")
+        return
+    try:
+        web.api_key()
+    except RuntimeError as error:
+        sys.exit(str(error))
+    runtime = budget.Runtime(limits_from(args.limit))
+    async with persist.open_checkpointer() as checkpointer:
+        graph = graph_module.build_graph(runtime, checkpointer=checkpointer)
+        if args.resume is None:
+            thread_id = persist.new_thread_id()
+            show(
+                "THREAD", f"{thread_id}  (--resume {thread_id} if interrupted)"
+            )
+            show("QUESTION", args.question)
+            config = persist.thread_config(thread_id)
+            payload = {"question": args.question}
+        else:
+            thread_id = args.resume
+            try:
+                snapshot = await persist.load_industry_state(
+                    graph, thread_id, state_module.WORKFLOW_VERSION
+                )
+            except LookupError as error:
+                sys.exit(str(error))
+            show("THREAD", thread_id)
+            show("QUESTION", snapshot.values["question"])
+            if not snapshot.next:
+                meta = snapshot.values["meta"]
+                show(
+                    "STATUS",
+                    f"completed earlier: {meta.report_status}; report "
+                    f"{meta.report_path}",
+                )
+                return
+            pending = snapshot.next[0]
+            config = persist.resume_config(thread_id, snapshot)
+            if pending in state_module.SINGLE_CALL_NODES:
+                updates = graph_module.resume_updates(
+                    snapshot.values, pending, runtime.limits
+                )
+                await graph.aupdate_state(
+                    config, updates, as_node=f"reserve_{pending}"
+                )
+                for line in updates["route_log"]:
+                    print(f"RESUME: {line}")
+            else:
+                print(f"RESUMING AT: {pending}")
+            payload = None
+        runtime.begin(thread_id)
+        show("TRACE", "")
+        state = await stream(graph, payload, config, runtime)
+    meta = state["meta"]
+    show("REPORT", f"{meta.report_status}: {meta.report_path}")
+    show(
+        "COVERAGE",
+        "\n".join(
+            f"Q{c.question}: {c.status}  {c.note}" for c in state["coverage"]
+        ),
+    )
+    open_issues = [i for i in state["issues"].values() if i.status == "open"]
+    show(
+        "OPEN ISSUES",
+        "\n".join(
+            f"[{i.id}] {i.severity} {i.category} on {i.target}: {i.description}"
+            for i in open_issues
+        )
+        or "none",
+    )
+    show("BUDGET", trace.budget_line(state, runtime.limits))
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -162,3 +162,20 @@ def test_growth_rejects_non_positive_or_non_finite_values(start, end, code):
     )
     result = calc.compute("K1", request, inputs)
     assert result.status == "error" and code in str(result.message)
+
+
+def test_equivalent_period_labels_are_the_same_period():
+    inputs = {
+        "C1": cinput("C1", 30, period="2024"),
+        "C2": cinput("C2", 120, period="2024年"),
+        "C3": cinput("C3", 120, period="FY2024"),
+    }
+    share = records.CalcRequest(
+        kind="share",
+        label="s",
+        numerator_claim_id="C1",
+        denominator_claim_id="C2",
+    )
+    assert calc.compute("K1", share, inputs).status == "ok"
+    fiscal = share.model_copy(update={"denominator_claim_id": "C3"})
+    assert calc.compute("K2", fiscal, inputs).status == "error"

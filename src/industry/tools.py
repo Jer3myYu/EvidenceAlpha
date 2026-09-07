@@ -8,10 +8,11 @@ thread's ``RunMeter`` (admission before any work), and a ``Backend``
 never raise into the model's session: a refusal or a failure comes
 back as an observation the model can read.
 
-Distances are reported with a *band* label; nothing is hidden. The band
-thresholds below are provisional and are set from the labelled
-evaluation recorded in the Phase 10 log; applicability is the
-verifier's judgement on the excerpt, never the distance alone.
+Distances are reported as numbers; nothing is hidden and no relevance
+label is attached until a labelled per-language calibration exists
+(``CALIBRATION``, empty until the evaluation recorded in the Phase 10
+log fills it). Applicability is the verifier's judgement on the
+excerpt, never the distance alone.
 """
 
 import asyncio
@@ -29,14 +30,19 @@ from research import web
 BUDGET_EXHAUSTED = (
     "Tool budget exhausted for this task; finish with the evidence you have."
 )
-# Provisional bands (cosine distance, multilingual model); see the log.
-BANDS = ((0.35, "strong"), (0.60, "weak"))
+# Per (query language, document language) bands, e.g. ``("zh", "zh"):
+# ((0.35, "strong"), (0.60, "weak"))``, filled only from a labelled
+# evaluation whose artifact the Phase 10 log names. Empty: no labels.
+CALIBRATION: dict[tuple[str, str], tuple[tuple[float, str], ...]] = {}
 TOOL_NAMES = ("search_web", "search_documents", "fetch_source")
 
 
-def band(distance: float) -> str:
-    """Label a cosine distance ``strong``, ``weak``, or ``doubtful``."""
-    for limit, label in BANDS:
+def band(distance: float, query_language: str, doc_language: str) -> str:
+    """The calibrated label for a distance, or ``uncalibrated``."""
+    bands = CALIBRATION.get((query_language, doc_language))
+    if not bands:
+        return "uncalibrated"
+    for limit, label in bands:
         if distance <= limit:
             return label
     return "doubtful"
@@ -89,9 +95,9 @@ class LiveBackend:
     def fetch(
         self, url: str, source_id: str
     ) -> tuple[records.SourceVersion, list[snapshots.Chunk], str]:
-        fetched = snapshots.fetch(url)
-        version = snapshots.store_snapshot(fetched, source_id, self.sources_dir)
-        chunks = snapshots.chunk_blocks(snapshots.extract(fetched))
+        version, chunks = snapshots.acquire_bytes(
+            url, source_id, self.sources_dir
+        )
         return version, chunks, sources_module.canonical_url(url)
 
     def index(
@@ -321,7 +327,11 @@ def build_tools(
                 limitations,
                 hit.metadata.get("source_version_id") or None,
             )
-            label = band(hit.distance)
+            label = band(
+                hit.distance,
+                snapshots.language_of(query),
+                str(hit.metadata.get("language", "")),
+            )
             lines.append(
                 f"[{item.id}] {source.title} ({url}) | {item.locator} | "
                 f"distance {hit.distance:.3f} ({label})\n{hit.text}"
@@ -365,6 +375,15 @@ def build_tools(
         version = version.model_copy(update={"chunk_count": count})
         collector.versions[version.id] = version
         collector.fetches += 1
+        publisher, published = snapshots.read_metadata(version)
+        if publisher or published:
+            source = source.model_copy(
+                update={
+                    "publisher": source.publisher or publisher,
+                    "published": source.published or published,
+                }
+            )
+            collector.sources[source.id] = source
         sections = []
         for chunk in chunks:
             label = chunk.section or (

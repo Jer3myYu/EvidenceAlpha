@@ -29,7 +29,18 @@ def test_ledger_charges_reservation_until_observed():
             "T2.1": attempt("T2.1"),  # running: reserved
             "T3.1": attempt("T3.1", "unknown"),
         },
-        "usage_events": [records.Usage(turns=5, duration_s=30, node="scope")],
+        "single_calls": {
+            "scope.1": records.Attempt(
+                id="scope.1",
+                task_id="scope",
+                status="done",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                observed=records.Usage(turns=5, duration_s=30),
+                started_at="2026-09-07T00:00:00+00:00",
+            )
+        },
     }
     spent = budget.ledger(state)
     assert spent.turns == 4 + 12 + 12 + 5
@@ -66,7 +77,7 @@ def test_dispatchable_respects_every_limit_and_reserve():
         expected_task_s=600,
         concurrency=2,
     )
-    empty = {"attempts": {}, "usage_events": []}
+    empty = {"attempts": {}, "single_calls": {}}
     # executions 12; turns (200-12)//12 = 15; tools 150//24 = 6;
     # time (5400-900)/600 = 7 waves * 2 = 14. Tools bind.
     assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 6
@@ -75,7 +86,18 @@ def test_dispatchable_respects_every_limit_and_reserve():
     assert budget.dispatchable(empty, tight, keep_acquisition_slot=True) == 11
     spent = {
         "attempts": {},
-        "usage_events": [records.Usage(duration_s=4000)],
+        "single_calls": {
+            "w.1": records.Attempt(
+                id="w.1",
+                task_id="w",
+                status="done",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                observed=records.Usage(duration_s=4000),
+                started_at="2026-09-07T00:00:00+00:00",
+            )
+        },
     }
     # 1400 s left, 500 after reserve: no full wave fits.
     assert budget.dispatchable(spent, tight, keep_acquisition_slot=False) == 0
@@ -83,15 +105,54 @@ def test_dispatchable_respects_every_limit_and_reserve():
 
 def test_admit_single_call_intermediate_versus_reserved():
     limits = records.Limits(model_calls=20, model_call_reserve=12)
-    state = {"attempts": {}, "usage_events": [records.Usage(turns=5)]}
+    state = {
+        "attempts": {},
+        "single_calls": {
+            "w.1": records.Attempt(
+                id="w.1",
+                task_id="w",
+                status="done",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                observed=records.Usage(turns=5),
+                started_at="2026-09-07T00:00:00+00:00",
+            )
+        },
+    }
     # 15 left; intermediate needs 5 after the 12 reserve: 3 < 5 -> skip.
     assert budget.admit_single_call(state, limits, "analyze") == 0
     assert budget.admit_single_call(state, limits, "write") == 5
-    almost = {"attempts": {}, "usage_events": [records.Usage(turns=18)]}
+    almost = {
+        "attempts": {},
+        "single_calls": {
+            "w.1": records.Attempt(
+                id="w.1",
+                task_id="w",
+                status="done",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                observed=records.Usage(turns=18),
+                started_at="2026-09-07T00:00:00+00:00",
+            )
+        },
+    }
     assert budget.admit_single_call(almost, limits, "final_review") == 2
     out_of_time = {
         "attempts": {},
-        "usage_events": [records.Usage(duration_s=5400)],
+        "single_calls": {
+            "w.1": records.Attempt(
+                id="w.1",
+                task_id="w",
+                status="done",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                observed=records.Usage(duration_s=5400),
+                started_at="2026-09-07T00:00:00+00:00",
+            )
+        },
     }
     assert budget.admit_single_call(out_of_time, limits, "write") == 0
 
@@ -137,7 +198,7 @@ def test_runtime_rebuilds_meter_from_ledger():
         "attempts": {
             "T1.1": attempt("T1.1", "done", records.Usage(tool_calls=10))
         },
-        "usage_events": [],
+        "single_calls": {},
     }
     assert runtime.meter_for("t") is None
     meter = runtime.new_meter("t", state)
@@ -149,12 +210,12 @@ def test_runtime_rebuilds_meter_from_ledger():
 
 def test_begin_revokes_admissions_of_an_earlier_invocation():
     runtime = budget.Runtime(records.Limits())
-    meter = runtime.new_meter("t", {"attempts": {}, "usage_events": []})
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
     meter.register("T1.1", 24)
     assert runtime.meter_for("t").is_admitted("T1.1")
     runtime.begin("t")  # the resume invocation starts
     assert runtime.meter_for("t") is None
-    fresh = runtime.new_meter("t", {"attempts": {}, "usage_events": []})
+    fresh = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
     assert not fresh.is_admitted("T1.1")
 
 

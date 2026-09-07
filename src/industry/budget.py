@@ -4,8 +4,8 @@
 every single-call reservation (``single_calls``, written by the
 reserve node that precedes each model node) counts once, as its
 observed usage when it finished or as its reservation while it is
-running, unknown, or failed without usage; ``usage_events`` carries
-anything else a node reports. Routers, the CLI, and Studio all read this
+running, unknown, or failed without usage. Nothing else is charged:
+there is no second accounting path. Routers, the CLI, and Studio all read this
 function, so no two of them can disagree about what a run has spent.
 
 The ``RunMeter`` bounds what is in flight inside one process: attempts
@@ -94,8 +94,6 @@ def ledger(state: state_module.IndustryState) -> Ledger:
         if charge.unknown:
             unknown += 1
         total = total + charge
-    for event in state.get("usage_events", []):
-        total = total + event
     return Ledger(
         turns=total.turns,
         tool_calls=total.tool_calls,
@@ -259,8 +257,13 @@ class Runtime:
       index_lock: Serializes writes to the vector index.
     """
 
-    def __init__(self, limits: records.Limits | None = None) -> None:
+    def __init__(
+        self,
+        limits: records.Limits | None = None,
+        reports_dir: str = "data/reports",
+    ) -> None:
         self.limits = limits or records.Limits()
+        self.reports_dir = reports_dir
         self.semaphore = asyncio.Semaphore(self.limits.concurrency)
         self.index_lock = asyncio.Lock()
         self._meters: dict[str, RunMeter] = {}

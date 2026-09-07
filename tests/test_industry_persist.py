@@ -242,7 +242,19 @@ def sample_state():
         "assessment": records.LeadAssessment(
             coverage=[records.CoverageProposal(question=1, status="partial")]
         ),
-        "usage_events": [records.Usage(turns=5, node="scope")],
+        "single_calls": {
+            "scope.1": records.Attempt(
+                id="scope.1",
+                task_id="scope",
+                status="done",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                observed=records.Usage(turns=5),
+                started_at=NOW,
+            )
+        },
+        "phase": "mapping",
         "cycle": 0,
         "follow_up_rounds": 0,
         "route_log": ["scope: ok"],

@@ -139,3 +139,34 @@ def test_run_task_cancels_the_llm_instance_it_runs():
             crew.run_task(crew.REPORTER, "hi", "one word", llm, deadline=0.3)
         )
     assert llm.ended.is_set()
+
+
+def test_hung_call_blocks_further_calls_until_it_ends():
+    async def scenario():
+        stubborn = StubbornLLM(2)
+        with pytest.raises(crew.RoleHung, match="did not stop"):
+            await crew.run_task(
+                crew.REPORTER,
+                "hi",
+                "one word",
+                stubborn,
+                deadline=0.2,
+                grace=0.2,
+            )
+        assert crew.hung_calls(), "the live kickoff is retained"
+        with pytest.raises(crew.RoleHung, match="still live"):
+            await crew.run_task(
+                crew.REPORTER, "hi", "one word", SleepingLLM(0.01)
+            )
+        stubborn.ended.wait(5)
+        for _ in range(50):
+            if not crew.hung_calls():
+                break
+            await asyncio.sleep(0.1)
+        assert not crew.hung_calls()
+        out = await crew.run_task(
+            crew.REPORTER, "hi", "one word", SleepingLLM(0.01)
+        )
+        assert out == "slept"
+
+    asyncio.run(scenario())

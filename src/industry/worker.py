@@ -167,6 +167,12 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
                 path=reference.source_path,
             )
             copied = reference.evidence
+            if reference.version is not None:
+                collector.versions[reference.version.id] = (
+                    reference.version.model_copy(
+                        update={"source_id": source.id}
+                    )
+                )
             item = collector.add_evidence(
                 source,
                 copied.excerpt,
@@ -335,7 +341,9 @@ async def run_attempt(
                 work.allowance.seconds,
             )
         except asyncio.TimeoutError:
-            unknown = session.turns == 0
+            # Assistant messages are not authoritative usage; without a
+            # final result the whole reservation stays charged.
+            unknown = session.result is None
             usage = _usage(session, meter, collector, started, unknown)
             seconds = f"{work.allowance.seconds:.0f}"
             return _result(

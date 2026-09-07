@@ -172,6 +172,8 @@ def test_snapshot_is_content_addressed_and_metadata_immutable(tmp_path):
         meta["canonical_url"] == "https://example.com/a"
         and meta["id"] == first.id
     )
+    assert "source_id" not in meta, "attempt-local ids stay out of the record"
+    assert meta["chunk_count"] == 0 and meta["publisher"] is None
     # Same URL, same bytes: same version, nothing rewritten.
     blob_mtime = blob.stat().st_mtime_ns
     again = snapshots.store_snapshot(
@@ -248,3 +250,40 @@ def test_index_version_upserts_by_version_and_index():
     # Indexing again (a retry or a resume) changes nothing.
     snapshots.index_version(store, version, "https://example.com/a", chunks)
     assert len(store.docs) == count
+
+
+HTML_META = b"".join(
+    [
+        b'<html><head><meta property="og:site_name" content="Sina Finance">',
+        b'<meta property="article:published_time" ',
+        b'content="2025-05-19T08:00:00+08:00"></head><body><h1>T</h1>',
+        b"<p>Body text long enough to be a block here.</p></body></html>",
+    ]
+)
+
+
+def test_html_metadata_and_acquire_bytes_record_publisher_and_count(tmp_path):
+    publisher, published = snapshots.html_metadata(HTML_META)
+    assert publisher == "Sina Finance" and published.startswith("2025-05-19")
+    assert snapshots.html_metadata(
+        b"<html><body><time datetime='2024-01-02'>x</time></body></html>"
+    ) == (None, "2024-01-02")
+    session = FakeSession(
+        {
+            "https://example.com/m": FakeResponse(
+                200, {"content-type": "text/html"}, HTML_META
+            )
+        }
+    )
+    version, chunks = snapshots.acquire_bytes(
+        "https://example.com/m",
+        "S1",
+        str(tmp_path),
+        session,
+        resolver_for(PUBLIC),
+    )
+    assert version.chunk_count == len(chunks) == 1
+    assert snapshots.read_metadata(version) == (
+        "Sina Finance",
+        "2025-05-19T08:00:00+08:00",
+    )

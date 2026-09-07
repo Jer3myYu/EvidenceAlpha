@@ -83,6 +83,9 @@ class _Registry:
         self.relationships = dict(state.get("relationships", {}))
         self.industry_map = state.get("map", records.IndustryMap())
         self.log: list[str] = []
+        # Claims whose meaning changed in this merge; their dependants
+        # (findings, sections) are marked stale by merge_results.
+        self.changed: set[str] = set()
 
     def source_id(self, local: records.Source) -> str:
         """Find the canonical source for a local one, or register it."""
@@ -200,6 +203,7 @@ class _Registry:
                 "material": existing.material or claim.material,
             }
             meaning_changed = False
+            conflicts = []
             for field in (
                 "quantity",
                 "milestone",
@@ -208,16 +212,28 @@ class _Registry:
                 "period",
                 "dimension",
             ):
-                if getattr(existing, field) is None and (
-                    getattr(claim, field) is not None
-                ):
-                    update[field] = getattr(claim, field)
+                mine = getattr(existing, field)
+                theirs = getattr(claim, field)
+                if mine is None and theirs is not None:
+                    update[field] = theirs
                     meaning_changed = True
+                elif mine is not None and theirs is not None and mine != theirs:
+                    conflicts.append(field)
+            if conflicts:
+                update["limitations"] = existing.limitations + [
+                    f"conflicting_repeat:{field}" for field in conflicts
+                ]
+                names = ", ".join(conflicts)
+                self.log.append(
+                    f"claim {existing.id}: a repeat disagreed on {names}; "
+                    "existing values kept"
+                )
             if meaning_changed:
                 update["version"] = existing.version + 1
                 update["supersedes"] = f"{existing.id}@{existing.version}"
                 update["review"] = "unreviewed"
                 update["reviewed_topics"] = []
+                self.changed.add(existing.id)
                 self.log.append(
                     f"claim {existing.id} gained fields from a repeat; "
                     f"version {existing.version + 1}, review reset"
@@ -303,7 +319,13 @@ def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
             continue
         version_id = None
         if local.source_version_id:
-            version_id = version_map.get(local.source_version_id)
+            # A version the result carried, or one the registry already
+            # holds (a reference reused by a later task, or a passage
+            # retrieved from a chunk an earlier attempt indexed): version
+            # ids are content-derived, so they match across attempts.
+            version_id = version_map.get(
+                local.source_version_id, local.source_version_id
+            )
             version = registry.versions.get(version_id or "")
             if version is None or version.source_id != source_id:
                 registry.log.append(
@@ -612,7 +634,7 @@ def merge_results(
             )
         tasks[task.id] = task.model_copy(update={"status": status})
         merged.append(result.attempt_id)
-    return {
+    update: dict[str, Any] = {
         "tasks": tasks,
         "attempts": attempts,
         "merged": merged,
@@ -624,6 +646,19 @@ def merge_results(
         "map": registry.industry_map,
         "route_log": registry.log,
     }
+    if registry.changed:
+        update["findings"] = stale_findings(
+            state.get("findings", {}), registry.changed
+        )
+        update["sections"] = [
+            (
+                section.model_copy(update={"stale": True})
+                if set(section.claim_ids) & registry.changed
+                else section
+            )
+            for section in state.get("sections", [])
+        ]
+    return update
 
 
 def apply_review(
@@ -637,7 +672,20 @@ def apply_review(
     claims = dict(state.get("claims", {}))
     relationships = dict(state.get("relationships", {}))
     sources = dict(state.get("sources", {}))
+    evidence = state.get("evidence", {})
+    versions = state.get("source_versions", {})
     log: list[str] = []
+
+    def context_backed(evidence_ids: list[str]) -> bool:
+        for eid in evidence_ids:
+            item = evidence.get(eid)
+            if item is None or item.kind not in ("passage", "table"):
+                continue
+            version = versions.get(item.source_version_id or "")
+            if version is not None and version.source_id == item.source_id:
+                return True
+        return False
+
     for verdict in review.claims:
         claim = claims.get(verdict.claim_id)
         if claim is None:
@@ -659,8 +707,15 @@ def apply_review(
             )
             continue
         confirmed = (
-            verdict.supported and relation.relation != "generic_dependency"
+            verdict.supported
+            and relation.relation != "generic_dependency"
+            and context_backed(relation.evidence_ids)
         )
+        if verdict.supported and not confirmed:
+            log.append(
+                f"relationship {relation.id} judged supported but not "
+                "confirmed: no registry-backed passage or table behind it"
+            )
         relationships[relation.id] = relation.model_copy(
             update={
                 "confirmed": confirmed,

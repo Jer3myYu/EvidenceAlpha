@@ -106,7 +106,7 @@ def fake_query(messages, delay=0.0, raise_error=None):
 
 def runtime_with_admission(admit=True):
     runtime = budget.Runtime(records.Limits())
-    meter = runtime.new_meter("t", {"attempts": {}, "usage_events": []})
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
     if admit:
         meter.register("T2.1", 24)
     return runtime
@@ -297,3 +297,63 @@ def test_role_focus_and_language_in_prompts():
                 }
             )
         )
+
+
+def test_timeout_after_partial_output_is_unknown_usage():
+    assistant = claude_agent_sdk.AssistantMessage(
+        content=[claude_agent_sdk.TextBlock(text="partial")], model="m"
+    )
+    query, _ = fake_query([assistant, result_message()], delay=1.0)
+    work = work_input().model_copy(
+        update={
+            "allowance": records.Reservation(
+                turns=12, tool_calls=24, seconds=1.5
+            )
+        }
+    )
+    out = run(work, query, runtime_with_admission())
+    assert out.status == "failed" and out.error.startswith("timeout")
+    assert out.usage.unknown, "an assistant message is not authoritative usage"
+    charged = budget.attempt_charge(
+        work.attempt.model_copy(
+            update={"status": "failed", "observed": out.usage}
+        )
+    )
+    assert charged.turns == 12 and charged.unknown
+
+
+def test_reference_version_is_registered_in_the_collector():
+    version = records.SourceVersion(
+        id="v4",
+        source_id="S4",
+        content_hash="h",
+        blob_path="b",
+        meta_path="m",
+        final_url="u",
+        content_type="text/html",
+        size=1,
+        retrieved_at=NOW,
+        extraction_version="v2",
+    )
+    reference = records.Reference(
+        evidence=records.Evidence(
+            id="E9",
+            source_id="S4",
+            source_version_id="v4",
+            excerpt="Prior",
+            locator="p2",
+            kind="passage",
+            extraction="html_text",
+            task_id="T1",
+            retrieved_at=NOW,
+        ),
+        source_title="Earlier report",
+        source_url="https://earlier.example/report",
+        version=version,
+    )
+    query, _ = fake_query([result_message()])
+    out = run(
+        work_input(references=[reference]), query, runtime_with_admission()
+    )
+    assert out.source_versions[0].id == "v4"
+    assert out.source_versions[0].source_id == out.sources[0].id

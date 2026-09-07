@@ -230,12 +230,20 @@ def _atomic_write(path: pathlib.Path, data: bytes) -> None:
 
 
 def store_snapshot(
-    fetched: Fetched, source_id: str, root: str = SOURCES_DIR
+    fetched: Fetched,
+    source_id: str,
+    root: str = SOURCES_DIR,
+    chunk_count: int = 0,
+    publisher: str | None = None,
+    published: str | None = None,
 ) -> records.SourceVersion:
     """Save the bytes once and the fetch metadata once; return the version.
 
     The blob is content-addressed (identical bytes from two URLs share
-    it); the metadata is keyed by URL and hash and never rewritten.
+    it); the metadata is keyed by URL and hash and never rewritten. The
+    metadata holds only content facts (URL, hash, type, size, time,
+    extraction version, chunk count, publisher, published date); the
+    registry id of the source is attempt-local and stays out of it.
     """
     canonical = sources_module.canonical_url(fetched.url)
     digest = content_hash(fetched.content)
@@ -260,15 +268,60 @@ def store_snapshot(
         size=len(fetched.content),
         retrieved_at=fetched.retrieved_at,
         extraction_version=EXTRACTION_VERSION,
+        chunk_count=chunk_count,
     )
     if not meta.exists():
-        payload = version.model_dump()
+        payload = version.model_dump(exclude={"source_id"})
         payload["url"] = fetched.url
         payload["canonical_url"] = canonical
+        payload["publisher"] = publisher
+        payload["published"] = published
         _atomic_write(
             meta, json.dumps(payload, ensure_ascii=False, indent=1).encode()
         )
     return version
+
+
+def read_metadata(
+    version: records.SourceVersion,
+) -> tuple[str | None, str | None]:
+    """The publisher and published date recorded with a version, if any."""
+    path = pathlib.Path(version.meta_path)
+    if not path.exists():
+        return None, None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload.get("publisher"), payload.get("published")
+
+
+def html_metadata(content: bytes) -> tuple[str | None, str | None]:
+    """Publisher and published date from common HTML meta tags."""
+    soup = bs4.BeautifulSoup(content, "html.parser")
+
+    def meta(*names: str) -> str | None:
+        for name in names:
+            tag = soup.find("meta", attrs={"property": name}) or soup.find(
+                "meta", attrs={"name": name}
+            )
+            if tag and tag.get("content"):
+                return " ".join(str(tag["content"]).split())
+        return None
+
+    publisher = meta("og:site_name", "publisher", "author", "og:article:author")
+    published = meta(
+        "article:published_time",
+        "og:article:published_time",
+        "publishdate",
+        "pubdate",
+        "date",
+        "publication_date",
+    )
+    if published is None:
+        time_tag = soup.find("time")
+        if time_tag and (time_tag.get("datetime") or time_tag.get_text()):
+            published = str(
+                time_tag.get("datetime") or time_tag.get_text()
+            ).strip()
+    return publisher, published
 
 
 @dataclasses.dataclass(frozen=True)
@@ -547,6 +600,33 @@ def search(
     ]
 
 
+def acquire_bytes(
+    url: str,
+    source_id: str,
+    root: str = SOURCES_DIR,
+    session: Any = None,
+    resolver: Resolver = resolve,
+) -> tuple[records.SourceVersion, list[Chunk]]:
+    """Fetch, extract, chunk, then snapshot with the accurate chunk count.
+
+    Indexing is the caller's step (it needs the index lock).
+    """
+    fetched = fetch(url, session=session, resolver=resolver)
+    chunks = chunk_blocks(extract(fetched))
+    publisher = published = None
+    if not is_pdf(fetched.content_type, fetched.final_url, fetched.content):
+        publisher, published = html_metadata(fetched.content)
+    version = store_snapshot(
+        fetched,
+        source_id,
+        root,
+        chunk_count=len(chunks),
+        publisher=publisher,
+        published=published,
+    )
+    return version, chunks
+
+
 def acquire(
     url: str,
     source_id: str,
@@ -560,9 +640,7 @@ def acquire(
     Returns:
       The version (with ``chunk_count``) and the chunks it indexed.
     """
-    fetched = fetch(url, session=session, resolver=resolver)
-    version = store_snapshot(fetched, source_id, root)
-    chunks = chunk_blocks(extract(fetched))
+    version, chunks = acquire_bytes(url, source_id, root, session, resolver)
     canonical = sources_module.canonical_url(url)
-    count = index_version(store, version, canonical, chunks)
-    return version.model_copy(update={"chunk_count": count}), chunks
+    index_version(store, version, canonical, chunks)
+    return version, chunks
