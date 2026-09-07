@@ -137,18 +137,6 @@ def reservation_for(limits: records.Limits) -> records.Reservation:
     )
 
 
-def expected_task_s(
-    state: state_module.IndustryState, limits: records.Limits
-) -> float:
-    """The longest observed attempt, or the configured expectation."""
-    durations = [
-        attempt.duration_s
-        for attempt in state.get("attempts", {}).values()
-        if attempt.duration_s is not None
-    ]
-    return max(durations) if durations else limits.expected_task_s
-
-
 def dispatchable(
     state: state_module.IndustryState,
     limits: records.Limits,
@@ -163,20 +151,19 @@ def dispatchable(
         for the verifier's acquisition (until the review has run once).
 
     Returns:
-      The number of attempts whose reservations fit: task executions
-      (minus the kept slot), turns after the model-call reserve, tool
-      calls, and wall clock after the time reserve, where a wave of
-      ``n`` attempts at the configured concurrency is expected to take
-      ``ceil(n / concurrency) * expected_task_s``.
+      The number of attempts whose full reservations fit: task
+      executions (minus the kept slot), turns after the model-call
+      reserve, tool calls, and wall clock after the time reserve, each
+      attempt reserving ``task_timeout_s`` seconds. The same
+      reservations are what the ledger charges, so the ledger can never
+      exceed a limit.
     """
     left = remaining(state, limits)
     executions = left.task_executions - (1 if keep_acquisition_slot else 0)
     turns = (left.turns - limits.model_call_reserve) // limits.attempt_turns()
     tools = left.tool_calls // limits.tools_per_attempt
     seconds = left.seconds - limits.time_reserve_s
-    expected = expected_task_s(state, limits)
-    waves = math.floor(seconds / expected) if expected > 0 else 0
-    by_time = waves * limits.concurrency
+    by_time = math.floor(seconds / limits.task_timeout_s)
     return max(0, min(executions, turns, tools, by_time))
 
 
@@ -185,23 +172,25 @@ def admit_single_call(
 ) -> int:
     """Return the ``num_turns`` a single-call node may reserve now, or 0.
 
-    Intermediate nodes need a full call's worst case left after the
-    model-call reserve and some wall clock left after the time reserve;
-    the reserved nodes (``write``, ``final_review``) may spend the
-    reserve itself. A result of 0 means the node is skipped. The
-    session's ``max_turns`` is derived from the reservation by
-    ``max_turns_for``.
+    Every call reserves a full call's worst case (``num_turns`` and
+    ``single_call_timeout_s`` seconds) or is skipped: intermediate
+    nodes must fit after the reserves, the reserved nodes (``write``,
+    ``final_review``) may spend the reserves, which hold exactly two
+    such calls. A result of 0 means the node is skipped. The session's
+    ``max_turns`` is derived from the reservation by ``max_turns_for``.
     """
     left = remaining(state, limits)
     full = limits.single_call_reserved()
     if node in state_module.RESERVED_NODES:
-        if left.seconds <= 0:
-            return 0
-        return min(full, left.turns)
-    if left.seconds - limits.time_reserve_s <= 0:
-        return 0
-    allowed = min(full, left.turns - limits.model_call_reserve)
-    return allowed if allowed >= full else 0
+        fits = (
+            left.seconds >= limits.single_call_timeout_s and left.turns >= full
+        )
+    else:
+        fits = (
+            left.seconds - limits.time_reserve_s >= limits.single_call_timeout_s
+            and left.turns - limits.model_call_reserve >= full
+        )
+    return full if fits else 0
 
 
 def max_turns_for(reserved_turns: int, limits: records.Limits) -> int:

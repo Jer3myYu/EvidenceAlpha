@@ -25,6 +25,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
 
 from industry import records as industry_records
+from industry import state as state_module
 
 # The legacy (Phase 6-9) state classes; they stay importable so the
 # recorded threads can be read after the old graph is gone.
@@ -145,8 +146,15 @@ def validate_records(values: dict[str, Any]) -> list[str]:
     dictionaries; a loaded thread must not proceed on such records.
     """
     problems: list[str] = []
+    expected = state_module.record_types()
 
-    def check(label: str, item: Any) -> None:
+    def check(label: str, item: Any, model: type | None) -> None:
+        if model is not None and not isinstance(item, model):
+            problems.append(
+                f"{label}: {type(item).__name__} where {model.__name__} "
+                "is required"
+            )
+            return
         if not hasattr(item, "model_dump"):
             return
         try:
@@ -155,14 +163,21 @@ def validate_records(values: dict[str, Any]) -> list[str]:
             problems.append(f"{label}: {str(error)[:120]}")
 
     for key, value in values.items():
-        if isinstance(value, dict):
+        container, model = expected.get(key, (None, None))
+        if value is None and container == "optional":
+            continue
+        if container == "dict" and not isinstance(value, dict):
+            problems.append(f"{key}: not a registry")
+        elif container == "list" and not isinstance(value, list):
+            problems.append(f"{key}: not a list")
+        elif isinstance(value, dict) and container != "model":
             for item_id, item in value.items():
-                check(f"{key}[{item_id}]", item)
+                check(f"{key}[{item_id}]", item, model)
         elif isinstance(value, list):
             for index, item in enumerate(value):
-                check(f"{key}[{index}]", item)
+                check(f"{key}[{index}]", item, model)
         else:
-            check(key, value)
+            check(key, value, model)
     return problems
 
 

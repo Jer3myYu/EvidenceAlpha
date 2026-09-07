@@ -158,16 +158,26 @@ class FixtureBackend:
                 canonical = sources_module.canonical_url(record["url"])
                 content = (self.directory / record["blob"]).read_bytes()
                 digest = hashlib.sha256(content).hexdigest()
-                recorded = record.get("sha256")
-                if recorded and recorded != digest:
-                    blob = record["blob"]
+                blob = record["blob"]
+                if record.get("sha256") != digest:
                     raise ValueError(
-                        f"fixture blob {blob} does not match its recorded "
-                        "sha256"
+                        f"fixture blob {blob} is missing its sha256 or does "
+                        "not match it"
                     )
-                digests.append(f"{canonical} {digest}")
+                digests.append(
+                    " ".join(
+                        [
+                            canonical,
+                            digest,
+                            str(record.get("content_type", "")).lower(),
+                            str(record.get("final_url", record["url"])),
+                            str(record.get("retrieved_at", "")),
+                        ]
+                    )
+                )
                 self.pages[canonical] = record
-        # The fixture's identity: every served page and its bytes.
+        # The fixture's identity: every served page, its bytes, and the
+        # metadata that shapes extraction and provenance.
         self.digest = hashlib.sha256(
             "\n".join(sorted(digests)).encode("utf-8")
         ).hexdigest()

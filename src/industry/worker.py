@@ -3,7 +3,8 @@
 The worker reads nothing but its ``WorkerInput``. It refuses to run
 when the attempt was not admitted by this invocation's meter (a
 replayed ``Send``), so a resumed run never spends an old reservation
-twice. One session per attempt, ``max_turns`` from the reservation, a
+twice. One session per attempt, ``max_turns`` the session cap
+(``WorkerInput.max_turns``, never the ledger's reservation), a
 deadline from the reservation's seconds, and no in-attempt retry: a
 transport failure ends the attempt with unknown usage and the full
 reservation stays charged; a schema failure ends it with the usage the

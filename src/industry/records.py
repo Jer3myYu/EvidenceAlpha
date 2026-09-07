@@ -18,7 +18,7 @@ Two families of records exist side by side:
 """
 
 import datetime
-from typing import Literal
+from typing import Any, Literal
 
 import pydantic
 
@@ -716,10 +716,12 @@ class Limits(Record):
     """
 
     wall_clock_s: float = 5400.0
-    time_reserve_s: float = 900.0
+    # The reserves hold two complete single calls (write, final_review):
+    # 2 * single_call_timeout_s and 2 * single_call_reserved().
+    time_reserve_s: float = 960.0
     task_executions: int = 12
     model_calls: int = 200
-    model_call_reserve: int = 12
+    model_call_reserve: int = 20
     tool_calls: int = 150
     remediation_cycles: int = 3
     issue_follow_ups: int = 2
@@ -730,15 +732,43 @@ class Limits(Record):
     task_timeout_s: float = 1200.0
     single_call_timeout_s: float = 480.0
     single_call_turns: int = 5
-    expected_task_s: float = 600.0
     task_attempts: int = 2
     turns_per_exchange: int = 2
     structured_output_attempts: int = 5
-    # Claim production is bounded so review, which is budget-bounded,
-    # can reach every central question: material findings accepted per
-    # attempt (the rest are kept as non-material) and map participants.
-    material_per_attempt: int = 15
+    # Claim production is bounded by review capacity: at most
+    # ``material_claims`` material claims in a run, of which each central
+    # question may hold ``material_per_question`` (the map counts as
+    # question 1-3's share through ``map_segments``, ``map_links`` and
+    # ``map_participants``); a material finding beyond its quota is kept
+    # non-material. 80 claims are 8 review batches of 10.
+    material_claims: int = 80
+    material_per_question: int = 12
+    map_segments: int = 12
+    map_links: int = 16
     map_participants: int = 24
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_keys(cls, data: Any) -> Any:
+        # ``expected_task_s`` (schema 2) no longer exists: dispatch
+        # reserves ``task_timeout_s`` per attempt instead of expecting.
+        if isinstance(data, dict) and "expected_task_s" in data:
+            data = {k: v for k, v in data.items() if k != "expected_task_s"}
+        return data
+
+    @pydantic.model_validator(mode="after")
+    def _reserves_hold_two_final_calls(self) -> "Limits":
+        if self.time_reserve_s < 2 * self.single_call_timeout_s:
+            raise ValueError(
+                "time_reserve_s must hold two single calls "
+                f"(2 * {self.single_call_timeout_s})"
+            )
+        if self.model_call_reserve < 2 * self.single_call_reserved():
+            raise ValueError(
+                "model_call_reserve must hold two single calls "
+                f"(2 * {self.single_call_reserved()})"
+            )
+        return self
 
     def attempt_turns(self) -> int:
         """The most ``num_turns`` a tool session can report."""

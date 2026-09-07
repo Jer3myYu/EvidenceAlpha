@@ -10,7 +10,9 @@ lives in ``attempts`` and ``single_calls`` only.
 
 import hashlib
 import operator
-from typing import Annotated, TypedDict
+import types
+import typing
+from typing import Annotated, Any, TypedDict
 
 from industry import records
 
@@ -67,6 +69,45 @@ class IndustryState(TypedDict, total=False):
     return_to: str
     last_signature: str
     route_log: Annotated[list[str], operator.add]
+
+
+def record_types() -> dict[str, tuple[str, type | None]]:
+    """The container kind and record class of every state key.
+
+    ``("model", cls)`` for a single record, ``("optional", cls)`` when
+    it may be ``None``, ``("dict", cls)`` for a registry, ``("list",
+    cls)`` for a list of records, and ``(kind, None)`` for plain values.
+    ``persist.validate_records`` uses it to reject a persisted field
+    whose records came back as plain dictionaries.
+    """
+    out: dict[str, tuple[str, type | None]] = {}
+    for key, hint in typing.get_type_hints(
+        IndustryState, include_extras=True
+    ).items():
+        if typing.get_origin(hint) is Annotated:
+            hint = typing.get_args(hint)[0]
+        origin = typing.get_origin(hint)
+        args = typing.get_args(hint)
+        if origin is types.UnionType or origin is typing.Union:
+            inner = [a for a in args if a is not NoneType]
+            model = inner[0] if inner and _is_record(inner[0]) else None
+            out[key] = ("optional", model)
+        elif origin is dict:
+            out[key] = ("dict", args[1] if _is_record(args[1]) else None)
+        elif origin is list:
+            out[key] = ("list", args[0] if _is_record(args[0]) else None)
+        elif _is_record(hint):
+            out[key] = ("model", hint)
+        else:
+            out[key] = ("plain", None)
+    return out
+
+
+NoneType = type(None)
+
+
+def _is_record(hint: Any) -> bool:
+    return isinstance(hint, type) and issubclass(hint, records.Record)
 
 
 def registry_signature(state: IndustryState) -> str:

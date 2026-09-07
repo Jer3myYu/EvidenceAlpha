@@ -700,14 +700,17 @@ def test_meaning_change_stales_dependants_and_conflicts_are_kept():
     assert "conflicting_repeat:period" in update["claims"]["C1"].limitations
 
 
-def test_material_findings_beyond_the_attempt_cap_stay_non_material():
+def test_material_findings_beyond_the_question_quota_stay_non_material():
     state = base_state()
     limits = records.Limits(
-        **{**LIMITS.model_dump(), "material_per_attempt": 2}
+        **{**LIMITS.model_dump(), "material_per_question": 2}
     )
     drafts = [
         records.FindingDraft(
-            statement=f"fact {n}", material=True, evidence_refs=["E1"]
+            statement=f"fact {n}",
+            material=True,
+            evidence_refs=["E1"],
+            questions=[4],
         )
         for n in range(4)
     ]
@@ -726,4 +729,82 @@ def test_material_findings_beyond_the_attempt_cap_stay_non_material():
         c for c in update["claims"].values() if c.statement.startswith("fact ")
     ]
     assert sum(c.material for c in added) == 2 and len(added) == 4
-    assert any("material cap reached" in line for line in update["route_log"])
+    assert any("material quota reached" in line for line in update["route_log"])
+
+
+def test_map_segments_links_and_participants_are_capped():
+    state = base_state()
+    limits = records.Limits(
+        **{
+            **LIMITS.model_dump(),
+            "map_segments": 2,
+            "map_links": 1,
+            "map_participants": 1,
+        }
+    )
+    draft = records.MapDraft(
+        segments=[
+            records.SegmentDraft(
+                key=f"s{n}",
+                name=f"segment {n}",
+                stage="upstream",
+                description="d",
+                evidence_refs=["E1"],
+            )
+            for n in range(4)
+        ],
+        links=[
+            records.LinkDraft(
+                from_key="s0", to_key="s1", what_flows="x", evidence_refs=["E1"]
+            ),
+            records.LinkDraft(
+                from_key="s1", to_key="s0", what_flows="y", evidence_refs=["E1"]
+            ),
+        ],
+        participants=[
+            records.ParticipantDraft(
+                name=f"company {n}",
+                segment_key="s0",
+                role="supplier",
+                evidence_refs=["E1"],
+            )
+            for n in range(3)
+        ],
+    )
+    result = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "map text", "va")],
+        map=draft,
+    )
+    update = merge.merge_results(state, [result], limits)
+    industry_map = update["map"]
+    assert len(industry_map.segments) == 2
+    assert len(industry_map.links) == 1
+    assert len(industry_map.participants) == 1
+    assert sum(1 for c in update["claims"].values() if c.map_ref) == 4
+
+
+def test_relationship_needs_a_supported_parent_to_confirm():
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    review = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1", verdict="unsupported", reason="r"
+            )
+        ],
+        relationships=[
+            records.RelationshipVerdict(
+                relationship_id="R1", supported=True, reason="r"
+            )
+        ],
+    )
+    applied = merge.apply_review(state, review)
+    assert applied["claims"]["C1"].review == "unsupported"
+    assert not applied["relationships"]["R1"].confirmed
+    assert any("parent claim" in line for line in applied["route_log"])

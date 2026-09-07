@@ -266,12 +266,14 @@ def test_fixture_backend_serves_only_the_recorded_pages(tmp_path):
                     "blob": "a.html",
                     "content_type": "text/html",
                     "status": 200,
+                    "sha256": hashlib.sha256(page).hexdigest(),
                 },
                 {
                     "url": "https://b.example/y",
                     "blob": "b.html",
                     "content_type": "text/html",
                     "status": 200,
+                    "sha256": hashlib.sha256(other).hexdigest(),
                 },
                 {
                     "url": "https://c.example/z",
@@ -335,3 +337,41 @@ def test_fixture_backend_has_a_digest_and_refuses_changed_blobs(tmp_path):
             snapshots.vector_store(str(tmp_path / "chroma3")),
             str(tmp_path / "src3"),
         )
+
+
+def test_fixture_digest_covers_metadata_and_requires_hashes(tmp_path):
+    fixture = tmp_path / "fx"
+    fixture.mkdir()
+    blob = b"<html><body><p>photomask upstream quartz</p></body></html>"
+    digest = hashlib.sha256(blob).hexdigest()
+    (fixture / "a.html").write_bytes(blob)
+    record = {
+        "url": "https://x.example/a",
+        "blob": "a.html",
+        "status": 200,
+        "content_type": "text/html",
+        "sha256": digest,
+    }
+    (fixture / "sources.json").write_text(json.dumps([record]))
+
+    def build(tag):
+        return tools.FixtureBackend(
+            str(fixture),
+            snapshots.vector_store(str(tmp_path / f"chroma-{tag}")),
+            str(tmp_path / f"src-{tag}"),
+        )
+
+    before = build("a").digest
+    (fixture / "sources.json").write_text(
+        json.dumps([{**record, "final_url": "https://x.example/moved"}])
+    )
+    assert build("b").digest != before
+    (fixture / "sources.json").write_text(
+        json.dumps([{**record, "retrieved_at": "2026-01-01T00:00:00Z"}])
+    )
+    assert build("c").digest != before
+    (fixture / "sources.json").write_text(
+        json.dumps([{k: v for k, v in record.items() if k != "sha256"}])
+    )
+    with pytest.raises(ValueError):
+        build("d")

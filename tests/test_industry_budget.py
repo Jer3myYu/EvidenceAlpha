@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from industry import budget
 from industry import records
 
@@ -70,24 +72,84 @@ def test_dispatchable_respects_every_limit_and_reserve():
     limits = records.Limits(
         task_executions=12,
         model_calls=200,
-        model_call_reserve=12,
+        model_call_reserve=20,
         tool_calls=150,
         wall_clock_s=5400,
-        time_reserve_s=900,
-        expected_task_s=600,
+        time_reserve_s=960,
+        task_timeout_s=1200,
         concurrency=2,
     )
     empty = {"attempts": {}, "single_calls": {}}
-    # executions 12; turns (200-12)//34 = 5 (an attempt reserves the
+    # executions 12; turns (200-20)//34 = 5 (an attempt reserves the
     # SDK's worst case: 2*12 + 2*5 num_turns); tools 150//24 = 6;
-    # time (5400-900)/600 = 7 waves * 2 = 14. Turns bind.
+    # time (5400-960)//1200 = 3 full reservations. Time binds.
     assert limits.attempt_turns() == 34
-    assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 5
-    assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 5
+    assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 3
+    assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 3
     tight = records.Limits(
-        **{**limits.model_dump(), "tool_calls": 1000, "model_calls": 1000}
+        **{
+            **limits.model_dump(),
+            "tool_calls": 1000,
+            "model_calls": 1000,
+            "wall_clock_s": 100000,
+        }
     )
     assert budget.dispatchable(empty, tight, keep_acquisition_slot=True) == 11
+
+
+def test_reservations_never_exceed_the_limits_at_the_boundary():
+    """The ledger's reservations and the limits share one contract."""
+    limits = records.Limits(wall_clock_s=5400, time_reserve_s=960)
+    n = budget.dispatchable({"attempts": {}}, limits, False)
+    reserved = n * limits.task_timeout_s
+    assert reserved + limits.time_reserve_s <= limits.wall_clock_s
+    assert (n + 1) * limits.task_timeout_s + limits.time_reserve_s > (
+        limits.wall_clock_s
+    )
+    # A single call at the wall-clock boundary: with the reserve spent
+    # to the second, an intermediate call is refused and a reserved
+    # node gets a full call while two still fit.
+    spent = records.Attempt(
+        id="T1.1",
+        task_id="T1",
+        status="done",
+        reserved=records.Reservation(turns=34, tool_calls=24, seconds=1200),
+        observed=records.Usage(turns=10, duration_s=5400 - 960),
+        started_at="2026-09-07T00:00:00+00:00",
+    )
+    state = {"attempts": {"T1.1": spent}, "single_calls": {}}
+    assert budget.admit_single_call(state, limits, "analyze") == 0
+    assert budget.admit_single_call(state, limits, "write") == 10
+    almost = spent.model_copy(
+        update={"observed": records.Usage(turns=10, duration_s=5400 - 479)}
+    )
+    state = {"attempts": {"T1.1": almost}, "single_calls": {}}
+    assert budget.admit_single_call(state, limits, "write") == 0
+    # Turns: the reserve holds exactly two full calls.
+    turns = spent.model_copy(
+        update={"observed": records.Usage(turns=200 - 20, duration_s=1.0)}
+    )
+    state = {"attempts": {"T1.1": turns}, "single_calls": {}}
+    assert budget.admit_single_call(state, limits, "analyze") == 0
+    assert budget.admit_single_call(state, limits, "write") == 10
+    nearly = spent.model_copy(
+        update={"observed": records.Usage(turns=200 - 9, duration_s=1.0)}
+    )
+    state = {"attempts": {"T1.1": nearly}, "single_calls": {}}
+    assert budget.admit_single_call(state, limits, "write") == 0
+
+
+def test_limits_reserves_must_hold_two_final_calls():
+    with pytest.raises(ValueError):
+        records.Limits(time_reserve_s=900)
+    with pytest.raises(ValueError):
+        records.Limits(model_call_reserve=12)
+    legacy = records.Limits.model_validate({"expected_task_s": 600})
+    assert not hasattr(legacy, "expected_task_s")
+
+
+def test_no_attempt_starts_without_a_full_time_reservation():
+    limits = records.Limits(wall_clock_s=5400, time_reserve_s=960)
     spent = {
         "attempts": {},
         "single_calls": {
@@ -103,8 +165,8 @@ def test_dispatchable_respects_every_limit_and_reserve():
             )
         },
     }
-    # 1400 s left, 500 after reserve: no full wave fits.
-    assert budget.dispatchable(spent, tight, keep_acquisition_slot=False) == 0
+    # 1400 s left, 440 after the reserve: no 1200 s reservation fits.
+    assert budget.dispatchable(spent, limits, keep_acquisition_slot=False) == 0
 
 
 def test_admit_single_call_intermediate_versus_reserved():
@@ -144,7 +206,7 @@ def test_admit_single_call_intermediate_versus_reserved():
             )
         },
     }
-    assert budget.admit_single_call(almost, limits, "final_review") == 2
+    assert budget.admit_single_call(almost, limits, "final_review") == 0
     out_of_time = {
         "attempts": {},
         "single_calls": {

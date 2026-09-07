@@ -431,9 +431,11 @@ def scope_review(
     """Keep only the verdicts about what the verifier was handed.
 
     Claim verdicts outside the batch, relationship verdicts whose
-    parent claim is not in the batch, and source judgements about
-    sources none of the batch's evidence comes from are dropped, so
-    verifier output can never alter what it did not see.
+    parent claim is not in the batch, source judgements about sources
+    none of the batch's evidence comes from, contradictions that name
+    no batch claim, and acquisition requests for claims outside the
+    batch are dropped, so verifier output can never alter, or spend
+    budget on, what it did not see.
     """
     batch = set(pending)
     relationships = state.get("relationships", {})
@@ -463,6 +465,14 @@ def scope_review(
                 and relationships[v.relationship_id].claim_id in batch
             ],
             "sources": [v for v in outcome.sources if v.source_id in sources],
+            "contradictions": [
+                text
+                for text in outcome.contradictions
+                if set(report.cited_ids(text)) & batch
+            ],
+            "acquisitions": [
+                r for r in outcome.acquisitions if r.claim_id in batch
+            ],
         }
     )
 

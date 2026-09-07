@@ -546,12 +546,12 @@ def test_two_consecutive_scope_interruptions_each_charge_a_reservation(
 
 
 def test_exhausted_budget_skips_calls_and_delivers_incomplete(tmp_path):
-    limits = records.Limits(model_calls=14, model_call_reserve=12)
+    limits = records.Limits(model_calls=22, model_call_reserve=20)
     runtime, api, _, compiled = make(tmp_path, limits)
     config = persist.thread_config("t5")
     runtime.begin("t5")
     state = run(compiled.ainvoke({"question": "q"}, config))
-    assert "scope" not in api.calls  # 14 - 12 reserve < 5: refused
+    assert "scope" not in api.calls  # 22 - 20 reserve < 10: refused
     assert any("reserve_scope: refused" in line for line in state["route_log"])
     assert state["brief"].industry == "q"  # deterministic defaults
     assert state["meta"].report_status == "incomplete"
@@ -614,7 +614,7 @@ def test_initial_state_carries_meta_so_an_early_interruption_resumes(tmp_path):
 
 def test_resume_updates_apply_admission_and_reserve_only_what_fits():
     limits = records.Limits(
-        model_calls=8, model_call_reserve=0, turns_per_exchange=1
+        model_calls=18, model_call_reserve=10, turns_per_exchange=1
     )
     state = {
         "attempts": {},
@@ -632,7 +632,8 @@ def test_resume_updates_apply_admission_and_reserve_only_what_fits():
     updates = graph_module.resume_updates(state, "scope", limits)
     calls = updates["single_calls"]
     assert calls["scope.1"].status == "unknown"
-    # 8 - 5 charged = 3 left: an intermediate call needs 5, so no reservation.
+    # 18 - 5 charged = 13 left, 3 after the reserve: an intermediate
+    # call needs 5, so no reservation.
     assert "scope.2" not in calls
     assert any("budget exhausted" in line for line in updates["route_log"])
     # A reserved node may take the remainder.
@@ -644,9 +645,9 @@ def test_resume_updates_apply_admission_and_reserve_only_what_fits():
         started_at=NOW,
     )
     updates = graph_module.resume_updates(writing, "write", limits)
-    assert updates["single_calls"]["write.2"].reserved.turns == 3
-    assert budget.ledger({"attempts": {}, **updates}).turns == 8
-    assert budget.max_turns_for(3, limits) == 3
+    assert updates["single_calls"]["write.2"].reserved.turns == 5
+    assert budget.ledger({"attempts": {}, **updates}).turns == 10
+    assert budget.max_turns_for(5, limits) == 5
 
 
 def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
@@ -1044,3 +1045,57 @@ def test_check_citations_covers_table_rows_and_list_items():
     assert not any(
         "DNP" in t or "路维光电" in t or "2025收入" in t for t in texts
     )
+
+
+def test_scope_review_drops_contradictions_and_acquisitions_outside_batch():
+    state = {
+        "claims": {
+            "C1": records.Claim(
+                id="C1", statement="a", kind="fact", material=True
+            ),
+            "C2": records.Claim(
+                id="C2", statement="b", kind="fact", material=True
+            ),
+        },
+        "evidence": {},
+        "relationships": {},
+    }
+    hostile = records.ClaimReview(
+        contradictions=["C1 and C7 disagree on size", "C2 contradicts C9"],
+        acquisitions=[
+            records.AcquisitionRequest(
+                objective="get C1 original", claim_id="C1"
+            ),
+            records.AcquisitionRequest(
+                objective="get C2 original", claim_id="C2"
+            ),
+            records.AcquisitionRequest(objective="anything", claim_id=None),
+        ],
+    )
+    scoped = graph_module.scope_review(state, hostile, ["C1"])
+    assert scoped.contradictions == ["C1 and C7 disagree on size"]
+    assert [r.claim_id for r in scoped.acquisitions] == ["C1"]
+
+
+def test_reviewed_map_rendering_omits_boundary_note_and_gaps():
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="上游",
+                stage="upstream",
+                description="d",
+                claim_id="C1",
+            )
+        ],
+        boundary_note="Unverified: 石英玻璃 belongs to this industry",
+        gaps=["Unverified: no Chinese supplier exists"],
+    )
+    claims = {
+        "C1": records.Claim(
+            id="C1", statement="s", kind="map", review="supported", map_ref="G1"
+        )
+    }
+    reviewed = roles.render_map(industry_map, claims)
+    assert "Unverified" not in reviewed and "G1" in reviewed
+    assert "Unverified" in roles.render_map(industry_map)

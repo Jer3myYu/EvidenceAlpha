@@ -23,6 +23,7 @@ _CITATION = re.compile(r"\[(C\d+)(?:\s*,\s*(C\d+))*\]")
 _CITATION_IDS = re.compile(r"C\d+")
 _SENTENCE = re.compile(r"[^。！？.!?\n]+[。！？.!?]?")
 _DIGITS = re.compile(r"\d")
+_CLAIM_ID = re.compile(r"\bC\d+\b")
 _STATUS_TEXT = {
     "complete": "complete",
     "complete_with_limitations": "complete with limitations",
@@ -46,6 +47,11 @@ class CitationProblem:
 
     section_id: str
     description: str
+
+
+def cited_ids(text: str) -> list[str]:
+    """Every claim id mentioned in free text (``C12``, ``[C12]``)."""
+    return sorted(set(_CLAIM_ID.findall(text)))
 
 
 def check_citations(

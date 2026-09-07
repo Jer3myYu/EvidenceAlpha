@@ -81,8 +81,6 @@ class _Registry:
         limits: records.Limits | None = None,
     ) -> None:
         self.limits = limits or records.Limits()
-        # Material findings the current attempt may still add.
-        self.material_left = self.limits.material_per_attempt
         self.sources = dict(state.get("sources", {}))
         self.versions = dict(state.get("source_versions", {}))
         self.evidence = dict(state.get("evidence", {}))
@@ -93,6 +91,44 @@ class _Registry:
         # Claims whose meaning changed in this merge; their dependants
         # (findings, sections) are marked stale by merge_results.
         self.changed: set[str] = set()
+
+    def material_quota(self, questions: list[int]) -> bool:
+        """Whether one more material claim fits its question's quota.
+
+        The run holds at most ``material_claims`` material claims (map
+        claims included); a claim counts against the lowest central
+        question it serves, each holding ``material_per_question``; a
+        claim serving no central question counts against the remainder.
+        """
+        limits = self.limits
+        material = [c for c in self.claims.values() if c.material]
+        if len(material) >= limits.material_claims:
+            return False
+        central = [q for q in questions if q in records.CENTRAL_QUESTIONS]
+        if central:
+            question = min(central)
+            used = sum(
+                1
+                for c in material
+                if c.map_ref is None
+                and min(
+                    [q for q in c.questions if q in records.CENTRAL_QUESTIONS]
+                    or [0]
+                )
+                == question
+            )
+            return used < limits.material_per_question
+        pooled = (
+            limits.material_claims
+            - len(records.CENTRAL_QUESTIONS) * limits.material_per_question
+        )
+        used = sum(
+            1
+            for c in material
+            if c.map_ref is None
+            and not any(q in records.CENTRAL_QUESTIONS for q in c.questions)
+        )
+        return used < pooled
 
     def source_id(self, local: records.Source) -> str:
         """Find the canonical source for a local one, or register it."""
@@ -350,7 +386,6 @@ def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
         evidence_map[local.id] = registry.evidence_id(
             local, source_id, version_id
         )
-    registry.material_left = registry.limits.material_per_attempt
     for draft in result.findings:
         _fold_finding(registry, result.attempt_id, draft, evidence_map)
     if result.map is not None:
@@ -381,16 +416,14 @@ def _fold_finding(
     if draft.milestone and not draft.milestone_date:
         limitations.append("undated_milestone")
     material = draft.material
-    if material and registry.material_left <= 0:
-        # Beyond the per-attempt cap a finding is kept as non-material:
-        # it stays in the registry but does not enter the bounded review.
+    if material and not registry.material_quota(draft.questions):
+        # Beyond its quota a finding is kept as non-material: it stays
+        # in the registry but does not enter the bounded review.
         material = False
         registry.log.append(
-            f"{attempt_id}: material cap reached; kept non-material: "
-            f"{draft.statement[:60]}"
+            f"{attempt_id}: material quota reached for questions "
+            f"{draft.questions}; kept non-material: {draft.statement[:60]}"
         )
-    elif material:
-        registry.material_left -= 1
     claim_id = registry.add_claim(
         records.Claim(
             id="C0",
@@ -438,6 +471,14 @@ def _fold_map(
     by_name = {normalize_text(s.name): s.id for s in segments}
     key_to_id: dict[str, str] = {}
     for item in draft.segments:
+        if len(segments) >= registry.limits.map_segments and (
+            normalize_text(item.name) not in by_name
+        ):
+            registry.log.append(
+                f"{attempt_id}: map segment {item.name} not added: "
+                f"{registry.limits.map_segments} segments is the cap"
+            )
+            continue
         evidence_ids, unknown = _map_refs(item.evidence_refs, evidence_map)
         if unknown or not evidence_ids:
             registry.log.append(
@@ -479,6 +520,12 @@ def _fold_map(
     seg_name = {s.id: s.name for s in segments}
     existing_links = {(l.from_segment, l.to_segment) for l in links}
     for item in draft.links:
+        if len(links) >= registry.limits.map_links:
+            registry.log.append(
+                f"{attempt_id}: map link {item.from_key}->{item.to_key} not "
+                f"added: {registry.limits.map_links} links is the cap"
+            )
+            continue
         evidence_ids, unknown = _map_refs(item.evidence_refs, evidence_map)
         from_id = key_to_id.get(item.from_key)
         to_id = key_to_id.get(item.to_key)
@@ -735,15 +782,26 @@ def apply_review(
                 f"review names unknown relationship {verdict.relationship_id}"
             )
             continue
+        parent = claims.get(relation.claim_id)
+        parent_ok = parent is not None and parent.review in (
+            "supported",
+            "qualified",
+        )
         confirmed = (
             verdict.supported
             and relation.relation != "generic_dependency"
             and context_backed(relation.evidence_ids)
+            and parent_ok
         )
         if verdict.supported and not confirmed:
+            reason = (
+                "its parent claim is not reviewed supported/qualified"
+                if not parent_ok
+                else "no registry-backed passage or table behind it"
+            )
             log.append(
                 f"relationship {relation.id} judged supported but not "
-                "confirmed: no registry-backed passage or table behind it"
+                f"confirmed: {reason}"
             )
         relationships[relation.id] = relation.model_copy(
             update={

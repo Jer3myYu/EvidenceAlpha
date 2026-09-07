@@ -380,9 +380,11 @@ def render_map(
             f"({part.role}{region}): {flow_text} "
             f"(claim {part.claim_id})"
         )
-    if industry_map.boundary_note:
+    # The boundary note and gaps are the researcher's prose, not claims:
+    # only the verifier's view (no claim filter) renders them.
+    if claims is None and industry_map.boundary_note:
         lines.append(f"  boundary: {industry_map.boundary_note}")
-    if industry_map.gaps:
+    if claims is None and industry_map.gaps:
         lines.append("  gaps: " + "; ".join(industry_map.gaps))
     if omitted:
         lines.append(

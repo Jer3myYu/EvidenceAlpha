@@ -438,3 +438,12 @@ def test_validate_records_covers_every_persisted_field():
         ]
     }
     assert persist.validate_records(bad_list)
+
+
+def test_validate_records_rejects_a_field_degraded_to_a_dictionary():
+    raw = {"segments": [{"id": "G1"}], "links": [], "participants": []}
+    problems = persist.validate_records({"map": raw})
+    assert problems and "IndustryMap" in problems[0]
+    registry = {"C1": {"id": "C1", "statement": "x"}}
+    assert persist.validate_records({"claims": registry})
+    assert not persist.validate_records({"review": None, "cycle": 2})
