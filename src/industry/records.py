@@ -733,7 +733,9 @@ class Limits(Record):
     max_turns: int = pydantic.Field(default=12, gt=0)
     tools_per_attempt: int = pydantic.Field(default=24, gt=0)
     concurrency: int = pydantic.Field(default=2, gt=0)
-    task_timeout_s: float = pydantic.Field(default=1200.0, gt=0)
+    # The reservation of one attempt. Headline runs 1 and 3 observed
+    # 31-670 s per attempt (map attempts 484-550 s), so 900 s bounds them.
+    task_timeout_s: float = pydantic.Field(default=900.0, gt=0)
     single_call_timeout_s: float = pydantic.Field(default=480.0, gt=0)
     single_call_turns: int = pydantic.Field(default=5, gt=0)
     task_attempts: int = pydantic.Field(default=2, gt=0)
@@ -745,17 +747,30 @@ class Limits(Record):
     # (segments, links, participants, each also capped), each central
     # question, and the rest. No partition can consume another's
     # capacity, so the economics questions keep their share however
-    # large the map grows. 30 + 5 * 8 + 10 = 80 claims = 8 review batches.
-    map_claims: int = pydantic.Field(default=30, ge=0)
-    material_per_question: int = pydantic.Field(default=8, ge=0)
-    material_other: int = pydantic.Field(default=10, ge=0)
+    # large the map grows. 24 + 5 * 6 + 6 = 60 claims = 6 review batches
+    # (headline run 3 reviewed 90 of 130 material claims in nine
+    # batches and had no time left for analysis).
+    map_claims: int = pydantic.Field(default=24, ge=0)
+    material_per_question: int = pydantic.Field(default=6, ge=0)
+    material_other: int = pydantic.Field(default=6, ge=0)
     map_segments: int = pydantic.Field(default=12, ge=0)
     map_links: int = pydantic.Field(default=16, ge=0)
     map_participants_per_stage: int = pydantic.Field(default=8, ge=0)
     calc_requests_per_call: int = pydantic.Field(default=8, ge=0)
-    # Acquisition tasks one review batch may create; each is a task
-    # execution, so the verifier cannot spend the research budget.
+    # Acquisition tasks one review batch may create, and how many
+    # acquisition attempts a run may execute in all; each is a task
+    # execution, so the verifier cannot spend the research budget
+    # (headline run 3 spent 7 of 12 executions on acquisitions).
     acquisitions_per_review: int = pydantic.Field(default=2, ge=0)
+    acquisition_executions: int = pydantic.Field(default=2, ge=0)
+    # Pipeline reservations: what research dispatch and each single
+    # call keep for the stages that must follow (review batches of the
+    # material claims already collected, then analyze and assess).
+    # ``review_batch_s`` is the expected duration of one review batch of
+    # ``REVIEW_BATCH`` claims (headline run 3: nine batches, 105-237 s,
+    # mean 174 s; the probes 219-300 s).
+    review_batch_s: float = pydantic.Field(default=240.0, gt=0)
+    review_batch: int = pydantic.Field(default=10, gt=0)
 
     @pydantic.model_validator(mode="before")
     @classmethod

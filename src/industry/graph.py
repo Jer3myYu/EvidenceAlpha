@@ -381,7 +381,7 @@ def _material_open_issues(
 
 # How many claims one verifier call judges; the review loops over
 # reservations until nothing material is left or the budget refuses.
-REVIEW_BATCH = 10
+REVIEW_BATCH = records.Limits().review_batch
 
 
 def pending_review(state: state_module.IndustryState) -> list[str]:
@@ -618,9 +618,15 @@ def _tasks_from_plan(
     key_to_id: dict[str, str] = {}
     accepted: list[roles.TaskSpec] = []
     next_number = schedule.task_number(merge.next_id("T", tasks))
-    for spec in plan.tasks[:slots]:
+    for spec in plan.tasks:
         if spec.key in key_to_id:
             log.append(f"prepare_tasks: duplicate key {spec.key!r} dropped")
+            continue
+        if len(accepted) >= slots:
+            log.append(
+                f"prepare_tasks: {spec.key!r} beyond the {slots} slots the "
+                "budget allows; dropped"
+            )
             continue
         key_to_id[spec.key] = f"T{next_number}"
         next_number += 1
@@ -818,6 +824,30 @@ def build_graph(
         )
         slots = budget.dispatchable(state, limits, keep_slot)
         attempts = dict(state.get("attempts", {}))
+        # Acquisition attempts are capped for the run: beyond the cap a
+        # ready acquisition task is skipped, never dispatched.
+        acquisitions = sum(
+            1
+            for a in attempts.values()
+            if state["tasks"][a.task_id].kind == "acquisition"
+        )
+        admitted = []
+        for task in ready:
+            if task.kind == "acquisition":
+                if acquisitions >= limits.acquisition_executions:
+                    tasks[task.id] = task.model_copy(
+                        update={
+                            "status": "skipped",
+                            "skip_reason": (
+                                f"{limits.acquisition_executions} acquisition "
+                                "attempts is the cap"
+                            ),
+                        }
+                    )
+                    continue
+                acquisitions += 1
+            admitted.append(task)
+        ready = admitted
         meter = runtime.meter_for(thread_id) or runtime.new_meter(
             thread_id, state
         )

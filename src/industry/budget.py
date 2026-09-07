@@ -137,6 +137,55 @@ def reservation_for(limits: records.Limits) -> records.Reservation:
     )
 
 
+# The intermediate single calls that must still run after each stage,
+# in pipeline order; ``write`` and ``final_review`` live in the reserves.
+DOWNSTREAM_CALLS = {
+    "scope": ("prepare_tasks", "analyze", "assess_coverage"),
+    "prepare_tasks": ("analyze", "assess_coverage"),
+    "research": ("analyze", "assess_coverage"),
+    "review": ("analyze", "assess_coverage"),
+    "analyze": ("assess_coverage",),
+    "assess_coverage": (),
+}
+
+
+def review_batches(
+    state: state_module.IndustryState, limits: records.Limits
+) -> int:
+    """How many review batches the unreviewed material claims need."""
+    unreviewed = sum(
+        1
+        for c in state.get("claims", {}).values()
+        if c.review == "unreviewed" and (c.material or c.map_ref)
+    )
+    return -(-unreviewed // limits.review_batch)
+
+
+def pipeline_reserve(
+    state: state_module.IndustryState, limits: records.Limits, stage: str
+) -> tuple[float, int]:
+    """Seconds and ``num_turns`` a stage keeps for what must follow it.
+
+    Research dispatch (``stage="research"``) and ``review`` keep the
+    review batches of the material claims collected so far plus the
+    downstream single calls; later stages keep their own downstream
+    calls. Headline run 3 spent its whole allowance on research and
+    review batches and then had nothing left for analysis, which is
+    what this reservation prevents.
+    """
+    calls = len(DOWNSTREAM_CALLS.get(stage, ()))
+    batches = (
+        review_batches(state, limits) if stage in ("research", "review") else 0
+    )
+    if stage == "review" and batches:
+        batches -= 1  # the batch being admitted is reserved by itself
+    seconds = (
+        batches * limits.review_batch_s + calls * limits.single_call_timeout_s
+    )
+    turns = (batches + calls) * limits.single_call_reserved()
+    return seconds, turns
+
+
 def dispatchable(
     state: state_module.IndustryState,
     limits: records.Limits,
@@ -159,10 +208,13 @@ def dispatchable(
       exceed a limit.
     """
     left = remaining(state, limits)
+    keep_s, keep_turns = pipeline_reserve(state, limits, "research")
     executions = left.task_executions - (1 if keep_acquisition_slot else 0)
-    turns = (left.turns - limits.model_call_reserve) // limits.attempt_turns()
+    turns = (
+        left.turns - limits.model_call_reserve - keep_turns
+    ) // limits.attempt_turns()
     tools = left.tool_calls // limits.tools_per_attempt
-    seconds = left.seconds - limits.time_reserve_s
+    seconds = left.seconds - limits.time_reserve_s - keep_s
     by_time = math.floor(seconds / limits.task_timeout_s)
     return max(0, min(executions, turns, tools, by_time))
 
@@ -174,7 +226,8 @@ def admit_single_call(
 
     Every call reserves a full call's worst case (``num_turns`` and
     ``single_call_timeout_s`` seconds) or is skipped: intermediate
-    nodes must fit after the reserves, the reserved nodes (``write``,
+    nodes must fit after the reserves and after what their downstream
+    stages need (``pipeline_reserve``), the reserved nodes (``write``,
     ``final_review``) may spend the reserves, which hold exactly two
     such calls. A result of 0 means the node is skipped. The session's
     ``max_turns`` is derived from the reservation by ``max_turns_for``.
@@ -186,9 +239,11 @@ def admit_single_call(
             left.seconds >= limits.single_call_timeout_s and left.turns >= full
         )
     else:
+        keep_s, keep_turns = pipeline_reserve(state, limits, node)
         fits = (
-            left.seconds - limits.time_reserve_s >= limits.single_call_timeout_s
-            and left.turns - limits.model_call_reserve >= full
+            left.seconds - limits.time_reserve_s - keep_s
+            >= limits.single_call_timeout_s
+            and left.turns - limits.model_call_reserve - keep_turns >= full
         )
     return full if fits else 0
 

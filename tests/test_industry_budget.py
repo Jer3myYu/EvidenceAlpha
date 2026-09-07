@@ -80,12 +80,13 @@ def test_dispatchable_respects_every_limit_and_reserve():
         concurrency=2,
     )
     empty = {"attempts": {}, "single_calls": {}}
-    # executions 12; turns (200-20)//34 = 5 (an attempt reserves the
-    # SDK's worst case: 2*12 + 2*5 num_turns); tools 150//24 = 6;
-    # time (5400-960)//1200 = 3 full reservations. Time binds.
+    # executions 12; turns (200-20-20)//34 = 4 (an attempt reserves the
+    # SDK's worst case: 2*12 + 2*5 num_turns; analyze and assess keep
+    # 20); tools 150//24 = 6; time (5400-960-960)//1200 = 2 full
+    # reservations after the two downstream calls. Time binds.
     assert limits.attempt_turns() == 34
-    assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 3
-    assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 3
+    assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 2
+    assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 2
     tight = records.Limits(
         **{
             **limits.model_dump(),
@@ -101,9 +102,10 @@ def test_reservations_never_exceed_the_limits_at_the_boundary():
     """The ledger's reservations and the limits share one contract."""
     limits = records.Limits(wall_clock_s=5400, time_reserve_s=960)
     n = budget.dispatchable({"attempts": {}}, limits, False)
+    kept, _ = budget.pipeline_reserve({"attempts": {}}, limits, "research")
     reserved = n * limits.task_timeout_s
-    assert reserved + limits.time_reserve_s <= limits.wall_clock_s
-    assert (n + 1) * limits.task_timeout_s + limits.time_reserve_s > (
+    assert reserved + limits.time_reserve_s + kept <= limits.wall_clock_s
+    assert (n + 1) * limits.task_timeout_s + limits.time_reserve_s + kept > (
         limits.wall_clock_s
     )
     # A single call at the wall-clock boundary: with the reserve spent
@@ -344,4 +346,46 @@ def test_limits_reject_zero_divisors_and_incoherent_totals():
             "map_participants": 24,
         }
     )
-    assert legacy.map_claims == 30
+    assert legacy.map_claims == 24
+
+
+def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
+    limits = records.Limits(review_batch_s=240, single_call_timeout_s=480)
+    claims = {
+        f"C{n}": records.Claim(
+            id=f"C{n}", statement="s", kind="fact", material=True
+        )
+        for n in range(25)
+    }
+    state = {"attempts": {}, "single_calls": {}, "claims": claims}
+    # 25 unreviewed material claims = 3 batches; analyze + assess follow.
+    seconds, turns = budget.pipeline_reserve(state, limits, "research")
+    assert seconds == 3 * 240 + 2 * 480
+    assert turns == 5 * limits.single_call_reserved()
+    seconds, _ = budget.pipeline_reserve(state, limits, "review")
+    assert seconds == 2 * 240 + 2 * 480  # the batch being admitted excluded
+    assert budget.pipeline_reserve(state, limits, "analyze") == (480, 10)
+    assert budget.pipeline_reserve(state, limits, "assess_coverage") == (0, 0)
+    # Research dispatch keeps that time: with 5400 s and the 960 s
+    # reserve, 5400 - 960 - 1680 = 2760 s admits 3 attempts of 900 s,
+    # not the 4 that fit without the pipeline reserve.
+    assert budget.dispatchable(state, limits, False) == 3
+    empty = {"attempts": {}, "single_calls": {}, "claims": {}}
+    assert budget.dispatchable(empty, limits, False) == 3  # (4440-960)//900
+
+
+def test_review_is_refused_when_analysis_could_not_follow():
+    limits = records.Limits()
+    spent = records.Attempt(
+        id="T1.1",
+        task_id="T1",
+        status="done",
+        reserved=records.Reservation(turns=34, tool_calls=24, seconds=900),
+        observed=records.Usage(turns=10, duration_s=5400 - 960 - 480 * 2),
+        started_at="2026-09-07T00:00:00+00:00",
+    )
+    state = {"attempts": {"T1.1": spent}, "single_calls": {}, "claims": {}}
+    # Exactly analyze + assess fit after the reserve: no review batch.
+    assert budget.admit_single_call(state, limits, "review") == 0
+    assert budget.admit_single_call(state, limits, "analyze") == 10
+    assert budget.admit_single_call(state, limits, "assess_coverage") == 10

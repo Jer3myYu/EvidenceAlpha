@@ -86,9 +86,14 @@ Rules of evidence:
    a company says about itself; "inference" for your own reasoning;
    "forecast" for projections. Mark material=true only for findings
    that change the industry explanation, comparison, or conclusion.
-5. Name a relationship (supplies, customer_of, competes_with) only when
-   an excerpt names both parties and the relation; otherwise use
-   generic_dependency or none. Give a date when the excerpt has one.
+5. Relationships are required output, not decoration: whenever an
+   excerpt names a supplier, customer, or competitor of a company
+   (供应商、客户、采购自、销售给), record it in the finding's
+   relationships (from_entity, to_entity, relation supplies /
+   customer_of / competes_with, evidence_refs); the value chain
+   question is not covered without them. Use generic_dependency only
+   when the excerpt does not name both parties. Give a date when the
+   excerpt has one.
 6. Commercialization milestones (rd, sample_delivery,
    customer_qualification, small_batch, stable_production,
    material_revenue) need a milestone_date from the excerpt.

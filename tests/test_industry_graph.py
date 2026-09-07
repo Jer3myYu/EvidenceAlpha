@@ -1189,3 +1189,33 @@ def test_calc_requests_and_acquisitions_are_bounded_per_call(tmp_path):
         "acquisition requests, the first 1 taken" in l
         for l in state["route_log"]
     )
+
+
+def test_acquisition_attempts_are_capped_for_the_run(tmp_path):
+    limits = records.Limits(acquisitions_per_review=3, acquisition_executions=1)
+    runtime, api, _, compiled = make(tmp_path, limits=limits)
+    original_review = api.review_claims
+
+    async def review_claims(state, claim_ids, max_turns, deadline):
+        out, usage = await original_review(
+            state, claim_ids, max_turns, deadline
+        )
+        extra = [
+            records.AcquisitionRequest(objective=f"get {cid}", claim_id=cid)
+            for cid in claim_ids[:3]
+        ]
+        return out.model_copy(update={"acquisitions": extra}), usage
+
+    api.review_claims = review_claims
+    config = persist.thread_config("t19")
+    runtime.begin("t19")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    acquisition_tasks = [
+        t for t in state["tasks"].values() if t.kind == "acquisition"
+    ]
+    executed = [t for t in acquisition_tasks if t.attempts > 0]
+    skipped = [t for t in acquisition_tasks if t.status == "skipped"]
+    assert len(executed) == 1 and skipped
+    assert all(
+        "acquisition attempts is the cap" in t.skip_reason for t in skipped
+    )
