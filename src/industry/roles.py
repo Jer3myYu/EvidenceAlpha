@@ -23,6 +23,9 @@ from research import crew
 
 PROMPT_VERSION = "10.2"
 MODEL = "claude-sonnet-5"
+# Thinking configuration per role (``None``: the model's default). Set
+# from live measurements: see ``tmp/9-7-26/live/review-probe``.
+ROLE_THINKING: dict[str, dict[str, Any] | None] = {}
 ROLE_MODELS = {
     "lead": MODEL,
     "industry": MODEL,
@@ -288,7 +291,11 @@ ROLE_KEY = {
 
 def llm_for(role: str, max_turns: int) -> crew.ClaudeLLM:
     """The adapter for one role with its configured model."""
-    return crew.ClaudeLLM(model=ROLE_MODELS[role], max_turns=max_turns)
+    return crew.ClaudeLLM(
+        model=ROLE_MODELS[role],
+        max_turns=max_turns,
+        thinking=ROLE_THINKING.get(role),
+    )
 
 
 # --- context rendering -----------------------------------------------------
@@ -830,7 +837,9 @@ def review_description(
             render_relationships(state, claim_ids, with_excerpts=True),
             "Judge every claim listed (a verdict per claim id, with "
             "topics_supported naming which of its tagged topics the "
-            "excerpts actually bear on), every relationship listed "
+            "excerpts actually bear on; keep every reason to one short "
+            "clause of at most 25 words, naming the excerpt id that "
+            "decides it), every relationship listed "
             "(supported only if one of its cited excerpts names both "
             "parties and the direction of that relation; a co-mention, a "
             "compatibility statement, a competitor list, or speculation "

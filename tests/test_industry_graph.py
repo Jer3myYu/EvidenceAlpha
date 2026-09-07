@@ -427,8 +427,15 @@ def test_happy_path_delivers_a_report(tmp_path):
     assert all(c.status == "done" for c in calls)
     assert spent.turns == 3 * 3 + sum(c.observed.turns for c in calls)
     assert api.calls[0] == "scope" and api.calls[1].startswith("plan:")
-    assert api.calls[2:] == [
-        "review",
+    # The fixture's material claims exceed one review batch; the loop
+    # reviews them in consecutive calls before analysis.
+    reviews = [c for c in api.calls if c == "review"]
+    reviewable = sum(
+        1 for c in state["claims"].values() if c.material or c.map_ref
+    )
+    assert len(reviews) == -(-reviewable // graph_module.REVIEW_BATCH) >= 2
+    assert graph_module.review_remaining(state) == 0
+    assert [c for c in api.calls[2:] if c != "review"] == [
         "analyze",
         "assess",
         "write:full",
@@ -815,3 +822,36 @@ def test_initial_state_records_the_fixture():
         graph_module.initial_state("q", records.Limits())["meta"].fixture
         is None
     )
+
+
+def test_pending_review_orders_by_citability_priority():
+    limits = records.Limits()
+    del limits
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="other",
+            kind="fact",
+            material=True,
+            questions=[7],
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="central",
+            kind="fact",
+            material=True,
+            questions=[3],
+        ),
+        "C3": records.Claim(
+            id="C3",
+            statement="map",
+            kind="fact",
+            material=False,
+            map_ref="stage:upstream",
+            questions=[1],
+        ),
+        "C4": records.Claim(
+            id="C4", statement="immaterial", kind="fact", material=False
+        ),
+    }
+    assert graph_module.pending_review({"claims": claims}) == ["C3", "C2", "C1"]

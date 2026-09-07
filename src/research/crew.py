@@ -112,9 +112,17 @@ class ClaudeLLM(crewai.BaseLLM):
     auto-memory.
     """
 
-    def __init__(self, model: str | None = None, max_turns: int = 5) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        max_turns: int = 5,
+        thinking: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(model=model or MODEL)
         self.max_turns = max_turns
+        # The SDK's thinking configuration for this role's calls
+        # (``None`` leaves the model's default, adaptive, in place).
+        self.thinking = thinking
         # What the last completed call consumed, as the SDK reported it.
         self.last_usage: dict[str, Any] | None = None
         self._cancel: Callable[[], None] | None = None
@@ -160,20 +168,28 @@ class ClaudeLLM(crewai.BaseLLM):
             setting_sources=[],
             env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
         )
+        if self.thinking is not None:
+            options.thinking = self.thinking
         if response_model is not None:
             options.output_format = {
                 "type": "json_schema",
                 "schema": response_model.model_json_schema(),
             }
         result = None
+        exchanges = 0
         async for message in claude_agent_sdk.query(
             prompt=prompt, options=options
         ):
+            if isinstance(message, claude_agent_sdk.AssistantMessage):
+                exchanges += 1
             if isinstance(message, claude_agent_sdk.ResultMessage):
                 result = message
         if result is not None:
             self.last_usage = {
                 "turns": result.num_turns,
+                # Assistant messages seen: the text answer plus every
+                # structured-output attempt the CLI made.
+                "exchanges": exchanges,
                 "usage": result.usage,
                 "cost_usd": result.total_cost_usd,
                 "duration_ms": result.duration_ms,

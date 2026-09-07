@@ -377,22 +377,29 @@ def _material_open_issues(
 
 # How many claims one verifier call judges; the review loops over
 # reservations until nothing material is left or the budget refuses.
-REVIEW_BATCH = 40
+REVIEW_BATCH = 10
 
 
 def pending_review(state: state_module.IndustryState) -> list[str]:
     """The claims the verifier judges next: unreviewed material or map.
 
-    Material non-map claims first, then map claims, each in id order;
-    at most ``REVIEW_BATCH`` per call.
+    Review is bounded by the budget, so the order is the priority in
+    which claims earn citability: map claims first (the value chain and
+    its participants, questions 1-2), then claims on a central question,
+    then the rest, each in id order; at most ``REVIEW_BATCH`` per call.
     """
+    central = set(records.CENTRAL_QUESTIONS)
     unreviewed = [
         c
         for c in state.get("claims", {}).values()
         if c.review == "unreviewed" and (c.material or c.map_ref)
     ]
     unreviewed.sort(
-        key=lambda c: (c.map_ref is not None, merge.schedule.task_number(c.id))
+        key=lambda c: (
+            c.map_ref is None,
+            not (set(c.questions) & central),
+            merge.schedule.task_number(c.id),
+        )
     )
     return [c.id for c in unreviewed[:REVIEW_BATCH]]
 
