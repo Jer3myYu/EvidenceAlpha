@@ -461,8 +461,12 @@ def _claim_line(
 
 
 def reviewed_claim_ids(state: state_module.IndustryState) -> list[str]:
-    """Ids of claims that may be cited (``Claim.is_reviewed``)."""
-    return [c.id for c in state.get("claims", {}).values() if c.is_reviewed()]
+    """Ids of claims that may be cited (``merge.citable``)."""
+    claims = state.get("claims", {})
+    calculations = state.get("calculations", {})
+    return [
+        c.id for c in claims.values() if merge.citable(c, claims, calculations)
+    ]
 
 
 def render_claims(

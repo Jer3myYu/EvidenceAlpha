@@ -1689,6 +1689,8 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
             kind="derived",
             evidence_ids=["E1"],
             calculation_id="K1",
+            calculation_version=1,
+            quantity=records.Quantity(value=52.0, unit="%", as_written="52.0"),
             review="unreviewed",
             material=True,
             partition="q4",
@@ -1708,7 +1710,11 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
     assert graph_module.pending_review(state, 10) == ["C1"]
     assert graph_module.review_remaining(state) == 1
     # Once the calculation is current again, it queues normally.
+    # Current again, and agreeing with the claim: it queues normally.
+    state["claims"]["C1"] = claims["C1"].model_copy(
+        update={"review": "supported", "review_reason": None}
+    )
     state["calculations"]["K1"] = stopped.model_copy(
         update={"status": "ok", "message": None, "result": 52.0, "unit": "%"}
     )
-    assert set(graph_module.pending_review(state, 10)) == {"C1", "C3"}
+    assert graph_module.pending_review(state, 10) == ["C3"]

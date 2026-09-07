@@ -80,8 +80,13 @@ Rules of evidence:
    source, fetch it and cite the passage you retrieved from it.
 2. Cite only the [E#] labels the tools returned. A finding whose
    evidence_refs do not exist is discarded.
-3. Copy numbers exactly as the excerpt writes them (as_written) with
-   their unit, period, and scope; never convert or estimate.
+3. Copy numbers exactly as the excerpt writes them (as_written) and
+   give the unit its full meaning, scale included: value=52 with
+   unit="USD million" for "52 million USD", value=52 with unit="亿元"
+   for "52亿元", value=60 with unit="%" for "60%". Never convert or
+   estimate, and never leave the scale out of the unit for the
+   surrounding text to supply: a quantity whose unit the excerpt does
+   not state beside the number is dropped, with the finding kept.
 4. Kind: "fact" for what a document reports; "company_claim" for what
    a company says about itself; "inference" for your own reasoning;
    "forecast" for projections. Mark material=true only for findings

@@ -551,6 +551,8 @@ def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
         statement="share: 52.0 %",
         kind="derived",
         calculation_id="K1",
+        calculation_version=1,
+        quantity=records.Quantity(value=52.0, unit="%", as_written="52.0"),
         review="supported",
         material=True,
         partition="q4",
@@ -571,6 +573,28 @@ def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
     current = stopped.model_copy(
         update={"status": "ok", "message": None, "result": 52.0, "unit": "%"}
     )
-    assert not persist.validate_records(
-        {"claims": {"C3": claim}, "calculations": {"K1": current}}
+    supported_input = records.Claim(
+        id="C1",
+        statement="an input",
+        kind="fact",
+        quantity=records.Quantity(value=52, unit="亿元", as_written="52亿元"),
+        review="supported",
     )
+    assert not persist.validate_records(
+        {
+            "claims": {"C3": claim, "C1": supported_input},
+            "calculations": {"K1": current},
+        }
+    )
+    # The producer registry may not simply be absent either.
+    missing = persist.validate_records({"claims": {"C3": claim}})
+    assert missing and "no calculations" in missing[0]
+    # Nor may the claim report a version the producer has moved past.
+    moved_on = current.model_copy(update={"version": 2})
+    stale = persist.validate_records(
+        {
+            "claims": {"C3": claim, "C1": supported_input},
+            "calculations": {"K1": moved_on},
+        }
+    )
+    assert stale and "not current" in stale[0]

@@ -135,8 +135,9 @@ def inputs_from_claims(
     consistent (``merge.quantity_consistent``: the numeric value is the
     number as written) becomes an input; anything else is a missing
     input, never a number. A claim that reports a calculation of its own
-    is an input only while that calculation is current, so a result
-    withdrawn by a changed input never feeds the next one.
+    is an input only while the whole chain under it is live
+    (``merge.citable``), so a result withdrawn by a changed input never
+    feeds the next one.
     """
     live = calculations or {}
     return {
@@ -149,8 +150,7 @@ def inputs_from_claims(
         )
         for cid, claim in claims.items()
         if claim.quantity is not None
-        and claim.is_reviewed()
-        and merge.calculation_current(claim, live)
+        and merge.citable(claim, claims, live)
         and merge.quantity_consistent(claim.quantity)
     }
 
@@ -319,6 +319,8 @@ def derived_fields(
             f"(computed from {cited_text}; {result.formula})"
         ),
         "evidence_ids": evidence_ids,
+        "calculation_id": result.id,
+        "calculation_version": result.version,
         "review": "qualified" if qualifications else "supported",
         "review_reason": "; ".join(qualifications) or None,
         "quantity": records.Quantity(
@@ -363,6 +365,9 @@ def recompute_stale(
         )
         if fresh.status != "ok":
             continue
+        # A new version of the calculation, so a claim still reporting
+        # the old one stays uncitable until it is rewritten below.
+        fresh = fresh.model_copy(update={"version": record.version + 1})
         calculations[calc_id] = fresh
         for claim_id, claim in list(claims.items()):
             if claim.calculation_id != calc_id:

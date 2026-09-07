@@ -192,11 +192,18 @@ def test_quantity_matching_ignores_separators():
     quantity = records.Quantity(
         value=1546.1, unit="亿美元", as_written="1,546.1"
     )
-    assert merge.quantity_in_excerpts(quantity, ["进口额高达1546.1亿美元"])
-    assert merge.quantity_in_excerpts(
-        records.Quantity(value=52, unit="亿", as_written="52亿"), ["约 52 亿元"]
+    assert merge.quantity_support(quantity, ["进口额高达1546.1亿美元"]) == "ok"
+    assert (
+        merge.quantity_support(
+            records.Quantity(value=52, unit="亿元", as_written="52亿"),
+            ["约 52 亿元"],
+        )
+        == "ok"
     )
-    assert not merge.quantity_in_excerpts(quantity, ["进口额高达 154 亿美元"])
+    assert (
+        merge.quantity_support(quantity, ["进口额高达 154 亿美元"])
+        == "not_in_excerpt"
+    )
 
 
 def test_same_url_different_bytes_is_a_new_version_old_evidence_kept():
@@ -1177,8 +1184,8 @@ def test_omitting_the_scale_from_a_quantity_is_refused():
     update = merge.merge_results(state, [result], LIMITS)
     claim = update["claims"]["C1"]
     assert claim.quantity is None
-    assert "quantity_scale_omitted" in claim.limitations
-    assert any("scales" in line for line in update["route_log"])
+    assert "quantity_scale_unresolved" in claim.limitations
+    assert any("does not state" in line for line in update["route_log"])
     # The same number with the scale in the unit is admitted.
     carried = result.model_copy()
     carried.findings[0] = result.findings[0].model_copy(
@@ -1193,19 +1200,28 @@ def test_omitting_the_scale_from_a_quantity_is_refused():
     )
     kept = merge.merge_results(base_state(), [carried], LIMITS)
     assert kept["claims"]["C1"].quantity is not None
-    # And the excerpt's own scale is only read beside the number.
-    check = merge.quantity_scale_in_excerpts
-    assert check(
-        records.Quantity(value=52, unit="USD", as_written="52"),
-        ["Acme 2024 revenue was 52 USD"],
+    # And the evidence must state the unit beside the number.
+    support = merge.quantity_support
+    assert (
+        support(
+            records.Quantity(value=52, unit="USD", as_written="52"),
+            ["Acme 2024 revenue was 52 USD"],
+        )
+        == "ok"
     )
-    assert check(
-        records.Quantity(value=52, unit="亿元", as_written="52"),
-        ["营业收入52亿元"],
+    assert (
+        support(
+            records.Quantity(value=52, unit="亿元", as_written="52"),
+            ["营业收入52亿元"],
+        )
+        == "ok"
     )
-    assert not check(
-        records.Quantity(value=52, unit="元", as_written="52"),
-        ["营业收入52亿元"],
+    assert (
+        support(
+            records.Quantity(value=52, unit="元", as_written="52"),
+            ["营业收入52亿元"],
+        )
+        == "unresolved"
     )
 
 
@@ -1619,9 +1635,7 @@ def test_the_scale_governing_the_number_is_read_wherever_it_is_written():
         )
 
     def supported(quantity, excerpt):
-        return merge.quantity_in_excerpts(
-            quantity, [excerpt]
-        ) and merge.quantity_scale_in_excerpts(quantity, [excerpt])
+        return merge.quantity_support(quantity, [excerpt]) == "ok"
 
     # The reviewer's four rows.
     assert not supported(usd(), "Acme 2024 revenue was 52 million USD")
@@ -1629,8 +1643,9 @@ def test_the_scale_governing_the_number_is_read_wherever_it_is_written():
     assert not supported(usd(), "Acme 2024 revenue was 52m USD")
     assert not supported(usd(), "Acme revenue was 152 million USD")
     # Digits inside a longer number are not the number at all.
-    assert not merge.quantity_in_excerpts(
-        usd(), ["Acme revenue was 152 million USD"]
+    assert (
+        merge.quantity_support(usd(), ["Acme revenue was 152 million USD"])
+        == "not_in_excerpt"
     )
     # Nearby variants: a scale after the unit, and Chinese notation.
     assert not supported(usd(), "Acme 2024 revenue was 52 USD million")
@@ -1656,8 +1671,11 @@ def test_the_scale_governing_the_number_is_read_wherever_it_is_written():
     assert supported(
         usd(), "Acme revenue was 52 USD. Another firm sold 52 million units."
     )
-    # Nor does an ordinary word that merely starts like an abbreviation.
-    assert supported(usd(), "Acme sold 52 bags and 3 firms agreed")
+    # An ordinary word that merely starts like an abbreviation is not a
+    # scale; but the excerpt has to state the unit, and this one does
+    # not name USD at all, so the quantity is unresolved rather than
+    # supported (the narrowed contract, C1 round 4).
+    assert not supported(usd(), "Acme sold 52 bags and 3 firms agreed")
     assert supported(usd(), "In autumn Acme sold 52 USD")
 
 
@@ -1730,9 +1748,7 @@ def test_punctuation_and_abbreviations_do_not_hide_the_scale():
         )
 
     def supported(quantity, excerpt):
-        return merge.quantity_in_excerpts(
-            quantity, [excerpt]
-        ) and merge.quantity_scale_in_excerpts(quantity, [excerpt])
+        return merge.quantity_support(quantity, [excerpt]) == "ok"
 
     assert not supported(usd(), "Acme 2024 revenue was 52(m) USD")
     assert not supported(usd(), "Acme 2024 revenue was 52 (mn) USD")
@@ -1742,13 +1758,17 @@ def test_punctuation_and_abbreviations_do_not_hide_the_scale():
     # numbers, so 52 is not read out of 52.6 either.
     assert not supported(usd(), "Acme 2024 revenue was ５２(m) USD")
     assert not supported(usd(), "Acme 2024 revenue was 52．6 million USD")
-    assert not merge.quantity_in_excerpts(
-        usd(), ["Acme 2024 revenue was 52.6 million USD"]
+    assert (
+        merge.quantity_support(
+            usd(), ["Acme 2024 revenue was 52.6 million USD"]
+        )
+        == "not_in_excerpt"
     )
     # Full-width digits still match the number they spell.
     assert supported(usd(), "５２ USD were paid")
-    # And a scale is still only ever read as a whole word.
-    assert supported(usd(), "Acme sold 52 bags and 3 firms agreed")
+    # A scale is still only ever read as a whole word, and the unit
+    # must be stated beside the number for the quantity to stand.
+    assert not supported(usd(), "Acme sold 52 bags and 3 firms agreed")
     assert supported(usd(), "In autumn Acme sold 52 USD")
     assert supported(
         usd(), "Acme revenue was 52 USD. Another firm sold 52 million units."
@@ -1791,7 +1811,205 @@ def test_the_occurrence_matcher_stays_linear():
     quantity = records.Quantity(value=52, unit="USD", as_written="52")
     long_text = "52 USD; " * 4000
     start = time.perf_counter()
-    complete, supported = merge.supporting_occurrences(quantity, [long_text])
+    assert merge.quantity_support(quantity, [long_text]) == "ok"
     elapsed = time.perf_counter() - start
-    assert complete == supported == 4000
     assert elapsed < 1.0, f"{elapsed:.2f}s for 4000 occurrences"
+
+
+def test_the_evidence_must_state_the_unit_it_claims():
+    # C1 round 4, finding 1, and the narrowed contract: a researcher
+    # states the complete semantics of a quantity and admission only
+    # confirms the evidence says so. A scale is never inferred from the
+    # surrounding prose, so every one of these declarations-at-a-
+    # distance leaves the quantity unresolved instead of a million-fold
+    # error.
+    def usd(as_written="52", unit="USD"):
+        return records.Quantity(
+            value=52, unit=unit, period="2024", as_written=as_written
+        )
+
+    table = "[table]\nRevenue (USD million) | Year\n52 | 2024"
+    for excerpt in (
+        "Acme 2024 revenue (USD million)\n52",
+        table,
+        "Acme 2024 revenue was 52 × 10⁶ USD",
+        "Acme 2024 revenue was 52e6 USD",
+        "Acme 2024 revenue (in millions of USD) was 52",
+        "Acme 2024 revenue was 52 million USD",
+        "Acme 2024 revenue (USD million): 52",
+        "Acme 2024 revenue was 52m USD",
+        "Acme 2024 revenue was 52 USD million",
+    ):
+        assert merge.quantity_support(usd(), [excerpt]) != "ok", excerpt
+    # The same table states a unit that carries its own scale.
+    assert merge.quantity_support(usd(unit="USD million"), [table]) == "ok"
+    assert (
+        merge.quantity_support(
+            usd(unit="USD million"), ["Acme 2024 revenue was 52 million USD"]
+        )
+        == "ok"
+    )
+    # A whole-word unit comparison: "m" is not carried by "RMB".
+    assert not merge.quantity_consistent(
+        records.Quantity(value=52, unit="RMB", as_written="52m")
+    )
+    assert (
+        merge.quantity_support(
+            records.Quantity(value=52, unit="RMB", as_written="52"),
+            ["Acme 2024 revenue was 52(m) RMB"],
+        )
+        == "unresolved"
+    )
+    assert (
+        merge.quantity_support(
+            records.Quantity(value=52, unit="RMB million", as_written="52"),
+            ["Acme 2024 revenue was 52 m RMB"],
+        )
+        == "ok"
+    )
+    # A Unicode minus is a sign, so 52 is not the number written there.
+    assert (
+        merge.quantity_support(usd(), ["Acme 2024 revenue was −52 USD"])
+        == "not_in_excerpt"
+    )
+    assert (
+        merge.quantity_support(
+            records.Quantity(value=-52, unit="USD", as_written="-52"),
+            ["Acme 2024 revenue was −52 USD"],
+        )
+        == "ok"
+    )
+    # NFKC is applied on both sides of the comparison.
+    assert merge.quantity_consistent(
+        records.Quantity(value=52.6, unit="USD", as_written="５２．６")
+    )
+    assert (
+        merge.quantity_support(
+            records.Quantity(value=52.6, unit="USD", as_written="５２．６"),
+            ["Acme 2024 revenue was 52.6 USD"],
+        )
+        == "ok"
+    )
+
+
+def test_a_derived_claim_is_bound_to_its_calculation():
+    # C1 round 4, finding 2: correcting the derived claim itself left
+    # the producer saying 52% while the claim said 26%, and review then
+    # restored its approval.
+    state = derived_state()
+    request = records.CalcRequest(
+        kind="share",
+        label="Acme share",
+        numerator_claim_id="C1",
+        denominator_claim_id="C2",
+    )
+    state["calculations"]["K1"] = state["calculations"]["K1"].model_copy(
+        update={"request": request, "version": 1}
+    )
+    state["claims"]["C3"] = state["claims"]["C3"].model_copy(
+        update={
+            "calculation_version": 1,
+            "quantity": records.Quantity(
+                value=52.0, unit="%", as_written="52.0"
+            ),
+        }
+    )
+    assert merge.citable(
+        state["claims"]["C3"], state["claims"], state["calculations"]
+    )
+    corrected = merge.invalidate_claim(
+        state,
+        "C3",
+        statement="share: 26.0 %",
+        quantity=records.Quantity(value=26, unit="%", as_written="26.0"),
+    )
+    state.update(corrected)
+    # Correcting the claim stops the arithmetic behind it.
+    assert state["calculations"]["K1"].status == "error"
+    assert not merge.citable(
+        state["claims"]["C3"], state["claims"], state["calculations"]
+    )
+    applied = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C3", verdict="supported", reason="looks right"
+                )
+            ]
+        ),
+    )
+    assert applied["claims"]["C3"].review == "unreviewed"
+    assert "C3" not in roles.reviewed_claim_ids(
+        {
+            "claims": applied["claims"],
+            "calculations": applied["calculations"],
+        }
+    )
+    # Only recomputation restores it, as a new producer version.
+    claims, calculations, _ = calc.recompute_stale(
+        applied["claims"], applied["calculations"]
+    )
+    assert calculations["K1"].version == 2 and calculations["K1"].result == 52.0
+    assert claims["C3"].calculation_version == 2
+    assert claims["C3"].quantity.value == 52.0
+    assert merge.citable(claims["C3"], claims, calculations)
+
+
+def test_a_derived_claim_keeps_its_restriction_through_a_repeat():
+    # C1 round 4, finding 2: a worker repeat folded into a derived claim
+    # and cleared the qualification it had inherited from its input.
+    state = base_state()
+    state.update(merge.merge_results(state, [result_t2()], LIMITS))
+    state.update(
+        merge.apply_review(
+            state,
+            records.ClaimReview(
+                claims=[
+                    records.ClaimVerdict(
+                        claim_id="C1",
+                        verdict="qualified",
+                        reason="merchant market only",
+                    )
+                ]
+            ),
+        )
+    )
+    request = records.CalcRequest(
+        kind="share",
+        label="share",
+        numerator_claim_id="C1",
+        denominator_claim_id="C1",
+    )
+    result = calc.compute(
+        "K1", request, calc.inputs_from_claims(state["claims"], {})
+    )
+    derived_id = "C9"
+    state["claims"][derived_id] = records.Claim(
+        id=derived_id,
+        kind="derived",
+        material=True,
+        partition="q4",
+        origin="K1",
+        **calc.derived_fields(result, state["claims"]),
+    )
+    state["calculations"] = {"K1": result}
+    assert state["claims"][derived_id].review == "qualified"
+    assert "merchant market only" in state["claims"][derived_id].review_reason
+    # A repeat of its statement is kept separate, never folded into it.
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    repeat = result_t2().model_copy(
+        update={"attempt_id": "T3.1", "task_id": "T3"}
+    )
+    repeat.findings[0] = repeat.findings[0].model_copy(
+        update={
+            "statement": state["claims"][derived_id].statement,
+            "entity": "Acme",
+        }
+    )
+    update = merge.merge_results(state, [repeat], LIMITS)
+    kept = update["claims"][derived_id]
+    assert kept.review == "qualified"
+    assert "merchant market only" in kept.review_reason
+    assert any("is derived" in line for line in update["route_log"])

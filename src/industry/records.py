@@ -32,7 +32,11 @@ import pydantic
 # 4: a Calculation records the request that produced it, so one stopped
 # by a changed input is recomputed instead of re-approved; a claim
 # derived under schema 3 carries no such request.
-SCHEMA_VERSION = 4
+# 5: a Calculation is versioned and a derived Claim records the version
+# it reports, so a claim is citable only while it still agrees with its
+# producer; and a quantity's unit must carry its own scale, which a
+# quantity admitted under schema 4 was not required to do.
+SCHEMA_VERSION = 5
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -167,11 +171,20 @@ class Record(pydantic.BaseModel):
 
 
 class Quantity(Record):
-    """A number as a claim states it, kept only if the excerpt contains it.
+    """A number complete in itself, kept only if the evidence states it.
+
+    The unit carries the whole meaning of the number, its scale
+    included: ``value=52`` with ``unit="USD million"``, never
+    ``unit="USD"`` relying on nearby prose to supply the million.
+    Admission confirms the evidence says exactly that beside the number
+    (``merge.quantity_support``); a scale is never inferred from the
+    surrounding text, and a quantity whose unit the evidence does not
+    state is dropped with a limitation rather than guessed at.
 
     Attributes:
-      value: The numeric value.
-      unit: The unit as written, for example ``亿元``, ``%``, ``USD bn``.
+      value: The numeric value, in ``unit``.
+      unit: The complete unit, scale included: ``亿元``, ``%``,
+        ``USD million``.
       period: The period as written, for example ``2024``, ``2024H1``.
       scope: Geography or definition, for example ``全球``.
       as_written: The number string as it appears in the excerpt.
@@ -258,6 +271,10 @@ class Claim(Record):
     # ``qualified`` claim carries its qualification to the Analyst, the
     # Editor, and the final verifier.
     review_reason: str | None = None
+    # For a derived claim, the version of ``calculation_id`` it
+    # reports; ``merge.calculation_current`` refuses the claim when the
+    # producer has moved on, stopped, or disagrees with it.
+    calculation_version: int | None = None
     version: int = 1
     supersedes: str | None = None
     entity: str | None = None
@@ -638,6 +655,10 @@ class Calculation(Record):
     # changed input can be run again from the corrected claims rather
     # than have its old result re-approved.
     request: CalcRequest | None = None
+    # Bumped on every recomputation. A derived claim records the
+    # version it reports, so a claim left behind by a later run of the
+    # same calculation is not citable.
+    version: int = 1
 
 
 class Finding(Record):

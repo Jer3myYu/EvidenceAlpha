@@ -397,13 +397,14 @@ def pending_review(
     ``Limits.review_batch``; ``REVIEW_BATCH`` is only the default).
     """
     calculations = state.get("calculations", {})
+    claims = state.get("claims", {})
     unreviewed = sorted(
         (
             c
             for c in state.get("claims", {}).values()
             if c.needs_review()
             and c.material
-            and merge.calculation_current(c, calculations)
+            and merge.producer_chain_intact(c, claims, calculations)
         ),
         key=lambda c: merge.schedule.task_number(c.id),
     )
@@ -490,9 +491,10 @@ def review_remaining(state: state_module.IndustryState) -> int:
     only recomputation can settle it (``calc.recompute_stale``).
     """
     calculations = state.get("calculations", {})
+    claims = state.get("claims", {})
     return sum(
         1
-        for c in state.get("claims", {}).values()
+        for c in claims.values()
         if c.needs_review()
         and c.material
         and merge.calculation_current(c, calculations)
@@ -1117,7 +1119,6 @@ def build_graph(
                     claims[claim_id] = records.Claim(
                         id=claim_id,
                         kind="derived",
-                        calculation_id=calc_id,
                         material=merge.admit_material(claims, limits, "q4"),
                         partition="q4",
                         questions=[4],
