@@ -13,8 +13,10 @@ versions a corrected claim and marks what cites it stale, and
 its attempt count.
 """
 
+import bisect
 import hashlib
 import re
+import unicodedata
 from typing import Any
 
 from industry import records
@@ -64,41 +66,31 @@ def _label(ref: str) -> str:
 
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
-_LATIN_RUN = re.compile(r"[a-z]+")
-_CJK_RUN = re.compile(r"[^\W\da-z_]+")
-# Scale words unambiguous enough to be read anywhere in the text that
-# governs a number; longest first so ``万亿`` is never read as ``万``.
-# Abbreviations are deliberately absent: ``mn`` would match ``column``.
-_WINDOW_SCALES = (
-    "trillion",
-    "billion",
-    "million",
-    "thousand",
-    "万亿",
-    "百万",
-    "亿",
-    "万",
-    "千",
-    "%",
-    "％",
+# The words of a text, as scales are written: latin runs, CJK runs and
+# the percent sign. Punctuation only separates them.
+_WORD = re.compile(r"[a-z]+|[^\W\da-z_]+|%")
+# Latin scales, matched as whole words so ``52m`` is a scale and ``52
+# bags`` is not, and ``firm`` is never read as ``m``.
+_LATIN_SCALES = frozenset(
+    (
+        "trillion",
+        "billion",
+        "million",
+        "thousand",
+        "bn",
+        "mn",
+        "tn",
+        "m",
+        "b",
+        "k",
+    )
 )
-# Latin scales written against the number; the whole word must match,
-# so ``52m`` is a scale and ``52 bags`` is not.
-_LATIN_SCALES = (
-    "trillion",
-    "billion",
-    "million",
-    "thousand",
-    "bn",
-    "mn",
-    "tn",
-    "m",
-    "b",
-    "k",
-)
-# Chinese scales written against the number; a prefix is enough,
-# because ``亿元`` carries no such ambiguity.
+# Chinese scales, matched as a prefix of a run because ``亿元`` carries
+# no such ambiguity; longest first so ``万亿`` is never read as ``万``.
 _CJK_SCALES = ("万亿", "百万", "亿", "万", "千")
+# Where the text governing a number ends: the next number, or the end
+# of the sentence it is written in.
+_SENTENCE_END = frozenset(".;!?。；！？\n")
 # Currency symbols and the codes they stand for, so ``$52`` with unit
 # ``USD`` is a notation the unit carries, not an unresolved scale.
 _CURRENCY = {
@@ -176,44 +168,74 @@ def quantity_consistent(quantity: records.Quantity) -> bool:
 
 
 def _clean(text: str) -> str:
-    """Drop thousands separators, keeping the spaces that bound words."""
-    return re.sub(r"[,，]", "", text).lower()
+    """Normalize a text for matching, keeping the spaces that bound words.
+
+    Compatibility normalization folds full-width digits and punctuation
+    (``５２．６``) onto their ordinary forms, so a number written that
+    way is read as the number it is rather than as two.
+    """
+    return re.sub(r"[,，]", "", unicodedata.normalize("NFKC", text)).lower()
 
 
 def _needle(as_written: str) -> re.Pattern[str] | None:
     """A pattern matching the number as written across stray spaces."""
-    written = re.sub(r"[,，\s]", "", as_written).lower()
+    written = re.sub(
+        r"[,，\s]", "", unicodedata.normalize("NFKC", as_written)
+    ).lower()
     if not written:
         return None
     return re.compile(r"\s*".join(re.escape(char) for char in written))
 
 
-def _adjacent_scale(tail: str) -> str | None:
-    """The scale written against the number (``52m``, ``52亿``, ``52%``).
-
-    A latin scale must be the whole word, so ``52 bags`` carries none;
-    a Chinese scale may be a prefix of the run (``亿`` of ``亿元``).
-    """
-    rest = tail.lstrip()
-    if rest[:1] in ("%", "％"):
+def _scale_of(word: str) -> str | None:
+    """The scale a single word states, if it states one."""
+    if word == "%":
         return "%"
-    latin = _LATIN_RUN.match(rest)
-    if latin:
-        return latin.group() if latin.group() in _LATIN_SCALES else None
-    cjk = _CJK_RUN.match(rest)
-    if cjk:
-        for word in _CJK_SCALES:
-            if cjk.group().startswith(word):
-                return word
+    if word in _LATIN_SCALES:
+        return word
+    for scale in _CJK_SCALES:
+        if word.startswith(scale):
+            return scale
     return None
+
+
+def _adjacent_scale(tail: str) -> str | None:
+    """The scale written against the number (``52m``, ``52(m)``, ``52亿``).
+
+    Only the first word counts, and punctuation between the number and
+    that word does not hide it: ``52(m) USD`` states a scale exactly as
+    ``52m USD`` does.
+    """
+    word = _WORD.search(tail)
+    if word is None or word.start() > 0 and _NUMBER.match(tail):
+        return None
+    if any(char.isdigit() for char in tail[: word.start()]):
+        return None
+    return _scale_of(word.group())
 
 
 def _scale_within(text: str) -> str | None:
-    """A scale word written somewhere in the text governing a number."""
-    for word in _WINDOW_SCALES:
-        if word in text:
-            return word
+    """A scale stated by any whole word of the text governing a number."""
+    for word in _WORD.finditer(text):
+        scale = _scale_of(word.group())
+        if scale is not None:
+            return scale
     return None
+
+
+def _flat_maps(text: str) -> tuple[list[int], list[int]]:
+    """Index maps between the text and the same text without spaces."""
+    to_flat = [0] * (len(text) + 1)
+    to_text: list[int] = []
+    seen = 0
+    for index, char in enumerate(text):
+        to_flat[index] = seen
+        if not char.isspace():
+            to_text.append(index)
+            seen += 1
+    to_flat[len(text)] = seen
+    to_text.append(len(text))
+    return to_flat, to_text
 
 
 def supporting_occurrences(
@@ -223,17 +245,19 @@ def supporting_occurrences(
 
     Returns ``(complete, supported)``: how many occurrences are a
     complete number of their own -- digits inside a longer number never
-    count, so ``52`` is not read out of ``152`` -- and how many of those
-    are governed by a scale the unit carries.
+    count, so ``52`` is not read out of ``152`` or of ``52.6`` -- and
+    how many of those are governed by a scale the unit carries.
 
     The scale governing an occurrence is the one written against it
-    (``52 million``, ``52m``, ``52亿``, ``52%``), and a scale the unit
-    carries settles it there. Otherwise the text between this number and
-    its neighbours is read, so a scale declared ahead of the figure
-    (``revenue (USD million): 52``) counts too, while another figure's
-    scale further off (``... sold 52 million units`` after ``52 USD``)
-    does not reach back into it. A scale the unit does not carry leaves
-    that occurrence unsupported; nothing is ever converted.
+    (``52 million``, ``52m``, ``52(m)``, ``52亿``, ``52%``), and a scale
+    the unit carries settles it there. Otherwise the words between this
+    number and the end of its sentence or its neighbouring numbers are
+    read, so a scale declared ahead of the figure (``revenue (USD m):
+    52``) counts too, while another figure's scale further off (``...
+    sold 52 million units`` after ``52 USD.``) does not reach back into
+    it. A scale is read only as a whole word, so ``firm`` is never read
+    as ``m``. A scale the unit does not carry leaves that occurrence
+    unsupported; nothing is ever converted.
     """
     pattern = _needle(quantity.as_written)
     if pattern is None:
@@ -243,12 +267,14 @@ def supporting_occurrences(
     supported = 0
     for excerpt in excerpts:
         text = _clean(excerpt)
-        spans = [m.span() for m in _NUMBER.finditer(re.sub(r"\s", "", text))]
-        flat = re.sub(r"\s", "", text)
+        to_flat, to_text = _flat_maps(text)
+        flat = "".join(text.split())
+        spans = [m.span() for m in _NUMBER.finditer(flat)]
+        starts = [span[0] for span in spans]
+        ends = [span[1] for span in spans]
         for match in pattern.finditer(text):
             start_at, end_at = match.span()
-            flat_start = len(re.sub(r"\s", "", text[:start_at]))
-            flat_end = flat_start + len(re.sub(r"\s", "", match.group()))
+            flat_start, flat_end = to_flat[start_at], to_flat[end_at]
             before = flat[flat_start - 1 : flat_start]
             if before.isdigit() or before in (".", "-"):
                 continue
@@ -261,7 +287,7 @@ def supporting_occurrences(
             complete += 1
             if _supported_here(
                 text,
-                spans,
+                (starts, ends, to_text),
                 (start_at, end_at),
                 (flat_start, flat_end),
                 unit_text,
@@ -270,9 +296,25 @@ def supporting_occurrences(
     return complete, supported
 
 
+def _sentence_head(text: str, start_at: int, floor: int) -> int:
+    """Where the sentence holding ``start_at`` begins, at or after floor."""
+    for index in range(start_at - 1, floor - 1, -1):
+        if text[index] in _SENTENCE_END:
+            return index + 1
+    return floor
+
+
+def _sentence_tail(text: str, end_at: int, ceiling: int) -> int:
+    """Where the sentence holding ``end_at`` ends, at or before ceiling."""
+    for index in range(end_at, ceiling):
+        if text[index] in _SENTENCE_END:
+            return index
+    return ceiling
+
+
 def _supported_here(
     text: str,
-    spans: list[tuple[int, int]],
+    maps: tuple[list[int], list[int], list[int]],
     here: tuple[int, int],
     flat_here: tuple[int, int],
     unit_text: str,
@@ -281,42 +323,21 @@ def _supported_here(
     adjacent = _adjacent_scale(text[here[1] :])
     if adjacent is not None:
         return adjacent in unit_text
+    starts, ends, to_text = maps
     flat_start, flat_end = flat_here
-    following = min((s for s, _ in spans if s >= flat_end), default=None)
-    preceding = max((e for _, e in spans if e <= flat_start), default=None)
-    tail = text[here[1] :]
-    if following is not None:
-        tail = _take(text, here[1], following - flat_end)
-    head = text[: here[0]]
-    if preceding is not None:
-        head = head[len(head) - _span_back(head, flat_start - preceding) :]
-    for window in (tail, head):
+    after = bisect.bisect_left(starts, flat_end)
+    before = bisect.bisect_right(ends, flat_start) - 1
+    ceiling = to_text[starts[after]] if after < len(starts) else len(text)
+    floor = to_text[ends[before]] if before >= 0 else 0
+    windows = (
+        text[here[1] : _sentence_tail(text, here[1], ceiling)],
+        text[_sentence_head(text, here[0], floor) : here[0]],
+    )
+    for window in windows:
         scale = _scale_within(window)
         if scale is not None and scale not in unit_text:
             return False
     return True
-
-
-def _take(text: str, start: int, characters: int) -> str:
-    """The slice from ``start`` holding ``characters`` non-space chars."""
-    taken = 0
-    for index in range(start, len(text)):
-        if not text[index].isspace():
-            if taken == characters:
-                return text[start:index]
-            taken += 1
-    return text[start:]
-
-
-def _span_back(text: str, characters: int) -> int:
-    """How far back from the end holds ``characters`` non-space chars."""
-    taken = 0
-    for index in range(len(text) - 1, -1, -1):
-        if not text[index].isspace():
-            if taken == characters:
-                return len(text) - 1 - index
-            taken += 1
-    return len(text)
 
 
 def quantity_in_excerpts(
@@ -1224,7 +1245,9 @@ def derived_dependants(
     A calculation names the claims it consumed (``Calculation.inputs``)
     and the claim it produced carries its ``calculation_id``; following
     both links to a fixed point gives everything whose number depends
-    on a claim that changed.
+    on a claim that changed. A derived claim reached this way counts
+    even when the same batch judged it directly: a verdict on its text
+    cannot stand in for the arithmetic behind it.
     """
     consumers: dict[str, set[str]] = {}
     for calc in calculations.values():
@@ -1240,11 +1263,16 @@ def derived_dependants(
         current = queue.pop()
         for calc_id in consumers.get(current, ()):
             for cid in produced.get(calc_id, ()):
-                if cid in found or cid in changed:
+                # A claim the same batch also judged is still a
+                # dependant: being named as a root must not exempt it
+                # from losing the approval its calculation withdrew.
+                if cid in found:
                     continue
                 found.add(cid)
                 queue.append(cid)
-    return found
+    return found - {
+        cid for cid in changed if claims[cid].calculation_id is None
+    }
 
 
 def cascade_changes(

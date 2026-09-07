@@ -231,6 +231,34 @@ def validate_records(values: dict[str, Any]) -> list[str]:
                 check(f"{key}[{index}]", item, model)
         else:
             check(key, value, model)
+    problems.extend(_withdrawn_but_citable(values))
+    return problems
+
+
+def _withdrawn_but_citable(values: dict[str, Any]) -> list[str]:
+    """Claims still citable while the calculation behind them stopped.
+
+    A derived claim's approval comes from its arithmetic, so a state in
+    which one is citable while its calculation is not current is not a
+    state this program could have written; it is resumed only after
+    recomputation, never on the withdrawn number.
+    """
+    claims = values.get("claims")
+    calculations = values.get("calculations")
+    if not isinstance(claims, dict) or not isinstance(calculations, dict):
+        return []
+    problems = []
+    for claim_id, claim in claims.items():
+        if not hasattr(claim, "calculation_id") or not claim.calculation_id:
+            continue
+        if not getattr(claim, "is_reviewed", bool)():
+            continue
+        calculation = calculations.get(claim.calculation_id)
+        if getattr(calculation, "status", None) != "ok":
+            problems.append(
+                f"claims[{claim_id}]: citable while calculation "
+                f"{claim.calculation_id} is not current"
+            )
     return problems
 
 

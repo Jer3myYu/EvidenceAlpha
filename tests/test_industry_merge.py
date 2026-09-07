@@ -1,10 +1,13 @@
 """Deterministic merge, review application, invalidation, issues."""
 
+import time
+
 from industry import budget
 from industry import calc
 from industry import merge
 from industry import records
 from industry import report
+from industry import roles
 
 NOW = "2026-09-07T00:00:00+00:00"
 LIMITS = records.Limits()
@@ -1714,3 +1717,81 @@ def test_limitations_never_accumulate_duplicates():
     limitations = state["claims"]["C1"].limitations
     assert limitations.count("conflicting_repeat:entity") == 1
     assert len(limitations) == len(set(limitations))
+
+
+def test_punctuation_and_abbreviations_do_not_hide_the_scale():
+    # C1 round 3, finding 1: the adjacent matcher stopped at
+    # punctuation and the window scan excluded abbreviations, so a
+    # bracketed or abbreviated scale declaration passed admission and
+    # the million-fold error came back.
+    def usd(as_written="52"):
+        return records.Quantity(
+            value=52, unit="USD", period="2024", as_written=as_written
+        )
+
+    def supported(quantity, excerpt):
+        return merge.quantity_in_excerpts(
+            quantity, [excerpt]
+        ) and merge.quantity_scale_in_excerpts(quantity, [excerpt])
+
+    assert not supported(usd(), "Acme 2024 revenue was 52(m) USD")
+    assert not supported(usd(), "Acme 2024 revenue was 52 (mn) USD")
+    assert not supported(usd(), "Acme 2024 revenue (USD m): 52")
+    assert not supported(usd(), "Acme 2024 revenue was 52 (million) USD")
+    # Full-width digits and a full-width decimal separator are the same
+    # numbers, so 52 is not read out of 52.6 either.
+    assert not supported(usd(), "Acme 2024 revenue was ５２(m) USD")
+    assert not supported(usd(), "Acme 2024 revenue was 52．6 million USD")
+    assert not merge.quantity_in_excerpts(
+        usd(), ["Acme 2024 revenue was 52.6 million USD"]
+    )
+    # Full-width digits still match the number they spell.
+    assert supported(usd(), "５２ USD were paid")
+    # And a scale is still only ever read as a whole word.
+    assert supported(usd(), "Acme sold 52 bags and 3 firms agreed")
+    assert supported(usd(), "In autumn Acme sold 52 USD")
+    assert supported(
+        usd(), "Acme revenue was 52 USD. Another firm sold 52 million units."
+    )
+
+
+def test_a_derived_claim_judged_in_the_same_batch_still_loses_approval():
+    # C1 round 3, finding 2: the dependency walk skipped any claim
+    # already among the changed roots, so a batch naming both the input
+    # and the derived claim left the derived claim citable while its
+    # calculation was stopped.
+    state = derived_state()
+    applied = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C1", verdict="unsupported", reason="no source"
+                ),
+                records.ClaimVerdict(
+                    claim_id="C3",
+                    verdict="qualified",
+                    reason="merchant market only",
+                ),
+            ]
+        ),
+    )
+    derived = applied["claims"]["C3"]
+    assert applied["calculations"]["K1"].status == "error"
+    assert derived.review == "unreviewed" and not derived.is_reviewed()
+    assert derived.version == 2
+    assert "C3" not in roles.reviewed_claim_ids({"claims": applied["claims"]})
+    # A claim that is not derived is still only a root, never a dependant.
+    assert applied["claims"]["C1"].version == 1
+
+
+def test_the_occurrence_matcher_stays_linear():
+    # C1 round 3, finding 3: every match rescanned its prefix and all
+    # numeric spans, so a long excerpt cost quadratic time.
+    quantity = records.Quantity(value=52, unit="USD", as_written="52")
+    long_text = "52 USD; " * 4000
+    start = time.perf_counter()
+    complete, supported = merge.supporting_occurrences(quantity, [long_text])
+    elapsed = time.perf_counter() - start
+    assert complete == supported == 4000
+    assert elapsed < 1.0, f"{elapsed:.2f}s for 4000 occurrences"

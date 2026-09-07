@@ -540,3 +540,37 @@ def test_a_nested_record_left_as_a_dictionary_is_rejected():
     )
     deep = persist.validate_records({"calculations": {"K1": calculation}})
     assert deep and "CalcInput is required" in deep[0]
+
+
+def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
+    # C1 round 3, finding 2: the load side of the same inconsistency —
+    # a derived claim must never come back citable while the
+    # calculation behind it is stopped.
+    claim = records.Claim(
+        id="C3",
+        statement="share: 52.0 %",
+        kind="derived",
+        calculation_id="K1",
+        review="supported",
+        material=True,
+        partition="q4",
+    )
+    stopped = records.Calculation(
+        id="K1",
+        kind="share",
+        label="share",
+        inputs=[records.CalcInput(claim_id="C1", value=52, unit="亿元")],
+        formula="f",
+        status="error",
+        message="stale_input: C1 changed after the calculation",
+    )
+    problems = persist.validate_records(
+        {"claims": {"C3": claim}, "calculations": {"K1": stopped}}
+    )
+    assert problems and "not current" in problems[0]
+    current = stopped.model_copy(
+        update={"status": "ok", "message": None, "result": 52.0, "unit": "%"}
+    )
+    assert not persist.validate_records(
+        {"claims": {"C3": claim}, "calculations": {"K1": current}}
+    )

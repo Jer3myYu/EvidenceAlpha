@@ -930,6 +930,14 @@ def build_graph(
         return sends or "merge"
 
     async def run_task(work: records.WorkerInput) -> dict[str, Any]:
+        if not isinstance(work, records.WorkerInput):
+            # A payload the serializer could not rebuild comes back as
+            # the raw mapping it read; running the attempt on it would
+            # fail somewhere further in, on a field at a time.
+            raise TypeError(
+                "worker payload was not restored as a WorkerInput "
+                f"({type(work).__name__}); this thread cannot be resumed"
+            )
         result = await worker_fn(work, runtime, backend, on_event=_writer())
         return {"task_results": [result]}
 
