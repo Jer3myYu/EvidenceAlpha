@@ -426,7 +426,13 @@ def test_happy_path_delivers_a_report(tmp_path):
     assert all(c.status == "done" for c in calls)
     assert spent.turns == 3 * 3 + sum(c.observed.turns for c in calls)
     assert api.calls[0] == "scope" and api.calls[1].startswith("plan:")
-    assert api.calls[2:5] == ["review", "assess", "analyze"]
+    assert api.calls[2:] == [
+        "review",
+        "analyze",
+        "assess",
+        "write:full",
+        "final",
+    ]
     assessments = [c for c in state["single_calls"] if c.startswith("assess")]
     assert len(assessments) <= 1 + runtime.limits.follow_up_rounds
     assert worker.order == ["T1.1", "T2.1", "T3.1"], "waves follow dependencies"

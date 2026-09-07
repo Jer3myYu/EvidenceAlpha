@@ -13,17 +13,17 @@ Shape::
                mapping phase -> reserve_prepare_tasks -> prepare_tasks
                -> dispatch;
                else -> reserve_review -> review
-      review -> dispatch (acquisition tasks) | reserve_analyze (when the
-               wave answered analyst requests or an analysis remediation)
+      review -> dispatch (acquisition tasks) | reserve_analyze
+      analyze -> reserve_prepare_tasks (evidence requests, once)
                | reserve_assess_coverage
-      assess_coverage -> reserve_prepare_tasks (follow-up) | reserve_analyze
-      analyze -> reserve_prepare_tasks (evidence requests, once) | reserve_write
+      assess_coverage -> reserve_prepare_tasks (follow-up) | reserve_write
       write -> reserve_final_review -> final_review -> remediate | deliver
       remediate -> reserve_prepare_tasks | reserve_analyze | reserve_write
       deliver -> END
 
-The verifier reviews every merged wave *before* the Lead assesses
-coverage, because coverage counts reviewed claims only.
+After every merged wave the verifier reviews (coverage counts reviewed
+claims only), the analyst writes findings (questions 4-8 count claims
+a finding cites), and only then the Lead assesses coverage.
 
 Every single-call node ``X`` is preceded by ``reserve_X``, which admits
 the call against the ledger and writes its reservation to
@@ -807,13 +807,13 @@ def build_graph(
                 + ", ".join(i.target for i in gaps)
             )
         else:
-            update["phase"] = "analysis"
+            update["phase"] = "assessed"
         return update
 
     def after_assess(state: state_module.IndustryState) -> str:
         if state.get("phase") == "coverage_followup":
             return "follow_up"
-        return "analyze"
+        return "write"
 
     async def analyze(state: state_module.IndustryState) -> dict[str, Any]:
         note = (
@@ -973,7 +973,7 @@ def build_graph(
     def after_analyze(state: state_module.IndustryState) -> str:
         if state.get("phase") == "analysis_requests":
             return "requests"
-        return "write"
+        return "assess"
 
     async def review(state: state_module.IndustryState) -> dict[str, Any]:
         claims = state.get("claims", {})
@@ -1087,12 +1087,7 @@ def build_graph(
         _, ready = schedule.ready(schedule.validate(state.get("tasks", {})))
         if ready and budget.dispatchable(state, limits, False) > 0:
             return "dispatch"
-        phase = state.get("phase", "")
-        if phase == "analysis_requests" or (
-            phase == "remediation" and state.get("return_to") == "analyze"
-        ):
-            return "analyze"
-        return "assess"
+        return "analyze"
 
     async def remediate(state: state_module.IndustryState) -> dict[str, Any]:
         issues, log = _close_followup_issues(state.get("issues", {}), limits)
@@ -1278,21 +1273,20 @@ def build_graph(
     graph.add_conditional_edges(
         "review",
         after_review,
+        {"dispatch": "dispatch", "analyze": "reserve_analyze"},
+    )
+    graph.add_conditional_edges(
+        "analyze",
+        after_analyze,
         {
-            "dispatch": "dispatch",
-            "analyze": "reserve_analyze",
+            "requests": "reserve_prepare_tasks",
             "assess": "reserve_assess_coverage",
         },
     )
     graph.add_conditional_edges(
         "assess_coverage",
         after_assess,
-        {"follow_up": "reserve_prepare_tasks", "analyze": "reserve_analyze"},
-    )
-    graph.add_conditional_edges(
-        "analyze",
-        after_analyze,
-        {"requests": "reserve_prepare_tasks", "write": "reserve_write"},
+        {"follow_up": "reserve_prepare_tasks", "write": "reserve_write"},
     )
     graph.add_conditional_edges(
         "remediate",

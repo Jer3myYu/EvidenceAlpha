@@ -30,10 +30,19 @@ from research import web
 BUDGET_EXHAUSTED = (
     "Tool budget exhausted for this task; finish with the evidence you have."
 )
-# Per (query language, document language) bands, e.g. ``("zh", "zh"):
-# ((0.35, "strong"), (0.60, "weak"))``, filled only from a labelled
-# evaluation whose artifact the Phase 10 log names. Empty: no labels.
-CALIBRATION: dict[tuple[str, str], tuple[tuple[float, str], ...]] = {}
+# Per (query language, document language) bands from the labelled
+# evaluation of 2026-09-07 (tmp/9-7-26/relevance-eval.md: 39 queries,
+# 312 top-8 hits over 640 chunks of photomask, robotics, and local
+# documents). "strong" is the largest threshold at which no irrelevant
+# hit fell below it; "weak" the smallest at which about every relevant
+# hit did. Labels are advisory: nothing is hidden, and applicability is
+# the verifier's judgement. A pair not listed here gets "uncalibrated".
+CALIBRATION: dict[tuple[str, str], tuple[tuple[float, str], ...]] = {
+    ("zh", "zh"): ((0.30, "strong"), (0.50, "weak")),
+    ("en", "en"): ((0.45, "strong"), (0.60, "weak")),
+    ("zh", "en"): ((0.40, "strong"), (0.45, "weak")),
+    ("en", "zh"): ((0.40, "strong"), (0.60, "weak")),
+}
 TOOL_NAMES = ("search_web", "search_documents", "fetch_source")
 
 

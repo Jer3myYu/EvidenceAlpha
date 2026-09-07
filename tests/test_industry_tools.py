@@ -214,13 +214,9 @@ def test_meter_refuses_when_allowance_is_spent():
     assert meter2.counts("T2.1") == (0, 1)
 
 
-def test_bands_are_uncalibrated_until_a_table_exists():
-    assert tools.band(0.2, "zh", "zh") == "uncalibrated"
-    tools.CALIBRATION[("zh", "zh")] = ((0.35, "strong"), (0.60, "weak"))
-    try:
-        assert tools.band(0.2, "zh", "zh") == "strong"
-        assert tools.band(0.5, "zh", "zh") == "weak"
-        assert tools.band(0.9, "zh", "zh") == "doubtful"
-        assert tools.band(0.2, "en", "zh") == "uncalibrated"
-    finally:
-        tools.CALIBRATION.clear()
+def test_bands_come_from_the_calibration_table_only():
+    assert tools.band(0.2, "zh", "zh") == "strong"
+    assert tools.band(0.45, "zh", "zh") == "weak"
+    assert tools.band(0.9, "zh", "zh") == "doubtful"
+    assert tools.band(0.2, "fr", "zh") == "uncalibrated"
+    assert tools.band(0.2, "en", "") == "uncalibrated"
