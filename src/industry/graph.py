@@ -1025,7 +1025,15 @@ def build_graph(
                 if c.quantity is not None
                 and c.review in ("supported", "qualified")
             }
-            for request in analysis.calc_requests:
+            requested = analysis.calc_requests
+            cap = limits.calc_requests_per_call
+            if len(requested) > cap:
+                update["route_log"].append(
+                    f"analyze: {len(requested)} calculation requests, the "
+                    f"first {cap} taken"
+                )
+                requested = requested[:cap]
+            for request in requested:
                 calc_id = merge.next_id("K", calculations)
                 result = calc.compute(calc_id, request, inputs)
                 calculations[calc_id] = result
@@ -1047,7 +1055,9 @@ def build_graph(
                         kind="derived",
                         evidence_ids=evidence_ids,
                         calculation_id=calc_id,
-                        material=True,
+                        material=merge.admit_material(
+                            claims, limits, [4], False
+                        ),
                         review=(
                             "qualified"
                             if result.alignment_note
@@ -1247,7 +1257,14 @@ def build_graph(
             state.get("findings", {}), newly_bad
         )
         created = 0
-        for request in outcome.acquisitions:
+        wanted = outcome.acquisitions
+        if len(wanted) > limits.acquisitions_per_review:
+            update["route_log"].append(
+                f"review: {len(wanted)} acquisition requests, the first "
+                f"{limits.acquisitions_per_review} taken"
+            )
+            wanted = wanted[: limits.acquisitions_per_review]
+        for request in wanted:
             task_id = merge.next_id("T", tasks)
             references = []
             if request.claim_id in claims:
@@ -1357,6 +1374,7 @@ def build_graph(
                 "edit",
                 problem.description,
                 draft_version=version,
+                text=problem.text,
             )
         update.update(
             {"sections": sections, "issues": issues, "draft_version": version}

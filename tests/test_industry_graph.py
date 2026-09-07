@@ -7,11 +7,13 @@ the no-progress stop, and the revision route after the final review.
 """
 
 import asyncio
+import pathlib
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from industry import budget
+from industry import coverage
 from industry import graph as graph_module
 from industry import merge
 from industry import report
@@ -589,8 +591,17 @@ def test_uncited_number_in_the_draft_reopens_editing(tmp_path):
         "remediate: cycle 1 -> write" in line for line in state["route_log"]
     )
     assert "write:revise" in api.calls
-    # An open editorial issue is a limitation, not a central gap.
+    # An open editorial issue is a limitation, not a central gap, and
+    # its text is redacted from the delivered report.
     assert state["meta"].report_status == "complete_with_limitations"
+    text = pathlib.Path(state["meta"].report_path).read_text(encoding="utf-8")
+    if any(
+        i.status == "open" and i.text and "52亿元" in i.text
+        for i in state["issues"].values()
+    ):
+        body = text.split("## Limitations")[0].split("## 局限性")[0]
+        assert "市场规模 52亿元" not in body
+        assert "[unverified statement removed]" in body or "已移除" in body
 
 
 def test_initial_state_carries_meta_so_an_early_interruption_resumes(tmp_path):
@@ -1099,3 +1110,82 @@ def test_reviewed_map_rendering_omits_boundary_note_and_gaps():
     reviewed = roles.render_map(industry_map, claims)
     assert "Unverified" not in reviewed and "G1" in reviewed
     assert "Unverified" in roles.render_map(industry_map)
+
+
+def test_unsupported_section_text_is_redacted_or_the_report_is_incomplete():
+    claims = {
+        "C1": records.Claim(
+            id="C1", statement="s", kind="fact", review="supported"
+        )
+    }
+    section = records.Section(
+        id="intro",
+        title="概览",
+        text="市场规模为52亿元。结论 [C1]。",
+        claim_ids=["C1"],
+    )
+    removable = records.Issue(
+        id="I1",
+        key="unsupported:intro",
+        category="unsupported",
+        severity="material",
+        target="intro",
+        description="uncited",
+        requested_action="edit",
+        text="市场规模为52亿元。",
+    )
+    state = {
+        "brief": records.Brief(industry="光掩模", language="zh"),
+        "claims": claims,
+        "evidence": {},
+        "sources": {},
+        "sections": [section],
+        "issues": {"I1": removable},
+    }
+    rendered = report.render(state, [], "complete_with_limitations")
+    assert (
+        "市场规模为52亿元" not in rendered
+        and "已移除未经核实的表述" in rendered
+    )
+    assert "结论" in rendered
+    coverage_rows = [
+        records.Coverage(question=q, status="covered") for q in range(1, 9)
+    ]
+    assert (
+        coverage.report_status(coverage_rows, state)
+        == "complete_with_limitations"
+    )
+    vague = removable.model_copy(update={"text": None, "id": "I2"})
+    state["issues"] = {"I2": vague}
+    assert coverage.report_status(coverage_rows, state) == "incomplete"
+    assert report.unremovable_section_issues(state) == [vague]
+
+
+def test_calc_requests_and_acquisitions_are_bounded_per_call(tmp_path):
+    limits = records.Limits(calc_requests_per_call=1, acquisitions_per_review=1)
+    runtime, api, _, compiled = make(tmp_path, limits=limits)
+    original_review = api.review_claims
+
+    async def review_claims(state, claim_ids, max_turns, deadline):
+        out, usage = await original_review(
+            state, claim_ids, max_turns, deadline
+        )
+        extra = [
+            records.AcquisitionRequest(objective=f"get {cid}", claim_id=cid)
+            for cid in claim_ids
+        ]
+        return out.model_copy(update={"acquisitions": extra}), usage
+
+    api.review_claims = review_claims
+    config = persist.thread_config("t18")
+    runtime.begin("t18")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    acquisitions = [
+        t for t in state["tasks"].values() if t.kind == "acquisition"
+    ]
+    reviews = sum(1 for c in api.calls if c == "review")
+    assert 0 < len(acquisitions) <= reviews
+    assert any(
+        "acquisition requests, the first 1 taken" in l
+        for l in state["route_log"]
+    )

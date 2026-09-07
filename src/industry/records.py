@@ -536,6 +536,10 @@ class Issue(Record):
     status: IssueStatus = "open"
     resolution: str | None = None
     draft_version: int | None = None
+    # The exact factual unit (sentence, table row, list item) the issue
+    # is about, when deterministic: the renderer removes it while the
+    # issue is open, so it can never be delivered as fact.
+    text: str | None = None
 
 
 class CalcInput(Record):
@@ -715,50 +719,63 @@ class Limits(Record):
     report, which is what an attempt reserves.
     """
 
-    wall_clock_s: float = 5400.0
+    wall_clock_s: float = pydantic.Field(default=5400.0, gt=0)
     # The reserves hold two complete single calls (write, final_review):
     # 2 * single_call_timeout_s and 2 * single_call_reserved().
-    time_reserve_s: float = 960.0
-    task_executions: int = 12
-    model_calls: int = 200
-    model_call_reserve: int = 20
-    tool_calls: int = 150
-    remediation_cycles: int = 3
-    issue_follow_ups: int = 2
-    follow_up_rounds: int = 2
-    max_turns: int = 12
-    tools_per_attempt: int = 24
-    concurrency: int = 2
-    task_timeout_s: float = 1200.0
-    single_call_timeout_s: float = 480.0
-    single_call_turns: int = 5
-    task_attempts: int = 2
-    turns_per_exchange: int = 2
-    structured_output_attempts: int = 5
-    # Claim production is bounded by review capacity: at most
-    # ``material_claims`` material claims in a run, of which each central
-    # question may hold ``material_per_question`` (the map counts as
-    # question 1-3's share through ``map_segments``, ``map_links`` and
-    # ``map_participants_per_stage``, a per-stage cap so a full upstream
-    # never crowds out the Chinese midstream); a material finding beyond
-    # its quota is kept non-material. 80 claims are 8 review batches of 10.
-    material_claims: int = 80
-    material_per_question: int = 12
-    map_segments: int = 12
-    map_links: int = 16
-    map_participants_per_stage: int = 8
+    time_reserve_s: float = pydantic.Field(default=960.0, ge=0)
+    task_executions: int = pydantic.Field(default=12, ge=0)
+    model_calls: int = pydantic.Field(default=200, gt=0)
+    model_call_reserve: int = pydantic.Field(default=20, ge=0)
+    tool_calls: int = pydantic.Field(default=150, ge=0)
+    remediation_cycles: int = pydantic.Field(default=3, ge=0)
+    issue_follow_ups: int = pydantic.Field(default=2, ge=0)
+    follow_up_rounds: int = pydantic.Field(default=2, ge=0)
+    max_turns: int = pydantic.Field(default=12, gt=0)
+    tools_per_attempt: int = pydantic.Field(default=24, gt=0)
+    concurrency: int = pydantic.Field(default=2, gt=0)
+    task_timeout_s: float = pydantic.Field(default=1200.0, gt=0)
+    single_call_timeout_s: float = pydantic.Field(default=480.0, gt=0)
+    single_call_turns: int = pydantic.Field(default=5, gt=0)
+    task_attempts: int = pydantic.Field(default=2, gt=0)
+    turns_per_exchange: int = pydantic.Field(default=2, gt=0)
+    structured_output_attempts: int = pydantic.Field(default=5, ge=0)
+    # Material claims are partitioned by review capacity, and every
+    # material insertion (finding, map item, derived claim) is admitted
+    # by ``merge.admit_material`` against its partition: the map
+    # (segments, links, participants, each also capped), each central
+    # question, and the rest. No partition can consume another's
+    # capacity, so the economics questions keep their share however
+    # large the map grows. 30 + 5 * 8 + 10 = 80 claims = 8 review batches.
+    map_claims: int = pydantic.Field(default=30, ge=0)
+    material_per_question: int = pydantic.Field(default=8, ge=0)
+    material_other: int = pydantic.Field(default=10, ge=0)
+    map_segments: int = pydantic.Field(default=12, ge=0)
+    map_links: int = pydantic.Field(default=16, ge=0)
+    map_participants_per_stage: int = pydantic.Field(default=8, ge=0)
+    calc_requests_per_call: int = pydantic.Field(default=8, ge=0)
+    # Acquisition tasks one review batch may create; each is a task
+    # execution, so the verifier cannot spend the research budget.
+    acquisitions_per_review: int = pydantic.Field(default=2, ge=0)
 
     @pydantic.model_validator(mode="before")
     @classmethod
     def _drop_legacy_keys(cls, data: Any) -> Any:
-        # ``expected_task_s`` (schema 2) no longer exists: dispatch
-        # reserves ``task_timeout_s`` per attempt instead of expecting.
-        if isinstance(data, dict) and "expected_task_s" in data:
-            data = {k: v for k, v in data.items() if k != "expected_task_s"}
+        # Schema-2 keys that no longer exist: ``expected_task_s`` (dispatch
+        # reserves ``task_timeout_s``), ``material_claims``,
+        # ``material_per_attempt`` and ``map_participants`` (revisions
+        # 10-12 partitioned the material budget).
+        legacy = {
+            "expected_task_s",
+            "material_claims",
+            "material_per_attempt",
+            "map_participants",
+        }
+        if isinstance(data, dict) and legacy & set(data):
+            data = {k: v for k, v in data.items() if k not in legacy}
         return data
 
     @pydantic.model_validator(mode="after")
-    def _reserves_hold_two_final_calls(self) -> "Limits":
+    def _totals_hold_their_reserves(self) -> "Limits":
         if self.time_reserve_s < 2 * self.single_call_timeout_s:
             raise ValueError(
                 "time_reserve_s must hold two single calls "
@@ -769,7 +786,19 @@ class Limits(Record):
                 "model_call_reserve must hold two single calls "
                 f"(2 * {self.single_call_reserved()})"
             )
+        if self.wall_clock_s < self.time_reserve_s:
+            raise ValueError("wall_clock_s must be at least time_reserve_s")
+        if self.model_calls < self.model_call_reserve:
+            raise ValueError("model_calls must be at least model_call_reserve")
         return self
+
+    def material_claims(self) -> int:
+        """The whole material budget: the sum of its partitions."""
+        return (
+            self.map_claims
+            + len(CENTRAL_QUESTIONS) * self.material_per_question
+            + self.material_other
+        )
 
     def attempt_turns(self) -> int:
         """The most ``num_turns`` a tool session can report."""

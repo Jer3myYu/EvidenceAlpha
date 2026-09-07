@@ -172,6 +172,7 @@ class FixtureBackend:
                             str(record.get("content_type", "")).lower(),
                             str(record.get("final_url", record["url"])),
                             str(record.get("retrieved_at", "")),
+                            str(record.get("title", "")).strip(),
                         ]
                     )
                 )

@@ -47,6 +47,50 @@ class CitationProblem:
 
     section_id: str
     description: str
+    # The offending factual unit, when the problem is about one.
+    text: str | None = None
+
+
+def redact(
+    text: str, issues: list[records.Issue], section_id: str, note: str
+) -> str:
+    """Remove every factual unit an open material issue names.
+
+    An unsupported or contradicted unit that the section still carries
+    is replaced by ``note`` (and stays listed under limitations), so no
+    open issue's text is ever delivered as fact.
+    """
+    for issue in issues:
+        if (
+            issue.target == section_id
+            and issue.severity == "material"
+            and issue.category in ("unsupported", "contradiction")
+            and issue.text
+            and issue.text in text
+        ):
+            text = text.replace(issue.text, note)
+    return text
+
+
+def unremovable_section_issues(
+    state: state_module.IndustryState,
+) -> list[records.Issue]:
+    """Open material section issues without a removable unit.
+
+    A final-review issue names a section and a problem but not the exact
+    unit; while one is open the report cannot be delivered as complete
+    with limitations, because the offending text would stay.
+    """
+    section_ids = {s.id for s in state.get("sections", [])}
+    return [
+        i
+        for i in state.get("issues", {}).values()
+        if i.status == "open"
+        and i.severity == "material"
+        and i.category in ("unsupported", "contradiction")
+        and i.target in section_ids
+        and not i.text
+    ]
 
 
 def cited_ids(text: str) -> list[str]:
@@ -89,6 +133,7 @@ def check_citations(
                     CitationProblem(
                         section.id,
                         "uncited sentence with a number: " f"{stripped[:80]}",
+                        stripped,
                     )
                 )
             elif any(name in stripped for name in names):
@@ -97,6 +142,7 @@ def check_citations(
                         section.id,
                         "uncited sentence naming an entity: "
                         f"{stripped[:80]}",
+                        stripped,
                     )
                 )
     return problems
@@ -235,14 +281,16 @@ def render(
         f"cutoff: {brief.cutoff}; report status: {_STATUS_TEXT[status]}"
     )
     parts += [scope_line, ""]
-    for section in state.get("sections", []):
-        text = _CITATION.sub(
-            lambda m: _cite(m, claims, evidence, order), section.text
-        )
-        parts += [f"## {section.title}", "", text, ""]
     open_issues = [
         i for i in state.get("issues", {}).values() if i.status == "open"
     ]
+    removed_note = (
+        "[已移除未经核实的表述]" if zh else "[unverified statement removed]"
+    )
+    for section in state.get("sections", []):
+        text = redact(section.text, open_issues, section.id, removed_note)
+        text = _CITATION.sub(lambda m: _cite(m, claims, evidence, order), text)
+        parts += [f"## {section.title}", "", text, ""]
     unresolvable = [
         i
         for i in state.get("issues", {}).values()

@@ -100,6 +100,14 @@ def test_replay_rebuilds_the_same_events_as_the_live_run(tmp_path):
         assert a["attempt_id"] == b["attempt_id"]
         assert a["context"].get("user") == b["context"].get("user")
         assert a["state"] == b["state"]
+    workers = [e for e in replayed if e["node"] == "run_task"]
+    assert workers, "the replay shows tool-using attempts"
+    for event in workers:
+        # The session cap and the ledger reservation are shown apart.
+        assert event["context"]["max_turns"] == runtime.limits.max_turns
+        assert (
+            event["context"]["reserved_turns"] == runtime.limits.attempt_turns()
+        )
 
 
 def test_legacy_thread_replays_read_only():

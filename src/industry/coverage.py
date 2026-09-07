@@ -432,6 +432,17 @@ def report_status(
     ]
     if all(c.status == "covered" for c in coverage) and not issues:
         return "complete" if verified else "complete_with_limitations"
+    # An open unsupported/contradiction issue on a section whose exact
+    # unit is unknown cannot be redacted, so the text would be delivered
+    # as fact: fail closed.
+    section_ids = {s.id for s in state.get("sections", [])}
+    if any(
+        i.target in section_ids
+        and i.category in ("unsupported", "contradiction")
+        and not i.text
+        for i in issues
+    ):
+        return "incomplete"
     central_targets: set[str] = set()
     for number in records.CENTRAL_QUESTIONS:
         item = by_question[number]

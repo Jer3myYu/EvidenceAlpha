@@ -327,3 +327,21 @@ def test_unknown_usage_with_a_measured_duration_charges_that_duration():
     charge = budget.attempt_charge(failed)
     assert (charge.turns, charge.tool_calls) == (12, 24)
     assert charge.duration_s == 450.0 and charge.unknown
+
+
+def test_limits_reject_zero_divisors_and_incoherent_totals():
+    for field in ("task_timeout_s", "tools_per_attempt", "turns_per_exchange"):
+        with pytest.raises(ValueError):
+            records.Limits(**{field: 0})
+    with pytest.raises(ValueError):
+        records.Limits(wall_clock_s=100, time_reserve_s=960)
+    with pytest.raises(ValueError):
+        records.Limits(model_calls=10, model_call_reserve=20)
+    legacy = records.Limits.model_validate(
+        {
+            "material_claims": 80,
+            "material_per_attempt": 15,
+            "map_participants": 24,
+        }
+    )
+    assert legacy.map_claims == 30

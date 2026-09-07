@@ -92,43 +92,21 @@ class _Registry:
         # (findings, sections) are marked stale by merge_results.
         self.changed: set[str] = set()
 
-    def material_quota(self, questions: list[int]) -> bool:
-        """Whether one more material claim fits its question's quota.
+    def material_quota(
+        self, questions: list[int], is_map: bool = False
+    ) -> bool:
+        """Whether one more material claim fits its partition."""
+        return admit_material(self.claims, self.limits, questions, is_map)
 
-        The run holds at most ``material_claims`` material claims (map
-        claims included); a claim counts against the lowest central
-        question it serves, each holding ``material_per_question``; a
-        claim serving no central question counts against the remainder.
-        """
-        limits = self.limits
-        material = [c for c in self.claims.values() if c.material]
-        if len(material) >= limits.material_claims:
-            return False
-        central = [q for q in questions if q in records.CENTRAL_QUESTIONS]
-        if central:
-            question = min(central)
-            used = sum(
-                1
-                for c in material
-                if c.map_ref is None
-                and min(
-                    [q for q in c.questions if q in records.CENTRAL_QUESTIONS]
-                    or [0]
-                )
-                == question
-            )
-            return used < limits.material_per_question
-        pooled = (
-            limits.material_claims
-            - len(records.CENTRAL_QUESTIONS) * limits.material_per_question
+    def map_material(self, attempt_id: str, name: str) -> bool:
+        """Admit a map claim to the map partition, or keep it non-material."""
+        if self.material_quota([], is_map=True):
+            return True
+        self.log.append(
+            f"{attempt_id}: map partition full ({self.limits.map_claims}); "
+            f"{name} kept non-material"
         )
-        used = sum(
-            1
-            for c in material
-            if c.map_ref is None
-            and not any(q in records.CENTRAL_QUESTIONS for q in c.questions)
-        )
-        return used < pooled
+        return False
 
     def source_id(self, local: records.Source) -> str:
         """Find the canonical source for a local one, or register it."""
@@ -491,6 +469,7 @@ def _fold_map(
             key_to_id[item.key] = by_name[name]
             continue
         seg_id = next_id("G", {s.id: s for s in segments})
+        item_name = item.name
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -500,7 +479,7 @@ def _fold_map(
                 ),
                 kind="map",
                 evidence_ids=evidence_ids,
-                material=True,
+                material=registry.map_material(attempt_id, item_name),
                 questions=[1],
                 origin=attempt_id,
                 map_ref=seg_id,
@@ -539,6 +518,7 @@ def _fold_map(
         if (from_id, to_id) in existing_links:
             continue
         link_id = next_id("L", {l.id: l for l in links})
+        item_name = f"{seg_name[from_id]} -> {seg_name[to_id]}"
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -548,7 +528,7 @@ def _fold_map(
                 ),
                 kind="map",
                 evidence_ids=evidence_ids,
-                material=True,
+                material=registry.map_material(attempt_id, item_name),
                 questions=[2],
                 origin=attempt_id,
                 map_ref=link_id,
@@ -602,6 +582,7 @@ def _fold_map(
             )
             if part
         )
+        item_name = item.name
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -612,7 +593,7 @@ def _fold_map(
                 ),
                 kind="map",
                 evidence_ids=evidence_ids,
-                material=True,
+                material=registry.map_material(attempt_id, item_name),
                 entity=item.name,
                 questions=[3],
                 origin=attempt_id,
@@ -892,6 +873,48 @@ def issue_key(category: str, target: str) -> str:
     return f"{category}:{target}"
 
 
+def material_partition(claim: records.Claim) -> str:
+    """The partition a material claim counts against."""
+    if claim.map_ref is not None:
+        return "map"
+    central = [q for q in claim.questions if q in records.CENTRAL_QUESTIONS]
+    return f"q{min(central)}" if central else "other"
+
+
+def admit_material(
+    claims: dict[str, records.Claim],
+    limits: records.Limits,
+    questions: list[int],
+    is_map: bool,
+) -> bool:
+    """The one authority admitting a material claim to its partition.
+
+    Findings, map items, and derived claims all pass through here: a
+    map claim counts against ``map_claims``; any other claim against
+    the lowest central question it serves (``material_per_question``
+    each) or, serving none, against ``material_other``. The partitions
+    are disjoint, so a full map never starves an economics question.
+    """
+    probe = records.Claim(
+        id="C0",
+        statement="",
+        kind="fact",
+        questions=list(questions),
+        map_ref="probe" if is_map else None,
+    )
+    partition = material_partition(probe)
+    used = sum(
+        1
+        for c in claims.values()
+        if c.material and material_partition(c) == partition
+    )
+    if partition == "map":
+        return used < limits.map_claims
+    if partition == "other":
+        return used < limits.material_other
+    return used < limits.material_per_question
+
+
 def open_issue(
     issues: dict[str, records.Issue],
     category: records.IssueCategory,
@@ -901,6 +924,7 @@ def open_issue(
     description: str,
     next_step: str | None = None,
     draft_version: int | None = None,
+    text: str | None = None,
 ) -> tuple[dict[str, records.Issue], records.Issue]:
     """Return the open issue with this key, or add a new one.
 
@@ -921,6 +945,7 @@ def open_issue(
                         if draft_version is not None
                         else issue.draft_version
                     ),
+                    "text": text if text is not None else issue.text,
                 }
             )
             updated[issue.id] = refreshed
@@ -936,6 +961,7 @@ def open_issue(
         requested_action=requested_action,
         next_step=next_step,
         draft_version=draft_version,
+        text=text,
     )
     updated[new_id] = issue
     return updated, issue

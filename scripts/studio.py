@@ -163,7 +163,8 @@ def attempt_context(
         "system": worker.system_prompt(work),
         "user": worker.user_prompt(work, collector),
         "tools": list(tools.TOOL_NAMES),
-        "max_turns": work.allowance.turns,
+        "max_turns": work.max_turns,
+        "reserved_turns": work.allowance.turns,
         "schema": worker.TaskOutput.model_json_schema(),
         "reconstructed": True,
     }

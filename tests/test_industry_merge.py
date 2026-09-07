@@ -810,3 +810,68 @@ def test_relationship_needs_a_supported_parent_to_confirm():
     assert applied["claims"]["C1"].review == "unsupported"
     assert not applied["relationships"]["R1"].confirmed
     assert any("parent claim" in line for line in applied["route_log"])
+
+
+def test_material_partitions_are_disjoint_and_cover_map_and_derived():
+    limits = records.Limits(
+        map_claims=2, material_per_question=1, material_other=1
+    )
+    claims = {}
+
+    def add(cid, questions, map_ref=None, material=True):
+        claims[cid] = records.Claim(
+            id=cid,
+            statement=cid,
+            kind="map" if map_ref else "fact",
+            questions=questions,
+            map_ref=map_ref,
+            material=material,
+        )
+
+    add("C1", [1], map_ref="G1")
+    add("C2", [2], map_ref="L1")
+    # The map partition is full: a late map item is not material.
+    assert not merge.admit_material(claims, limits, [3], True)
+    # Q4 and Q5 are untouched by the full map and a full Q1.
+    add("C3", [1])
+    assert not merge.admit_material(claims, limits, [1], False)
+    assert merge.admit_material(claims, limits, [4], False)
+    assert merge.admit_material(claims, limits, [5], False)
+    add("C4", [4])
+    # A derived claim counts against Q4 too: overflow is non-material.
+    assert not merge.admit_material(claims, limits, [4], False)
+    assert merge.admit_material(claims, limits, [7], False)
+    add("C5", [7])
+    assert not merge.admit_material(claims, limits, [8], False)
+    assert limits.material_claims() == 2 + 5 * 1 + 1
+
+
+def test_late_map_items_beyond_the_map_partition_stay_non_material():
+    state = base_state()
+    limits = records.Limits(**{**LIMITS.model_dump(), "map_claims": 1})
+    draft = records.MapDraft(
+        segments=[
+            records.SegmentDraft(
+                key=f"s{n}",
+                name=f"segment {n}",
+                stage="upstream",
+                description="d",
+                evidence_refs=["E1"],
+            )
+            for n in range(2)
+        ]
+    )
+    result = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "map text", "va")],
+        map=draft,
+    )
+    update = merge.merge_results(state, [result], limits)
+    map_claims = [c for c in update["claims"].values() if c.map_ref]
+    assert len(map_claims) == 2 and sum(c.material for c in map_claims) == 1
+    assert any("map partition full" in line for line in update["route_log"])

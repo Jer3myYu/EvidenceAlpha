@@ -69,8 +69,14 @@ def limits_from(overrides: list[str]) -> records.Limits:
         if not hasattr(defaults, name):
             sys.exit(f"Unknown limit {name!r}.")
         kind = type(getattr(defaults, name))
-        values[name] = kind(raw)
-    return records.Limits(**values)
+        try:
+            values[name] = kind(raw)
+        except ValueError:
+            sys.exit(f"Limit {name} needs a {kind.__name__}, not {raw!r}.")
+    try:
+        return records.Limits(**values)
+    except ValueError as error:
+        sys.exit(f"Invalid limits: {error}")
 
 
 def require_live_key() -> None:

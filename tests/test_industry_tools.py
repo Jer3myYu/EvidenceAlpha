@@ -375,3 +375,33 @@ def test_fixture_digest_covers_metadata_and_requires_hashes(tmp_path):
     )
     with pytest.raises(ValueError):
         build("d")
+
+
+def test_fixture_digest_covers_the_title(tmp_path):
+    fixture = tmp_path / "fx"
+    fixture.mkdir()
+    blob = b"<html><body><p>photomask upstream quartz</p></body></html>"
+    record = {
+        "url": "https://x.example/a",
+        "blob": "a.html",
+        "status": 200,
+        "content_type": "text/html",
+        "sha256": hashlib.sha256(blob).hexdigest(),
+        "title": "one",
+    }
+    (fixture / "a.html").write_bytes(blob)
+    (fixture / "sources.json").write_text(json.dumps([record]))
+    first = tools.FixtureBackend(
+        str(fixture),
+        snapshots.vector_store(str(tmp_path / "c1")),
+        str(tmp_path / "s1"),
+    ).digest
+    (fixture / "sources.json").write_text(
+        json.dumps([{**record, "title": "two"}])
+    )
+    second = tools.FixtureBackend(
+        str(fixture),
+        snapshots.vector_store(str(tmp_path / "c2")),
+        str(tmp_path / "s2"),
+    ).digest
+    assert first != second
