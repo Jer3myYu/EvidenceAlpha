@@ -1,6 +1,7 @@
 """Deterministic merge, review application, invalidation, issues."""
 
 from industry import budget
+from industry import calc
 from industry import merge
 from industry import records
 from industry import report
@@ -1153,3 +1154,359 @@ def test_qualified_claim_without_a_reason_is_not_citable_until_reviewed():
         and "without a stated reason" in reviewed.review_reason
     )
     assert any("qualified without a reason" in l for l in applied["route_log"])
+
+
+def test_omitting_the_scale_from_a_quantity_is_refused():
+    # C1 round 1, finding 3: "52" copied from "52 million USD" with unit
+    # "USD" is internally consistent and a million-fold wrong.
+    state = base_state()
+    excerpt = "Acme 2024 revenue was 52 million USD, up 12%."
+    result = result_t2(excerpt=excerpt).model_copy(
+        update={"evidence": [evidence("E1", "S1", excerpt, "va")]}
+    )
+    result.findings[0] = result.findings[0].model_copy(
+        update={
+            "quantity": records.Quantity(
+                value=52, unit="USD", period="2024", as_written="52"
+            )
+        }
+    )
+    update = merge.merge_results(state, [result], LIMITS)
+    claim = update["claims"]["C1"]
+    assert claim.quantity is None
+    assert "quantity_scale_omitted" in claim.limitations
+    assert any("scales" in line for line in update["route_log"])
+    # The same number with the scale in the unit is admitted.
+    carried = result.model_copy()
+    carried.findings[0] = result.findings[0].model_copy(
+        update={
+            "quantity": records.Quantity(
+                value=52,
+                unit="USD million",
+                period="2024",
+                as_written="52 million",
+            )
+        }
+    )
+    kept = merge.merge_results(base_state(), [carried], LIMITS)
+    assert kept["claims"]["C1"].quantity is not None
+    # And the excerpt's own scale is only read beside the number.
+    check = merge.quantity_scale_in_excerpts
+    assert check(
+        records.Quantity(value=52, unit="USD", as_written="52"),
+        ["Acme 2024 revenue was 52 USD"],
+    )
+    assert check(
+        records.Quantity(value=52, unit="亿元", as_written="52"),
+        ["营业收入52亿元"],
+    )
+    assert not check(
+        records.Quantity(value=52, unit="元", as_written="52"),
+        ["营业收入52亿元"],
+    )
+
+
+def test_a_unit_carries_its_scale_in_any_order_and_as_a_symbol():
+    # C1 round 1, finding 5: valid notation was rejected, which loses
+    # evidence as silently as accepting a wrong scale delivers it.
+    consistent = merge.quantity_consistent
+    assert consistent(
+        records.Quantity(value=52, unit="USD million", as_written="52 million")
+    )
+    assert consistent(
+        records.Quantity(
+            value=52, unit="USD million", as_written="52 million USD"
+        )
+    )
+    assert consistent(records.Quantity(value=52, unit="USD", as_written="$52"))
+    assert consistent(
+        records.Quantity(value=52, unit="亿元", as_written="52亿")
+    )
+    assert consistent(records.Quantity(value=60, unit="%", as_written="60%"))
+    # A scale the unit does not carry is still refused (C0 round 14).
+    assert not consistent(
+        records.Quantity(value=52, unit="USD", as_written="52 million")
+    )
+    assert not consistent(
+        records.Quantity(value=52, unit="USD", as_written="52 tonnes")
+    )
+
+
+def test_a_repeat_keeps_the_limitation_its_quantity_was_dropped_with():
+    # C1 round 1, finding 5: folding a repeat left the record of the
+    # drop only in the route log.
+    state = base_state()
+    state.update(
+        merge.merge_results(state, [result_t2(quantity=False)], LIMITS)
+    )
+    assert state["claims"]["C1"].limitations == []
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    repeat = result_t2(quantity=False).model_copy(
+        update={"attempt_id": "T3.1", "task_id": "T3"}
+    )
+    repeat.findings[0] = repeat.findings[0].model_copy(
+        update={
+            "quantity": records.Quantity(
+                value=999, unit="亿元", period="2024", as_written="52亿元"
+            )
+        }
+    )
+    update = merge.merge_results(state, [repeat], LIMITS)
+    claim = update["claims"]["C1"]
+    assert claim.quantity is None
+    assert "quantity_value_mismatch" in claim.limitations
+
+
+def test_the_same_attempt_twice_in_one_batch_is_folded_once():
+    # C1 round 1, finding 7: filtering happened before the fold, so a
+    # duplicate in the same batch was merged twice.
+    state = base_state()
+    result = result_t2()
+    once = merge.merge_results(state, [result], LIMITS)
+    twice = merge.merge_results(state, [result, result], LIMITS)
+    assert twice["merged"] == once["merged"] == ["T2.1"]
+    assert len(twice["evidence"]) == len(once["evidence"])
+    assert len(twice["claims"]) == len(once["claims"])
+    assert any("duplicate result" in line for line in twice["route_log"])
+
+
+def derived_state():
+    """Two measured claims, a calculation, and what rests on its result."""
+    quantity = records.Quantity(
+        value=52, unit="亿元", period="2024", as_written="52亿元"
+    )
+    whole = records.Quantity(
+        value=100, unit="亿元", period="2024", as_written="100亿元"
+    )
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="Acme 2024 revenue was 52亿元",
+            kind="fact",
+            evidence_ids=["E1"],
+            quantity=quantity,
+            review="supported",
+            material=True,
+            partition="q4",
+            questions=[4],
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="the 2024 market was 100亿元",
+            kind="fact",
+            evidence_ids=["E1"],
+            quantity=whole,
+            review="supported",
+            material=True,
+            partition="q4",
+            questions=[4],
+        ),
+        "C3": records.Claim(
+            id="C3",
+            statement="share: 52.0 % (computed from C1, C2)",
+            kind="derived",
+            evidence_ids=["E1"],
+            calculation_id="K1",
+            review="supported",
+            material=True,
+            partition="q4",
+            questions=[4],
+            origin="K1",
+        ),
+    }
+    calculation = records.Calculation(
+        id="K1",
+        kind="share",
+        label="Acme share",
+        inputs=[
+            records.CalcInput(claim_id="C1", value=52, unit="亿元"),
+            records.CalcInput(claim_id="C2", value=100, unit="亿元"),
+        ],
+        formula="52 / 100 * 100",
+        result=52.0,
+        unit="%",
+        status="ok",
+    )
+    return {
+        "claims": claims,
+        "calculations": {"K1": calculation},
+        "findings": {
+            "F1": records.Finding(
+                id="F1",
+                conclusion="Acme leads",
+                claim_ids=["C3"],
+                mechanism="m",
+                implication="i",
+                counterargument="c",
+                uncertainty="u",
+                monitor="mo",
+                questions=[8],
+            )
+        },
+        "sections": [
+            records.Section(
+                id="s1",
+                title="t",
+                text="Acme holds 52% [C3].",
+                claim_ids=["C3"],
+            )
+        ],
+        "relationships": {
+            "R1": records.Relationship(
+                id="R1",
+                from_entity="Acme",
+                to_entity="Beta",
+                relation="supplies",
+                confirmed=True,
+                evidence_ids=["E1"],
+                claim_id="C1",
+                review="supported",
+            )
+        },
+    }
+
+
+def test_correcting_a_claim_invalidates_what_was_computed_from_it():
+    # C1 round 1, finding 1: the derived claim, its calculation, the
+    # finding, the section and the relationship all kept their approval
+    # after the input changed.
+    state = derived_state()
+    update = merge.invalidate_claim(
+        state,
+        "C1",
+        quantity=records.Quantity(
+            value=26, unit="亿元", period="2024", as_written="26亿元"
+        ),
+    )
+    assert update["claims"]["C1"].review == "unreviewed"
+    derived = update["claims"]["C3"]
+    assert derived.review == "unreviewed" and derived.review_reason is None
+    assert derived.version == 2 and derived.supersedes == "C3@1"
+    assert not derived.is_reviewed() and derived.needs_review()
+    assert update["calculations"]["K1"].status == "error"
+    assert "stale_input" in update["calculations"]["K1"].message
+    assert update["findings"]["F1"].status == "stale"
+    assert update["sections"][0].stale
+    assert not update["relationships"]["R1"].confirmed
+    # And the stale result is no longer an input to a new calculation.
+    assert "C3" not in calc.inputs_from_claims(update["claims"])
+
+
+def test_rejecting_an_input_invalidates_what_was_computed_from_it():
+    # C1 round 1, finding 1: the same leak through the review path.
+    state = derived_state()
+    review = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1", verdict="unsupported", reason="no source"
+            )
+        ]
+    )
+    update = merge.apply_review(state, review)
+    assert update["claims"]["C3"].review == "unreviewed"
+    assert update["calculations"]["K1"].status == "error"
+    assert update["findings"]["F1"].status == "stale"
+    assert update["sections"][0].stale
+    assert not update["relationships"]["R1"].confirmed
+
+
+def test_requalifying_an_input_invalidates_what_was_computed_from_it():
+    # C1 round 1, finding 1: a restriction added after the fact left the
+    # derived number carrying the old, unrestricted qualification.
+    state = derived_state()
+    review = records.ClaimReview(
+        claims=[
+            records.ClaimVerdict(
+                claim_id="C1",
+                verdict="qualified",
+                reason="merchant market only",
+            )
+        ]
+    )
+    update = merge.apply_review(state, review)
+    assert update["claims"]["C1"].review_reason == "merchant market only"
+    assert update["claims"]["C3"].review == "unreviewed"
+    assert update["calculations"]["K1"].status == "error"
+    # A verdict that changes nothing leaves the dependants alone.
+    state = derived_state()
+    again = merge.apply_review(
+        state,
+        records.ClaimReview(
+            claims=[
+                records.ClaimVerdict(
+                    claim_id="C1", verdict="supported", reason=""
+                )
+            ]
+        ),
+    )
+    assert again["claims"]["C3"].review == "supported"
+    assert again["calculations"]["K1"].status == "ok"
+
+
+def test_a_repeat_that_changes_meaning_revokes_its_relationship():
+    # C1 round 1, finding 1: the parent was re-versioned and unreviewed
+    # but its relationship stayed confirmed, and supporting the new
+    # version made it live again without a relationship judgement.
+    state = base_state()
+    state.update(
+        merge.merge_results(state, [result_t2(quantity=False)], LIMITS)
+    )
+    state.update(
+        merge.apply_review(
+            state,
+            records.ClaimReview(
+                claims=[
+                    records.ClaimVerdict(
+                        claim_id="C1", verdict="supported", reason="ok"
+                    )
+                ],
+                relationships=[
+                    records.RelationshipVerdict(
+                        relationship_id="R1", supported=True, reason="ok"
+                    )
+                ],
+            ),
+        )
+    )
+    assert state["relationships"]["R1"].confirmed
+    state["tasks"]["T3"] = task("T3")
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    richer = result_t2().model_copy(
+        update={"attempt_id": "T3.1", "task_id": "T3"}
+    )
+    state.update(merge.merge_results(state, [richer], LIMITS))
+    assert state["claims"]["C1"].version == 2
+    assert state["claims"]["C1"].review == "unreviewed"
+    assert not state["relationships"]["R1"].confirmed
+    assert state["relationships"]["R1"].review == "unreviewed"
+    # Supporting the new version alone does not bring the relation back.
+    state.update(
+        merge.apply_review(
+            state,
+            records.ClaimReview(
+                claims=[
+                    records.ClaimVerdict(
+                        claim_id="C1", verdict="supported", reason="ok"
+                    )
+                ]
+            ),
+        )
+    )
+    assert not state["relationships"]["R1"].confirmed
+    assert not merge.relationship_live(
+        state["relationships"]["R1"], state["claims"]
+    )
+
+
+def test_a_qualification_without_a_reason_revokes_its_relationship():
+    # C1 round 1, finding 4: revocation still compared review directly.
+    state = derived_state()
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"review": "qualified", "review_reason": None}
+    )
+    relationships, log = merge.revoke_orphaned_relationships(
+        state["relationships"], state["claims"]
+    )
+    assert not relationships["R1"].confirmed
+    assert log and "no longer supported" in log[0]

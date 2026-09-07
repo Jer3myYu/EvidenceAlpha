@@ -80,27 +80,41 @@ def record_types() -> dict[str, tuple[str, type | None]]:
     ``persist.validate_records`` uses it to reject a persisted field
     whose records came back as plain dictionaries.
     """
-    out: dict[str, tuple[str, type | None]] = {}
-    for key, hint in typing.get_type_hints(
-        IndustryState, include_extras=True
-    ).items():
-        if typing.get_origin(hint) is Annotated:
-            hint = typing.get_args(hint)[0]
-        origin = typing.get_origin(hint)
-        args = typing.get_args(hint)
-        if origin is types.UnionType or origin is typing.Union:
-            inner = [a for a in args if a is not NoneType]
-            model = inner[0] if inner and _is_record(inner[0]) else None
-            out[key] = ("optional", model)
-        elif origin is dict:
-            out[key] = ("dict", args[1] if _is_record(args[1]) else None)
-        elif origin is list:
-            out[key] = ("list", args[0] if _is_record(args[0]) else None)
-        elif _is_record(hint):
-            out[key] = ("model", hint)
-        else:
-            out[key] = ("plain", None)
-    return out
+    return {
+        key: container_of(hint)
+        for key, hint in typing.get_type_hints(
+            IndustryState, include_extras=True
+        ).items()
+    }
+
+
+def container_of(hint: Any) -> tuple[str, type | None]:
+    """The container kind and record class a type hint describes.
+
+    ``("model", cls)`` for a single record, ``("optional", cls)`` when
+    it may be ``None``, ``("dict", cls)`` for a registry, ``("list",
+    cls)`` for a list of records, and ``(kind, None)`` when no record
+    class is involved. ``persist.validate_records`` uses it on the
+    state keys and, recursively, on the fields of a loaded record.
+    """
+    if typing.get_origin(hint) is Annotated:
+        hint = typing.get_args(hint)[0]
+    origin = typing.get_origin(hint)
+    args = typing.get_args(hint)
+    if origin is types.UnionType or origin is typing.Union:
+        inner = [a for a in args if a is not NoneType]
+        model = inner[0] if inner and _is_record(inner[0]) else None
+        if len(inner) == 1 and not _is_record(inner[0]):
+            kind, model = container_of(inner[0])
+            return ("optional" if kind in ("model", "plain") else kind, model)
+        return ("optional", model)
+    if origin is dict:
+        return ("dict", args[1] if args and _is_record(args[1]) else None)
+    if origin is list:
+        return ("list", args[0] if args and _is_record(args[0]) else None)
+    if _is_record(hint):
+        return ("model", hint)
+    return ("plain", None)
 
 
 NoneType = type(None)

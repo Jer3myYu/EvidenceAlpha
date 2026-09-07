@@ -1421,7 +1421,7 @@ def test_retired_issues_keep_redaction_and_never_make_a_report_complete():
         "issues": {"I1": retired},
     }
     rendered = report.render(state, [], "complete_with_limitations")
-    body = rendered.split("## 局限性")[0]
+    body = rendered.split("## 局限性", maxsplit=1)[0]
     assert "99%" not in body and "已移除未经核实的表述" in body
     assert "99%" in rendered  # still listed under limitations
     covered = [
@@ -1514,3 +1514,64 @@ def test_follow_up_limit_is_enforced_at_task_admission_and_on_recurrence():
     )
     assert again.id == "I1" and again.status == "unresolvable"
     assert again.attempts == limits.issue_follow_ups and list(issues) == ["I1"]
+
+
+def test_a_claim_a_live_calculation_consumes_is_still_cited():
+    # C1 round 1, finding 1: an unsupported issue on a calculation input
+    # closed as "claim no longer cited" while the derived number that
+    # depended on it was still deliverable.
+    quantity = records.Quantity(
+        value=52, unit="亿元", period="2024", as_written="52亿元"
+    )
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="Acme 2024 revenue was 52亿元",
+            kind="fact",
+            evidence_ids=["E1"],
+            quantity=quantity,
+            review="unsupported",
+            material=True,
+            partition="q4",
+        ),
+        "C3": records.Claim(
+            id="C3",
+            statement="share: 52.0 %",
+            kind="derived",
+            evidence_ids=["E1"],
+            calculation_id="K1",
+            review="supported",
+            material=True,
+            partition="q4",
+        ),
+    }
+    calculation = records.Calculation(
+        id="K1",
+        kind="share",
+        label="share",
+        inputs=[records.CalcInput(claim_id="C1", value=52, unit="亿元")],
+        formula="f",
+        result=52.0,
+        unit="%",
+        status="ok",
+    )
+    issues, issue = merge.open_issue(
+        {}, "unsupported", "material", "C1", "acquire", "no source"
+    )
+    state = {
+        "claims": claims,
+        "calculations": {"K1": calculation},
+        "issues": issues,
+        "findings": {},
+        "sections": [],
+        "coverage": [],
+    }
+    kept = graph_module.resolve_issues(state)
+    assert kept["issues"][issue.id].status == "open"
+    # Once the calculation is no longer current, nothing cites C1.
+    state["calculations"]["K1"] = calculation.model_copy(
+        update={"status": "error", "message": "stale_input: C1 changed"}
+    )
+    closed = graph_module.resolve_issues(state)
+    assert closed["issues"][issue.id].status == "resolved"
+    assert closed["issues"][issue.id].resolution == "claim no longer cited"

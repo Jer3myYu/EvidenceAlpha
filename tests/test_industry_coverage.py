@@ -425,3 +425,15 @@ def test_legacy_cost_differentiation_counts_as_cost_structure_only():
     del state["claims"]["C34"]  # differentiation is not implied
     state["findings"]["F1"] = finding("F1", ["C31", "C32", "C33", "C35", "C40"])
     assert statuses(coverage.derive(state, None))[4] == "partial"
+
+
+def test_a_qualification_without_a_reason_classifies_no_region():
+    # C1 round 1, finding 4: entity_region compared review directly, so
+    # participants that were not citable still classified Q6's regions.
+    state = full_state()
+    assert statuses(coverage.derive(state, None))[6] == "covered"
+    for part in state["map"].participants:
+        state["claims"][part.claim_id] = state["claims"][
+            part.claim_id
+        ].model_copy(update={"review": "qualified", "review_reason": None})
+    assert statuses(coverage.derive(state, None))[6] != "covered"

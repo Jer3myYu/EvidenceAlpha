@@ -740,6 +740,15 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
             cited.update(finding.claim_ids)
     for section in state.get("sections", []):
         cited.update(section.claim_ids)
+    # A claim a live calculation still consumes is cited through the
+    # derived claim that reports its result, so its unsupported issue is
+    # not resolved by "no longer cited".
+    calculations = state.get("calculations", {})
+    for claim in claims.values():
+        if claim.calculation_id and claim.is_reviewed():
+            calculation = calculations.get(claim.calculation_id)
+            if calculation is not None and calculation.status == "ok":
+                cited.update(item.claim_id for item in calculation.inputs)
     log = []
     for issue in issues.values():
         if issue.status != "open":
@@ -1263,6 +1272,9 @@ def build_graph(
                 "claims": applied["claims"],
                 "relationships": applied["relationships"],
                 "sources": applied["sources"],
+                "calculations": applied["calculations"],
+                "findings": applied["findings"],
+                "sections": applied["sections"],
                 "review": outcome,
             }
         )

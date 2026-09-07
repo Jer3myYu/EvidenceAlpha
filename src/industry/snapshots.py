@@ -229,6 +229,11 @@ def _atomic_write(path: pathlib.Path, data: bytes) -> None:
             os.remove(handle.name)
 
 
+# What the metadata file records beside the version's own fields; the
+# registry id of the source is attempt-local and is never written.
+_METADATA_ONLY = ("url", "canonical_url", "publisher", "published")
+
+
 def store_snapshot(
     fetched: Fetched,
     source_id: str,
@@ -240,7 +245,9 @@ def store_snapshot(
     """Save the bytes once and the fetch metadata once; return the version.
 
     The blob is content-addressed (identical bytes from two URLs share
-    it); the metadata is keyed by URL and hash and never rewritten. The
+    it); the metadata is keyed by URL and hash, never rewritten, and is
+    what the returned version reports once it exists, so a second fetch
+    of the same bytes cannot re-date or re-interpret it. The
     metadata holds only content facts (URL, hash, type, size, time,
     extraction version, chunk count, publisher, published date); the
     registry id of the source is attempt-local and stays out of it.
@@ -270,15 +277,28 @@ def store_snapshot(
         extraction_version=EXTRACTION_VERSION,
         chunk_count=chunk_count,
     )
-    if not meta.exists():
-        payload = version.model_dump(exclude={"source_id"})
-        payload["url"] = fetched.url
-        payload["canonical_url"] = canonical
-        payload["publisher"] = publisher
-        payload["published"] = published
-        _atomic_write(
-            meta, json.dumps(payload, ensure_ascii=False, indent=1).encode()
+    if meta.exists():
+        # The version is immutable: a later fetch of the same bytes
+        # keeps the recorded retrieval time, content type, extraction
+        # version and chunk count, so every chunk indexed under this
+        # version id keeps one consistent interpretation.
+        recorded = json.loads(meta.read_text(encoding="utf-8"))
+        fields = {
+            name: value
+            for name, value in recorded.items()
+            if name not in _METADATA_ONLY
+        }
+        return records.SourceVersion.model_validate(
+            {**fields, "source_id": source_id}
         )
+    payload = version.model_dump(exclude={"source_id"})
+    payload["url"] = fetched.url
+    payload["canonical_url"] = canonical
+    payload["publisher"] = publisher
+    payload["published"] = published
+    _atomic_write(
+        meta, json.dumps(payload, ensure_ascii=False, indent=1).encode()
+    )
     return version
 
 

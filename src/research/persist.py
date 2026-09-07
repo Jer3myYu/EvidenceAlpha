@@ -15,6 +15,7 @@ and answers through the state reducers, so it is never done.
 
 import contextlib
 import sqlite3
+import typing
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -99,8 +100,10 @@ async def load_industry_state(
     Raises:
       LookupError: If the thread has no checkpoint.
       LegacyThreadError: If the thread was recorded by the Phase 6-9
-        workflow (no ``meta``) or by another workflow version; such a
-        thread can be replayed read-only in Studio but not resumed.
+        workflow (no ``meta``), by another workflow version, or with
+        another record schema, or if its records did not survive
+        deserialization; such a thread can be replayed read-only in
+        Studio but not resumed.
     """
     snapshot = await load_state(graph, thread_id)
     version = thread_version(snapshot)
@@ -113,6 +116,18 @@ async def load_industry_state(
         raise LegacyThreadError(
             f"Thread {thread_id!r} was recorded by workflow "
             f"{version!r}; this program runs {expected_version!r}."
+        )
+    schema = getattr(snapshot.values.get("meta"), "schema_version", None)
+    if schema != industry_records.SCHEMA_VERSION:
+        # A record schema this program does not write is not resumable:
+        # the serializer drops the fields it does not know without an
+        # error, so the thread would continue on silently stripped
+        # records. Replay stays available and read-only.
+        raise LegacyThreadError(
+            f"Thread {thread_id!r} was recorded with record schema "
+            f"{schema}; this program writes schema "
+            f"{industry_records.SCHEMA_VERSION}. Replay it read-only in "
+            "Studio, it cannot be resumed here."
         )
     problems = validate_records(snapshot.values)
     if problems:
@@ -138,6 +153,42 @@ REGISTRY_KEYS = (
 )
 
 
+def nested_problems(label: str, item: Any) -> list[str]:
+    """Record-typed fields of a loaded record that are not records.
+
+    ``model_validate(item.model_dump())`` cannot see this: a dump turns
+    a genuine nested record and a plain dictionary left behind by the
+    serializer's ``model_construct`` fallback into the same payload, and
+    validating that payload rebuilds the record either way. The loaded
+    object's own attributes are what the readers use, so they are what
+    is checked.
+    """
+    problems: list[str] = []
+    hints = typing.get_type_hints(type(item))
+    for name in type(item).model_fields:
+        kind, model = state_module.container_of(hints.get(name))
+        if model is None:
+            continue
+        value = getattr(item, name, None)
+        if kind == "dict" and isinstance(value, dict):
+            entries = [(f"{label}.{name}[{k}]", v) for k, v in value.items()]
+        elif kind == "list" and isinstance(value, list):
+            entries = [(f"{label}.{name}[{i}]", v) for i, v in enumerate(value)]
+        elif value is None:
+            continue
+        else:
+            entries = [(f"{label}.{name}", value)]
+        for sub_label, sub in entries:
+            if not isinstance(sub, model):
+                problems.append(
+                    f"{sub_label}: {type(sub).__name__} where "
+                    f"{model.__name__} is required"
+                )
+            else:
+                problems.extend(nested_problems(sub_label, sub))
+    return problems
+
+
 def validate_records(values: dict[str, Any]) -> list[str]:
     """Re-validate the registries of a loaded state; return the problems.
 
@@ -161,6 +212,8 @@ def validate_records(values: dict[str, Any]) -> list[str]:
             type(item).model_validate(item.model_dump())
         except (AttributeError, ValueError) as error:
             problems.append(f"{label}: {str(error)[:120]}")
+            return
+        problems.extend(nested_problems(label, item))
 
     for key, value in values.items():
         container, model = expected.get(key, (None, None))

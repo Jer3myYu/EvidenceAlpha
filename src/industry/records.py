@@ -25,7 +25,11 @@ import pydantic
 # 2: the economics topics cost_structure and differentiation replaced
 # cost_differentiation, which stays accepted as a legacy alias counting
 # toward cost_structure only.
-SCHEMA_VERSION = 2
+# 3: a quantity is admitted only after its scale is checked against the
+# excerpt it was read from, so a claim written under schema 2 may carry
+# a quantity whose scale was never validated; such a thread is replayed
+# read-only and refused for resume (``persist.load_industry_state``).
+SCHEMA_VERSION = 3
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]

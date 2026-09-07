@@ -73,6 +73,74 @@ def quantity_in_excerpts(
 
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+# Scale words an excerpt can put beside a number; longest first so that
+# ``万亿`` is never read as ``万``.
+_SCALE_WORDS = (
+    "trillion",
+    "billion",
+    "million",
+    "thousand",
+    "万亿",
+    "百万",
+    "亿",
+    "万",
+    "千",
+    "%",
+    "％",
+    "bn",
+    "mn",
+    "tn",
+)
+# Currency symbols and the codes they stand for, so ``$52`` with unit
+# ``USD`` is a notation the unit carries, not an unresolved scale.
+_CURRENCY = {
+    "$": ("usd", "us$", "美元"),
+    "¥": ("cny", "rmb", "人民币", "元", "jpy", "日元"),
+    "￥": ("cny", "rmb", "人民币", "元"),
+    "€": ("eur", "欧元"),
+    "£": ("gbp", "英镑"),
+    "₩": ("krw", "韩元"),
+}
+
+
+def _components(text: str) -> list[str]:
+    """Split a unit or residue into lowercase comparable components.
+
+    Whitespace and the latin/non-latin boundary separate components, so
+    ``USD million`` is ``["usd", "million"]`` and ``52亿元`` leaves
+    ``["亿元"]``.
+    """
+    parts: list[str] = []
+    for chunk in text.split():
+        current = ""
+        latin: bool | None = None
+        for char in chunk:
+            is_latin = char.isascii() and char.isalpha()
+            if current and is_latin != latin:
+                parts.append(current)
+                current = ""
+            current += char
+            latin = is_latin
+        if current:
+            parts.append(current)
+    return [part.lower() for part in parts]
+
+
+def _residue(as_written: str) -> list[str]:
+    """What accompanies the numbers in ``as_written``, as components."""
+    cleaned = re.sub(r"[,，]", "", as_written)
+    return _components(re.sub(r"[-\d.]+", " ", cleaned))
+
+
+def _carried_by_unit(residue: list[str], unit: str) -> bool:
+    """Whether the unit spells out every component beside the number."""
+    unit_text = "".join(_components(unit))
+    for part in residue:
+        aliases = _CURRENCY.get(part, ())
+        if part in unit_text or any(alias in unit_text for alias in aliases):
+            continue
+        return False
+    return True
 
 
 def quantity_consistent(quantity: records.Quantity) -> bool:
@@ -82,7 +150,11 @@ def quantity_consistent(quantity: records.Quantity) -> bool:
     the number as written must resolve to exactly one numeric token
     equal to ``value``; anything else (no number, several numbers, a
     silent conversion such as ``52`` written for a value of 520) is an
-    unresolved conversion and the quantity is not usable.
+    unresolved conversion and the quantity is not usable. A scale or
+    currency the unit does not carry (``52 million`` with unit ``USD``)
+    leaves the value's scale ambiguous and is refused too; the order of
+    the unit's own components does not matter and a currency symbol
+    stands for its code.
     """
     squashed = re.sub(r"[,\s，]", "", quantity.as_written)
     numbers = _NUMBER.findall(squashed)
@@ -92,13 +164,41 @@ def quantity_consistent(quantity: records.Quantity) -> bool:
     tolerance = 1e-9 * max(1.0, abs(written))
     if abs(written - quantity.value) > tolerance:
         return False
-    # Whatever accompanies the number as written (``亿元``, ``million``,
-    # ``%``) is a scale or unit word and must be part of the unit; a
-    # scale word the unit does not carry would make the value's scale
-    # ambiguous (``52 million`` with unit ``USD``).
-    residue = squashed.replace(numbers[0], "", 1).lower()
-    unit = re.sub(r"[,\s，]", "", quantity.unit).lower()
-    return not residue or residue in unit
+    return _carried_by_unit(_residue(quantity.as_written), quantity.unit)
+
+
+def quantity_scale_in_excerpts(
+    quantity: records.Quantity, excerpts: list[str]
+) -> bool:
+    """Whether the excerpt's own scale beside the number is in the unit.
+
+    ``value=52`` with ``as_written="52"`` and unit ``USD`` is internally
+    consistent, but if the excerpt reads ``52 million USD`` the number
+    was copied without its scale and the value is a million-fold wrong.
+    Every occurrence of the number as written must be followed either by
+    no scale word or by one the unit carries; the scale is never
+    inferred, the quantity is refused.
+    """
+
+    def squash(text: str) -> str:
+        return re.sub(r"[,\s，]", "", text)
+
+    needle = squash(quantity.as_written)
+    if not needle:
+        return False
+    unit_text = "".join(_components(quantity.unit))
+    for excerpt in excerpts:
+        text = squash(excerpt)
+        start = text.find(needle)
+        while start != -1:
+            before = text[start - 1 : start]
+            if not (before.isdigit() or before in (".", "-")):
+                tail = text[start + len(needle) :].lower()
+                for word in _SCALE_WORDS:
+                    if tail.startswith(word) and word not in unit_text:
+                        return False
+            start = text.find(needle, start + 1)
+    return True
 
 
 class _Registry:
@@ -246,6 +346,16 @@ class _Registry:
                 "topics": existing.topics
                 + [t for t in claim.topics if t not in existing.topics],
                 "material": material,
+                # A limitation the repeat was admitted with (a dropped
+                # quantity, an undated milestone) belongs on the
+                # canonical claim; otherwise folding a repeat would
+                # leave the record of the drop only in the route log.
+                "limitations": existing.limitations
+                + [
+                    lim
+                    for lim in claim.limitations
+                    if lim not in existing.limitations
+                ],
             }
             meaning_changed = False
             conflicts = []
@@ -265,7 +375,7 @@ class _Registry:
                 elif mine is not None and theirs is not None and mine != theirs:
                     conflicts.append(field)
             if conflicts:
-                update["limitations"] = existing.limitations + [
+                update["limitations"] = update["limitations"] + [
                     f"conflicting_repeat:{field}" for field in conflicts
                 ]
                 names = ", ".join(conflicts)
@@ -421,6 +531,14 @@ def _fold_finding(
             registry.log.append(
                 f"{attempt_id}: quantity dropped, value {quantity.value} is "
                 f"not the number written ({quantity.as_written!r}): "
+                f"{draft.statement[:60]}"
+            )
+            quantity = None
+        elif not quantity_scale_in_excerpts(quantity, excerpts):
+            limitations.append("quantity_scale_omitted")
+            registry.log.append(
+                f"{attempt_id}: quantity dropped, the excerpt scales "
+                f"{quantity.as_written!r} beyond unit {quantity.unit!r}: "
                 f"{draft.statement[:60]}"
             )
             quantity = None
@@ -685,6 +803,14 @@ def merge_results(
         )
     )
     for result in pending:
+        if result.attempt_id in merged:
+            # The same attempt twice in one batch: the first fold has
+            # already counted it, a second would duplicate its evidence.
+            registry.log.append(
+                f"{result.attempt_id}: duplicate result in the same merge "
+                "ignored"
+            )
+            continue
         attempt = attempts.get(result.attempt_id)
         if attempt is None:
             registry.log.append(
@@ -742,17 +868,14 @@ def merge_results(
         "route_log": registry.log,
     }
     if registry.changed:
-        update["findings"] = stale_findings(
-            state.get("findings", {}), registry.changed
+        cascade = cascade_changes(
+            state,
+            registry.changed,
+            registry.claims,
+            registry.relationships,
         )
-        update["sections"] = [
-            (
-                section.model_copy(update={"stale": True})
-                if set(section.claim_ids) & registry.changed
-                else section
-            )
-            for section in state.get("sections", [])
-        ]
+        update["route_log"] = registry.log + cascade.pop("route_log")
+        update.update(cascade)
     return update
 
 
@@ -781,6 +904,7 @@ def apply_review(
                 return True
         return False
 
+    changed: set[str] = set()
     for verdict in review.claims:
         claim = claims.get(verdict.claim_id)
         if claim is None:
@@ -802,11 +926,21 @@ def apply_review(
                 ],
             }
         )
-    # A parent that this batch rejected takes its relationships with it.
-    relationships, revoked = revoke_orphaned_relationships(
-        relationships, claims
-    )
-    log.extend(revoked)
+        if claim.is_reviewed() and (claim.review, claim.review_reason) != (
+            verdict.verdict,
+            reason,
+        ):
+            # A claim that was citable and is no longer, or whose
+            # restriction changed, invalidates what rests on it.
+            changed.add(claim.id)
+    # A parent that this batch rejected takes its relationships, its
+    # derived claims and their calculations, findings and sections with
+    # it; a parent it merely re-qualified takes them too, so nothing
+    # keeps an approval its basis no longer supports.
+    cascade = cascade_changes(state, changed, claims, relationships)
+    claims = cascade["claims"]
+    relationships = cascade["relationships"]
+    log.extend(cascade["route_log"])
     for verdict in review.relationships:
         relation = relationships.get(verdict.relationship_id)
         if relation is None:
@@ -850,6 +984,9 @@ def apply_review(
         "claims": claims,
         "relationships": relationships,
         "sources": sources,
+        "calculations": cascade["calculations"],
+        "findings": cascade["findings"],
+        "sections": cascade["sections"],
         "route_log": log,
     }
 
@@ -866,10 +1003,12 @@ def invalidate_claim(
         ``quantity``, ``milestone``, ...).
 
     Returns:
-      Updated ``claims``, ``findings``, and ``sections``: the claim's
-      version is incremented, ``supersedes`` names the previous
-      version, ``review`` is reset, and every current finding or
-      section citing the claim is marked stale.
+      The update from ``cascade_changes``: the claim's version is
+      incremented, ``supersedes`` names the previous version, its
+      review is reset, and everything resting on it — claims derived
+      through a calculation, those calculations, the findings and
+      sections citing any of them, and its relationships — is
+      invalidated with it.
     """
     claims = dict(state.get("claims", {}))
     claim = claims[claim_id]
@@ -883,24 +1022,7 @@ def invalidate_claim(
             "reviewed_topics": [],
         }
     )
-    findings = stale_findings(state.get("findings", {}), {claim_id})
-    relationships, _ = revoke_orphaned_relationships(
-        state.get("relationships", {}), claims
-    )
-    sections = [
-        (
-            section.model_copy(update={"stale": True})
-            if claim_id in section.claim_ids
-            else section
-        )
-        for section in state.get("sections", [])
-    ]
-    return {
-        "claims": claims,
-        "findings": findings,
-        "relationships": relationships,
-        "sections": sections,
-    }
+    return cascade_changes(state, {claim_id}, claims)
 
 
 def stale_findings(
@@ -915,6 +1037,127 @@ def stale_findings(
             else finding
         )
         for fid, finding in findings.items()
+    }
+
+
+def derived_dependants(
+    claims: dict[str, records.Claim],
+    calculations: dict[str, records.Calculation],
+    changed: set[str],
+) -> set[str]:
+    """Claims computed, directly or transitively, from ``changed``.
+
+    A calculation names the claims it consumed (``Calculation.inputs``)
+    and the claim it produced carries its ``calculation_id``; following
+    both links to a fixed point gives everything whose number depends
+    on a claim that changed.
+    """
+    consumers: dict[str, set[str]] = {}
+    for calc in calculations.values():
+        for item in calc.inputs:
+            consumers.setdefault(item.claim_id, set()).add(calc.id)
+    produced: dict[str, set[str]] = {}
+    for cid, claim in claims.items():
+        if claim.calculation_id:
+            produced.setdefault(claim.calculation_id, set()).add(cid)
+    found: set[str] = set()
+    queue = list(changed)
+    while queue:
+        current = queue.pop()
+        for calc_id in consumers.get(current, ()):
+            for cid in produced.get(calc_id, ()):
+                if cid in found or cid in changed:
+                    continue
+                found.add(cid)
+                queue.append(cid)
+    return found
+
+
+def cascade_changes(
+    state: state_module.IndustryState,
+    changed: set[str],
+    claims: dict[str, records.Claim],
+    relationships: dict[str, records.Relationship] | None = None,
+) -> dict[str, Any]:
+    """Carry a claim change through everything resting on it.
+
+    A claim whose meaning or review changed takes its dependants with
+    it: every claim derived from it through a calculation loses its
+    review with a new version, every calculation that consumed one of
+    them stops being current (the record stays, its status becomes an
+    error naming the stale input), every current finding and every
+    section citing any of them goes stale, and a relationship whose
+    parent left supported/qualified is unconfirmed and must be judged
+    again. Coverage follows from the findings and reviews, so it needs
+    no separate step.
+
+    Args:
+      state: The state the change is applied to (for the registries the
+        caller did not rebuild).
+      changed: The ids of the claims that changed.
+      claims: The claims registry *after* the change.
+      relationships: The relationships registry after the change, when
+        the caller rebuilt it; otherwise the one in ``state``.
+
+    Returns:
+      The state update for ``claims``, ``calculations``, ``findings``,
+      ``relationships`` and ``sections``, plus its ``route_log`` lines.
+    """
+    claims = dict(claims)
+    calculations = dict(state.get("calculations", {}))
+    log: list[str] = []
+    dependants = derived_dependants(claims, calculations, changed)
+    for cid in sorted(dependants):
+        claim = claims[cid]
+        claims[cid] = claim.model_copy(
+            update={
+                "version": claim.version + 1,
+                "supersedes": f"{cid}@{claim.version}",
+                "review": "unreviewed",
+                "review_reason": None,
+                "reviewed_topics": [],
+            }
+        )
+        log.append(
+            f"claim {cid} rests on a changed claim; version "
+            f"{claim.version + 1}, review reset"
+        )
+    touched = set(changed) | dependants
+    for calc_id, calc in sorted(calculations.items()):
+        stale = sorted({i.claim_id for i in calc.inputs} & touched)
+        if calc.status == "ok" and stale:
+            names = ", ".join(stale)
+            calculations[calc_id] = calc.model_copy(
+                update={
+                    "status": "error",
+                    "message": (
+                        f"stale_input: {names} changed after the calculation"
+                    ),
+                }
+            )
+            log.append(
+                f"calculation {calc_id} no longer current: {names} changed"
+            )
+    if relationships is None:
+        relationships = state.get("relationships", {})
+    relationships, revoked = revoke_orphaned_relationships(
+        relationships, claims
+    )
+    log.extend(revoked)
+    return {
+        "claims": claims,
+        "calculations": calculations,
+        "findings": stale_findings(state.get("findings", {}), touched),
+        "relationships": relationships,
+        "sections": [
+            (
+                section.model_copy(update={"stale": True})
+                if set(section.claim_ids) & touched
+                else section
+            )
+            for section in state.get("sections", [])
+        ],
+        "route_log": log,
     }
 
 
@@ -1001,15 +1244,17 @@ def revoke_orphaned_relationships(
     relationships: dict[str, records.Relationship],
     claims: dict[str, records.Claim],
 ) -> tuple[dict[str, records.Relationship], list[str]]:
-    """Unconfirm every relationship whose parent left supported/qualified."""
+    """Unconfirm every relationship whose parent left supported/qualified.
+
+    Citability is ``Claim.is_reviewed``, so a parent that came back
+    qualified without a reason on record takes its relationships with
+    it exactly like a rejected one.
+    """
     updated = dict(relationships)
     log: list[str] = []
     for rel in relationships.values():
         parent = claims.get(rel.claim_id)
-        parent_ok = parent is not None and parent.review in (
-            "supported",
-            "qualified",
-        )
+        parent_ok = parent is not None and parent.is_reviewed()
         if rel.confirmed and not parent_ok:
             updated[rel.id] = rel.model_copy(
                 update={"confirmed": False, "review": "unreviewed"}

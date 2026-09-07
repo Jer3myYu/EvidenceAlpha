@@ -101,12 +101,11 @@ class _View:
         wanted = entity.casefold()
         for participant in self.industry_map.participants:
             if participant.name.casefold() == wanted:
-                # Only a reviewed participant claim may classify others.
+                # Only a reviewed participant claim may classify others
+                # (``Claim.is_reviewed``: a qualification without a
+                # reason on record does not classify anything).
                 backing = self.claims.get(participant.claim_id)
-                if backing is None or backing.review not in (
-                    "supported",
-                    "qualified",
-                ):
+                if backing is None or not backing.is_reviewed():
                     return None
                 region = (participant.region or "").casefold()
                 if not region:

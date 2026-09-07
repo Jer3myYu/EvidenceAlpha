@@ -1,5 +1,6 @@
 """Safe fetch, immutable snapshots, extraction, chunking, versioned index."""
 
+import dataclasses
 import json
 import pathlib
 
@@ -306,3 +307,32 @@ def test_ingest_local_snapshots_and_indexes_a_file(tmp_path):
     assert list(store.docs.values())[0].metadata["section"] == "Intro"
     with pytest.raises(ValueError, match="Unsupported"):
         snapshots.ingest_local(str(tmp_path / "x.docx"), store, str(tmp_path))
+
+
+def test_a_refetch_reports_the_recorded_version_not_the_new_fetch(tmp_path):
+    # C1 round 1, finding 6: the metadata file was never rewritten, but
+    # the returned version carried the new fetch's retrieval time,
+    # content type and chunk count, and index_version stamped those
+    # onto the chunks already indexed under that version id.
+    root = str(tmp_path / "sources")
+    first = snapshots.store_snapshot(
+        fetched("https://example.com/a", HTML), "S1", root, chunk_count=7
+    )
+    later = dataclasses.replace(
+        fetched("https://example.com/a", HTML),
+        retrieved_at="2026-10-01T00:00:00+00:00",
+        content_type="text/plain",
+    )
+    again = snapshots.store_snapshot(later, "S2", root, chunk_count=0)
+    assert again.id == first.id
+    assert again.retrieved_at == first.retrieved_at
+    assert again.content_type == first.content_type
+    assert again.extraction_version == first.extraction_version
+    assert again.chunk_count == first.chunk_count == 7
+    # The registry id of the source stays attempt-local.
+    assert again.source_id == "S2"
+    recorded = json.loads(
+        pathlib.Path(first.meta_path).read_text(encoding="utf-8")
+    )
+    assert recorded["retrieved_at"] == first.retrieved_at
+    assert recorded["content_type"] == "text/html"

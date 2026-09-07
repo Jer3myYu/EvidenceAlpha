@@ -447,3 +447,70 @@ def test_validate_records_rejects_a_field_degraded_to_a_dictionary():
     registry = {"C1": {"id": "C1", "statement": "x"}}
     assert persist.validate_records({"claims": registry})
     assert not persist.validate_records({"review": None, "cycle": 2})
+
+
+def test_a_thread_of_another_record_schema_is_refused(tmp_path):
+    # C1 round 1, finding 2: only the workflow version was compared, so
+    # a checkpoint written by another record schema resumed on records
+    # the serializer had silently stripped.
+    path = str(tmp_path / "wf.db")
+    config = persist.thread_config("t")
+
+    async def run():
+        async with persist.open_checkpointer(path) as saver:
+            graph = StateGraph(state_module.IndustryState)
+
+            async def start(_):
+                return {
+                    "meta": sample_meta().model_copy(
+                        update={"schema_version": 999}
+                    )
+                }
+
+            graph.add_node("start", start)
+            graph.add_edge(START, "start")
+            graph.add_edge("start", END)
+            compiled = graph.compile(checkpointer=saver)
+            await compiled.ainvoke({"question": "q"}, config)
+            with pytest.raises(persist.LegacyThreadError, match="schema 999"):
+                await persist.load_industry_state(
+                    compiled, "t", state_module.WORKFLOW_VERSION
+                )
+
+    asyncio.run(run())
+
+
+def test_a_nested_record_left_as_a_dictionary_is_rejected():
+    # C1 round 1, finding 2: the serializer rebuilds a record that fails
+    # validation with model_construct, leaving nested values as plain
+    # dictionaries; validating model_dump() cannot see the difference.
+    claim = records.Claim.model_construct(
+        id="C1",
+        statement="Acme 2024 revenue was 52亿元",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity={"value": 52, "unit": "亿元", "as_written": "52亿元"},
+    )
+    problems = persist.validate_records({"claims": {"C1": claim}})
+    assert problems and "quantity" in problems[0]
+    assert "dict where Quantity is required" in problems[0]
+    # A genuine nested record passes.
+    good = claim.model_copy(
+        update={
+            "quantity": records.Quantity(
+                value=52, unit="亿元", as_written="52亿元"
+            )
+        }
+    )
+    assert not persist.validate_records({"claims": {"C1": good}})
+    # And a record nested two levels down is checked too.
+    calculation = records.Calculation.model_construct(
+        id="K1",
+        kind="share",
+        label="l",
+        inputs=[{"claim_id": "C1", "value": 1.0, "unit": "u"}],
+        formula="f",
+        status="ok",
+    )
+    deep = persist.validate_records({"calculations": {"K1": calculation}})
+    assert deep and "CalcInput is required" in deep[0]
