@@ -38,4 +38,4 @@ def test_usage_addition_sums_and_keeps_unknown():
 def test_required_questions_and_central_set():
     assert sorted(records.REQUIRED_QUESTIONS) == list(range(1, 9))
     assert records.CENTRAL_QUESTIONS == (1, 2, 3, 4, 5)
-    assert len(records.QUESTION_4_TOPICS) == 4
+    assert len(records.QUESTION_4_TOPICS) == 5

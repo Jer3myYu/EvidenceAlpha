@@ -144,8 +144,13 @@ async def main() -> None:
             )
             show("QUESTION", args.question)
             config = persist.thread_config(thread_id)
-            payload = {"question": args.question}
+            payload = graph_module.initial_state(args.question, runtime.limits)
         else:
+            if args.limit:
+                sys.exit(
+                    "--limit applies to new runs; a resume keeps the "
+                    "limits recorded in the thread."
+                )
             thread_id = args.resume
             try:
                 snapshot = await persist.load_industry_state(
@@ -153,6 +158,8 @@ async def main() -> None:
                 )
             except LookupError as error:
                 sys.exit(str(error))
+            runtime = budget.Runtime(snapshot.values["meta"].limits)
+            graph = graph_module.build_graph(runtime, checkpointer=checkpointer)
             show("THREAD", thread_id)
             show("QUESTION", snapshot.values["question"])
             if not snapshot.next:

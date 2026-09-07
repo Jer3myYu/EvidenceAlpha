@@ -196,6 +196,26 @@ class LiveRoles:
 WorkerFunction = Callable[..., Awaitable[records.TaskResult]]
 
 
+def initial_state(question: str, limits: records.Limits) -> dict[str, Any]:
+    """The graph input: the question and the run metadata.
+
+    ``meta`` (workflow and schema version, models, limits) is
+    checkpointed with the input, before the first interruptible call,
+    so an interruption during ``scope`` still leaves a resumable,
+    correctly versioned thread.
+    """
+    return {
+        "question": question,
+        "meta": records.RunMeta(
+            workflow_version=state_module.WORKFLOW_VERSION,
+            prompt_version=roles.PROMPT_VERSION,
+            models=dict(roles.ROLE_MODELS),
+            limits=limits,
+            started_at=records.now_iso(),
+        ),
+    }
+
+
 # --- reservations ----------------------------------------------------------
 
 
@@ -213,7 +233,10 @@ def running_reservation(
 
 
 def _reservation(
-    state: state_module.IndustryState, node: str, limits: records.Limits
+    state: state_module.IndustryState,
+    node: str,
+    limits: records.Limits,
+    turns: int,
 ) -> records.Attempt:
     calls = state.get("single_calls", {})
     number = 1 + sum(1 for c in calls.values() if c.task_id == node)
@@ -222,7 +245,7 @@ def _reservation(
         task_id=node,
         status="running",
         reserved=records.Reservation(
-            turns=limits.single_call_turns,
+            turns=turns,
             tool_calls=0,
             seconds=limits.single_call_timeout_s,
         ),
@@ -243,11 +266,13 @@ def reserve_node(node: str, limits: records.Limits):
                 ]
             }
         calls = dict(state.get("single_calls", {}))
-        reservation = _reservation(state, node, limits)
+        reservation = _reservation(state, node, limits, allowed)
         calls[reservation.id] = reservation
         return {
             "single_calls": calls,
-            "route_log": [f"reserve_{node}: {reservation.id} reserved"],
+            "route_log": [
+                f"reserve_{node}: {reservation.id} reserved ({allowed} turns)"
+            ],
         }
 
     reserve.__name__ = f"reserve_{node}"
@@ -260,9 +285,9 @@ def resume_updates(
     """What the CLI writes as ``reserve_<node>`` before re-running ``node``.
 
     Every running reservation of the node becomes ``unknown`` (its
-    charge stays forever) and a fresh running reservation is added, so
-    the re-run is charged before it starts; a second interruption
-    repeats this.
+    charge stays forever). A fresh reservation is added only if the
+    ledger, with that charge, still admits the call; otherwise the node
+    is skipped on the re-run, exactly as ``reserve_<node>`` would do.
     """
     calls = dict(state.get("single_calls", {}))
     lost = []
@@ -270,14 +295,24 @@ def resume_updates(
         if call.task_id == node and call.status == "running":
             calls[call_id] = call.model_copy(update={"status": "unknown"})
             lost.append(call_id)
-    reservation = _reservation({"single_calls": calls}, node, limits)
-    calls[reservation.id] = reservation
+    charged = {**state, "single_calls": calls}
     lost_text = ", ".join(lost) or "no"
+    allowed = budget.admit_single_call(charged, limits, node)
+    if allowed <= 0:
+        return {
+            "single_calls": calls,
+            "route_log": [
+                f"resume at {node}: {lost_text} interrupted reservation "
+                "charged as unknown; budget exhausted, the call is skipped"
+            ],
+        }
+    reservation = _reservation(charged, node, limits, allowed)
+    calls[reservation.id] = reservation
     return {
         "single_calls": calls,
         "route_log": [
             f"resume at {node}: {lost_text} interrupted reservation charged "
-            f"as unknown; {reservation.id} reserved"
+            f"as unknown; {reservation.id} reserved ({allowed} turns)"
         ],
     }
 
@@ -414,6 +449,7 @@ def build_worker_input(
                 source_url=source.canonical_url if source else None,
                 source_path=source.path if source else None,
                 source_kind=source.kind if source else "web_page",
+                version=version,
                 version_date=version.retrieved_at[:10] if version else None,
             )
         )
@@ -473,9 +509,17 @@ def _tasks_from_plan(
     evidence = state.get("evidence", {})
     log: list[str] = []
     key_to_id: dict[str, str] = {}
+    accepted: list[roles.TaskSpec] = []
+    next_number = schedule.task_number(merge.next_id("T", tasks))
     for spec in plan.tasks[:slots]:
-        task_id = merge.next_id("T", tasks)
-        key_to_id[spec.key] = task_id
+        if spec.key in key_to_id:
+            log.append(f"prepare_tasks: duplicate key {spec.key!r} dropped")
+            continue
+        key_to_id[spec.key] = f"T{next_number}"
+        next_number += 1
+        accepted.append(spec)
+    for spec in accepted:
+        task_id = key_to_id[spec.key]
         depends = []
         for dep in spec.depends_on:
             resolved = key_to_id.get(dep, dep if dep in tasks else None)
@@ -557,7 +601,6 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
             cited.update(finding.claim_ids)
     for section in state.get("sections", []):
         cited.update(section.claim_ids)
-    rewritten = {s.id for s in state.get("sections", []) if not s.stale}
     log = []
     for issue in issues.values():
         if issue.status != "open":
@@ -583,8 +626,8 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
                     if target not in cited
                     else f"claim reviewed {claim.review}"
                 )
-        elif issue.category == "wording" and target in rewritten:
-            resolved = "section rewritten"
+        elif issue.draft_version is not None:
+            resolved = None  # closed only by a clean later final review
         if resolved:
             issues[issue.id] = issue.model_copy(
                 update={"status": "resolved", "resolution": resolved}
@@ -626,14 +669,7 @@ def build_graph(
         reservation = running_reservation(state, node)
         if reservation is None:
             return None, {"route_log": [f"{node}: skipped (no reservation)"]}
-        left = budget.remaining(state, limits)
-        max_turns = max(
-            1,
-            min(
-                limits.single_call_turns,
-                left.turns + reservation.reserved.turns,
-            ),
-        )
+        max_turns = max(1, reservation.reserved.turns)
         output, usage = await call(max_turns, reservation.reserved.seconds)
         return output, {"single_calls": _complete(state, reservation, usage)}
 
@@ -649,13 +685,7 @@ def build_graph(
             update.setdefault("route_log", []).append(
                 "scope: deterministic defaults used"
             )
-        meta = records.RunMeta(
-            workflow_version=state_module.WORKFLOW_VERSION,
-            prompt_version=roles.PROMPT_VERSION,
-            models=dict(roles.ROLE_MODELS),
-            limits=limits,
-            started_at=records.now_iso(),
-        )
+        meta = state.get("meta") or initial_state(question, limits)["meta"]
         update.update(
             {
                 "meta": meta,
@@ -731,10 +761,12 @@ def build_graph(
         )
         issues = dict(state.get("issues", {}))
         before = set(state.get("evidence", {}))
-        added = set(update["evidence"]) - before
-        for result in state.get("task_results", []):
-            task = update["tasks"].get(result.task_id)
-            if task and task.issue_id in issues and added:
+        added_by_task: dict[str, int] = {}
+        for eid in set(update["evidence"]) - before:
+            task_id = update["evidence"][eid].task_id
+            added_by_task[task_id] = added_by_task.get(task_id, 0) + 1
+        for task_id, task in update["tasks"].items():
+            if task.issue_id in issues and added_by_task.get(task_id):
                 issues[task.issue_id] = issues[task.issue_id].model_copy(
                     update={"evidence_added": True}
                 )
@@ -872,6 +904,8 @@ def build_graph(
         if analysis is None:
             return update
         if analysis.calc_requests:
+            # Only reviewed quantities may enter a calculation; anything
+            # else is a missing input, never a number.
             inputs = {
                 cid: records.CalcInput(
                     claim_id=cid,
@@ -882,6 +916,7 @@ def build_graph(
                 )
                 for cid, c in claims.items()
                 if c.quantity is not None
+                and c.review in ("supported", "qualified")
             }
             for request in analysis.calc_requests:
                 calc_id = merge.next_id("K", calculations)
@@ -909,6 +944,10 @@ def build_graph(
                         review=(
                             "qualified"
                             if result.alignment_note
+                            or any(
+                                claims[cid].review == "qualified"
+                                for cid in cited
+                            )
                             else "supported"
                         ),
                         quantity=records.Quantity(
@@ -1164,13 +1203,14 @@ def build_graph(
         update.setdefault("route_log", [])
         if draft is None:
             return update
+        version = state.get("draft_version", 0) + 1
         sections = [
             records.Section(
                 id=s.id,
                 title=s.title,
                 text=s.text,
                 claim_ids=report.cited_claims(s.text),
-                review_version=state.get("cycle", 0),
+                review_version=version,
             )
             for s in draft.sections
         ]
@@ -1185,8 +1225,11 @@ def build_graph(
                 problem.section_id,
                 "edit",
                 problem.description,
+                draft_version=version,
             )
-        update.update({"sections": sections, "issues": issues})
+        update.update(
+            {"sections": sections, "issues": issues, "draft_version": version}
+        )
         open_count = sum(1 for i in issues.values() if i.status == "open")
         update["route_log"].append(
             f"write: {len(sections)} sections, {open_count} open issues"
@@ -1204,7 +1247,9 @@ def build_graph(
         )
         update.setdefault("route_log", [])
         issues = dict(state.get("issues", {}))
+        version = state.get("draft_version", 0)
         if outcome is not None:
+            flagged: set[str] = set()
             for problem in outcome.issues:
                 action: records.RequestedAction = {
                     "unsupported": "remove",
@@ -1214,15 +1259,39 @@ def build_graph(
                     "wording": "edit",
                     "unavailable": "edit",
                 }[problem.category]
-                issues, _ = merge.open_issue(
+                claim_note = (
+                    f" (claim {problem.claim_id})" if problem.claim_id else ""
+                )
+                issues, issue = merge.open_issue(
                     issues,
                     problem.category,
                     problem.severity,
-                    problem.claim_id or problem.section_id,
+                    problem.section_id,
                     action,
-                    f"[{problem.section_id}] {problem.description}",
+                    f"[{problem.section_id}] {problem.description}{claim_note}",
+                    draft_version=version,
                 )
+                flagged.add(issue.key)
+            # A draft issue closes only when a newer draft was reviewed
+            # and this review did not flag it again.
+            for issue in list(issues.values()):
+                if (
+                    issue.status == "open"
+                    and issue.draft_version is not None
+                    and issue.draft_version < version
+                    and issue.key not in flagged
+                ):
+                    issues[issue.id] = issue.model_copy(
+                        update={
+                            "status": "resolved",
+                            "resolution": f"draft {version} reviewed clean",
+                        }
+                    )
+                    update["route_log"].append(
+                        f"{issue.id} resolved: draft {version} reviewed clean"
+                    )
             update["final_review"] = outcome
+            update["final_review_version"] = version
         derived = coverage_module.derive(state, state.get("assessment"))
         update["coverage"] = derived
         resolved = resolve_issues(
@@ -1252,7 +1321,10 @@ def build_graph(
 
     async def deliver(state: state_module.IndustryState) -> dict[str, Any]:
         derived = coverage_module.derive(state, state.get("assessment"))
-        status = coverage_module.report_status(derived, state)
+        verified = state.get("final_review") is not None and state.get(
+            "final_review_version"
+        ) == state.get("draft_version", 0)
+        status = coverage_module.report_status(derived, state, verified)
         text = report.render(state, derived, status)
         path = report.write_report(_thread_id(), text, runtime.reports_dir)
         meta = state["meta"].model_copy(

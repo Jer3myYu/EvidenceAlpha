@@ -805,18 +805,28 @@ def open_issue(
     requested_action: records.RequestedAction,
     description: str,
     next_step: str | None = None,
+    draft_version: int | None = None,
 ) -> tuple[dict[str, records.Issue], records.Issue]:
     """Return the open issue with this key, or add a new one.
 
-    An existing issue keeps its attempt count; only the description
-    and next step are refreshed, so repeats never reset the limit.
+    An existing issue keeps its attempt count; only the description,
+    next step, and draft version are refreshed, so repeats never reset
+    the limit.
     """
     key = issue_key(category, target)
     updated = dict(issues)
     for issue in issues.values():
         if issue.key == key and issue.status == "open":
             refreshed = issue.model_copy(
-                update={"description": description, "next_step": next_step}
+                update={
+                    "description": description,
+                    "next_step": next_step,
+                    "draft_version": (
+                        draft_version
+                        if draft_version is not None
+                        else issue.draft_version
+                    ),
+                }
             )
             updated[issue.id] = refreshed
             return updated, refreshed
@@ -830,6 +840,7 @@ def open_issue(
         description=description,
         requested_action=requested_action,
         next_step=next_step,
+        draft_version=draft_version,
     )
     updated[new_id] = issue
     return updated, issue

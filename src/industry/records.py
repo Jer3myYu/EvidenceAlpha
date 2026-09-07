@@ -79,7 +79,8 @@ Topic = Literal[
     "product",
     "payer_flow",
     "demand_driver",
-    "cost_differentiation",
+    "cost_structure",
+    "differentiation",
     "bargaining_power",
     "barrier",
     "commercialization",
@@ -91,7 +92,8 @@ Topic = Literal[
 QUESTION_4_TOPICS = (
     "payer_flow",
     "demand_driver",
-    "cost_differentiation",
+    "cost_structure",
+    "differentiation",
     "bargaining_power",
 )
 
@@ -526,6 +528,7 @@ class Issue(Record):
     next_step: str | None = None
     status: IssueStatus = "open"
     resolution: str | None = None
+    draft_version: int | None = None
 
 
 class CalcInput(Record):

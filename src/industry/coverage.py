@@ -399,10 +399,13 @@ def derive(
 def report_status(
     coverage: list[records.Coverage],
     state: state_module.IndustryState,
+    verified: bool = False,
 ) -> records.ReportStatus:
     """Decide ``complete``, ``complete_with_limitations``, or ``incomplete``.
 
-    ``complete``: every question covered and no material issue open.
+    ``complete``: every question covered, no material issue open, and
+    ``verified`` (a final review ran on the delivered draft); without
+    verification the best status is ``complete_with_limitations``.
     ``complete_with_limitations``: every central question at least
     partial, no open material issue targeting anything counted toward a
     central question, and no finding cited for a central question
@@ -421,7 +424,7 @@ def report_status(
         if i.status == "open" and i.severity == "material"
     ]
     if all(c.status == "covered" for c in coverage) and not issues:
-        return "complete"
+        return "complete" if verified else "complete_with_limitations"
     central_targets: set[str] = set()
     for number in records.CENTRAL_QUESTIONS:
         item = by_question[number]

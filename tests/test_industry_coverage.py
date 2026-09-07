@@ -168,7 +168,7 @@ def full_state(evidence_kind="passage", review="supported"):
         dimension="2024 Revenue",
     )
     findings = {
-        "F1": finding("F1", ["C31", "C32", "C33", "C34", "C40"]),
+        "F1": finding("F1", ["C31", "C32", "C33", "C34", "C35", "C40"]),
         "F2": finding("F2", ["C42", "C43", "C44", "C45"]),
     }
     relationships = {
@@ -201,7 +201,9 @@ def test_everything_supported_and_context_backed_is_complete():
     state = full_state()
     cov = coverage.derive(state, None)
     assert all(s == "covered" for s in statuses(cov).values())
-    assert coverage.report_status(cov, state) == "complete"
+    assert coverage.report_status(cov, state, verified=True) == "complete"
+    # Without a final review on the delivered draft, never "complete".
+    assert coverage.report_status(cov, state) == "complete_with_limitations"
 
 
 def test_snippet_only_evidence_caps_central_questions_at_partial():
@@ -240,10 +242,10 @@ def test_unavailable_relationship_caps_question_3():
 
 def test_missing_economics_subtopic_is_partial_and_uncovered_when_thin():
     state = full_state()
-    del state["claims"]["C34"]  # bargaining power
-    state["findings"]["F1"] = finding("F1", ["C31", "C32", "C33", "C40"])
+    del state["claims"]["C35"]  # bargaining power
+    state["findings"]["F1"] = finding("F1", ["C31", "C32", "C33", "C34", "C40"])
     assert statuses(coverage.derive(state, None))[4] == "partial"
-    for cid in ("C31", "C32", "C33"):
+    for cid in ("C31", "C32", "C33", "C34"):
         del state["claims"][cid]
     state["findings"]["F1"] = finding("F1", ["C40"])
     assert statuses(coverage.derive(state, None))[4] == "uncovered"
@@ -294,7 +296,7 @@ def test_open_material_issue_on_central_claim_is_incomplete():
     state["issues"]["I1"] = state["issues"]["I1"].model_copy(
         update={"severity": "minor"}
     )
-    assert coverage.report_status(cov, state) == "complete"
+    assert coverage.report_status(cov, state, verified=True) == "complete"
 
 
 def test_central_finding_on_contradicted_claim_is_incomplete():
@@ -342,7 +344,7 @@ def test_versionless_or_foreign_version_passage_is_not_context_backed():
 
 def test_tagged_but_unreviewed_topics_do_not_count():
     state = full_state()
-    for cid in ("C31", "C32", "C33", "C34"):
+    for cid in ("C31", "C32", "C33", "C34", "C35"):
         state["claims"][cid] = state["claims"][cid].model_copy(
             update={"reviewed_topics": []}
         )
@@ -351,7 +353,7 @@ def test_tagged_but_unreviewed_topics_do_not_count():
 
 def test_one_claim_tagged_with_every_economics_topic_is_not_covered():
     state = full_state()
-    for cid in ("C32", "C33", "C34"):
+    for cid in ("C32", "C33", "C34", "C35"):
         del state["claims"][cid]
     state["claims"]["C31"] = state["claims"]["C31"].model_copy(
         update={

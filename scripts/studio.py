@@ -351,7 +351,7 @@ async def run(
     pending: list[tuple[str, dict[str, Any]]] = []
     runtime.begin(thread_id)
     async for mode, chunk in graph.astream(
-        {"question": question},
+        graph_module.initial_state(question, runtime.limits),
         persist.thread_config(thread_id),
         stream_mode=["updates", "values", "custom"],
         durability="sync",

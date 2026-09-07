@@ -211,7 +211,8 @@ class FakeWorker:
         findings = [
             finding_draft("晶圆厂向掩模厂付费", ["payer_flow"], [4]),
             finding_draft("先进制程带动需求", ["demand_driver"], [4]),
-            finding_draft("基板成本占比高", ["cost_differentiation"], [4]),
+            finding_draft("基板成本占比高", ["cost_structure"], [4]),
+            finding_draft("高端产品差异化在于缺陷率", ["differentiation"], [4]),
             finding_draft("HOYA 议价能力强", ["bargaining_power"], [4]),
             finding_draft("技术壁垒高", ["barrier"], [5]),
             finding_draft(
@@ -581,3 +582,134 @@ def test_uncited_number_in_the_draft_reopens_editing(tmp_path):
     assert "write:revise" in api.calls
     # An open editorial issue is a limitation, not a central gap.
     assert state["meta"].report_status == "complete_with_limitations"
+
+
+def test_initial_state_carries_meta_so_an_early_interruption_resumes(tmp_path):
+    saver = MemorySaver()
+    runtime, api, _, compiled = make(tmp_path, saver=saver)
+    api.scope_failures = 1
+    config = persist.thread_config("t8")
+    runtime.begin("t8")
+    payload = graph_module.initial_state("q", runtime.limits)
+    with pytest.raises(RuntimeError):
+        run(compiled.ainvoke(payload, config, durability="sync"))
+    # The loader the CLI uses must recognise the thread as Phase 10.
+    snapshot = run(
+        persist.load_industry_state(
+            compiled, "t8", graph_module.state_module.WORKFLOW_VERSION
+        )
+    )
+    assert snapshot.next == ("scope",)
+    assert snapshot.values["meta"].limits == runtime.limits
+
+
+def test_resume_updates_apply_admission_and_reserve_only_what_fits():
+    limits = records.Limits(model_calls=8, model_call_reserve=0)
+    state = {
+        "attempts": {},
+        "single_calls": {
+            "scope.1": records.Attempt(
+                id="scope.1",
+                task_id="scope",
+                reserved=records.Reservation(
+                    turns=5, tool_calls=0, seconds=480
+                ),
+                started_at=NOW,
+            )
+        },
+    }
+    updates = graph_module.resume_updates(state, "scope", limits)
+    calls = updates["single_calls"]
+    assert calls["scope.1"].status == "unknown"
+    # 8 - 5 charged = 3 left: an intermediate call needs 5, so no reservation.
+    assert "scope.2" not in calls
+    assert any("budget exhausted" in line for line in updates["route_log"])
+    # A reserved node may take the remainder.
+    writing = {"attempts": {}, "single_calls": {}}
+    writing["single_calls"]["write.1"] = records.Attempt(
+        id="write.1",
+        task_id="write",
+        reserved=records.Reservation(turns=5, tool_calls=0, seconds=480),
+        started_at=NOW,
+    )
+    updates = graph_module.resume_updates(writing, "write", limits)
+    assert updates["single_calls"]["write.2"].reserved.turns == 3
+    assert budget.ledger({"attempts": {}, **updates}).turns == 8
+
+
+def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
+    runtime, api, worker, compiled = make(tmp_path)
+    api.plans = [
+        roles.TaskPlan(
+            tasks=[
+                roles.TaskSpec(
+                    key="b",
+                    role="company",
+                    objective="companies",
+                    depends_on=["a"],
+                ),
+                roles.TaskSpec(key="a", role="industry", objective="upstream"),
+                roles.TaskSpec(key="a", role="industry", objective="duplicate"),
+            ]
+        )
+    ]
+    config = persist.thread_config("t9")
+    runtime.begin("t9")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    tasks = state["tasks"]
+    assert tasks["T2"].objective == "companies" and tasks["T2"].depends_on == [
+        "T3"
+    ]
+    assert tasks["T3"].objective == "upstream" and "T4" not in tasks
+    assert any("duplicate key" in line for line in state["route_log"])
+    assert worker.order.index("T3.1") < worker.order.index("T2.1")
+
+
+def test_calculations_take_only_reviewed_inputs(tmp_path):
+    runtime, api, _, compiled = make(tmp_path)
+
+    async def analyze(state, note, max_turns, deadline):
+        del note, max_turns, deadline
+        api.calls.append("analyze")
+        quantified = [c for c in state["claims"].values() if c.quantity]
+        request = roles.Analysis(
+            calc_requests=[
+                records.CalcRequest(
+                    kind="ratio",
+                    label="r",
+                    numerator_claim_id=quantified[0].id if quantified else "C1",
+                    denominator_claim_id=(
+                        quantified[0].id if quantified else "C1"
+                    ),
+                )
+            ]
+        )
+        return request, USAGE
+
+    api.analyze = analyze
+    api.review_verdict = "unsupported"
+    config = persist.thread_config("t10")
+    runtime.begin("t10")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    calcs = list(state["calculations"].values())
+    assert calcs and all(c.status == "error" for c in calcs)
+    assert all(c.kind != "derived" for c in state["claims"].values())
+
+
+def test_final_review_issue_stays_open_until_a_later_clean_review(tmp_path):
+    runtime, api, _, compiled = make(tmp_path)
+    api.final_issues = [
+        records.SectionIssue(
+            section_id="intro",
+            category="wording",
+            severity="material",
+            description="unclear",
+        )
+    ]
+    config = persist.thread_config("t11")
+    runtime.begin("t11")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    issue = [i for i in state["issues"].values() if i.category == "wording"][0]
+    assert issue.status == "open" and issue.draft_version >= 1
+    assert state["meta"].report_status == "complete_with_limitations"
+    assert "write:revise" in api.calls  # the cycle rewrote and re-reviewed

@@ -62,6 +62,8 @@ class IndustryState(TypedDict, total=False):
     follow_up_rounds: int
     review_rounds: int
     analysis_rounds: int
+    draft_version: int
+    final_review_version: int
     return_to: str
     last_signature: str
     route_log: Annotated[list[str], operator.add]
