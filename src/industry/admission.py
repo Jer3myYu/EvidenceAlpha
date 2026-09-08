@@ -25,8 +25,40 @@ always was; two processes are outside its reach.
 """
 
 import asyncio
+import functools
 from collections.abc import Callable
 from typing import Any
+
+
+def when_all(*pending: asyncio.Future | None) -> asyncio.Future | None:
+    """One future for several ends, done once every one of them is.
+
+    What an operation still holds is rarely one thing: a worker session
+    owns both the threads its tools started and the SDK subprocess that
+    ran it, and its slot ends with the last of them. ``None`` entries
+    are ends that never began.
+
+    Returns:
+      A future completing when every given future has, or ``None`` when
+      none was given -- which ``Slot.settle`` reads as "nothing to wait
+      for".
+    """
+    waiting = [f for f in pending if f is not None and not f.done()]
+    if not waiting:
+        return None
+    if len(waiting) == 1:
+        return waiting[0]
+    combined = asyncio.get_running_loop().create_future()
+    left = set(range(len(waiting)))
+
+    def ended(index: int, _: asyncio.Future) -> None:
+        left.discard(index)
+        if not left and not combined.done():
+            combined.set_result(None)
+
+    for index, future in enumerate(waiting):
+        future.add_done_callback(functools.partial(ended, index))
+    return combined
 
 
 class Blocked(RuntimeError):
@@ -81,7 +113,8 @@ class Slot:
         """Release now if the work has ended, else retain until it does.
 
         ``pending`` is the future of the operation's real end (a role's
-        kickoff task, the worker's outstanding calls becoming idle) or
+        kickoff task, the worker's outstanding calls becoming idle and
+        its SDK subprocess terminating -- ``when_all`` of both) or
         ``None`` when nothing was started. A slot that cannot be released
         here stays held as a survivor and is released by that future's
         completion, on this loop, whatever became of the caller.

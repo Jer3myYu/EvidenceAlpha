@@ -11,24 +11,27 @@ reservation stays charged; a schema failure ends it with the usage the
 SDK observed. Every tool result is evidence in the attempt's collector,
 and the model's findings cite those ``[E#]`` labels.
 
-The attempt owns the blocking calls its tools started until they end.
-Its session slot comes from the runtime's admission authority
-(``industry.admission``), shared with the role calls under one
-``Limits.concurrency``, and is held until the work has actually ended:
-however the session ended -- normally, by its deadline, by a failure,
-or by an interruption -- one cleanup path waits for the outstanding
-calls (bounded by ``SIDE_EFFECT_GRACE_S``) before a result is reported,
-so the charged duration covers them and no retry, resume, or delivery
-can overlap a write that is still running. A call that outlives the
-grace raises ``WorkerHung`` instead of a result, and a drain the
-interruption itself cuts short propagates; in both cases the slot is
-retained as a survivor and released by the work's own completion, so
-nothing new is admitted in this process until it ends and the run stops
-with its checkpoint intact rather than reporting an attempt finished
-while its work goes on.
+The attempt owns the blocking calls its tools started, and the SDK's own
+CLI subprocess, until they end. Its session slot comes from the
+runtime's admission authority (``industry.admission``), shared with the
+role calls under one ``Limits.concurrency``, and is held until the work
+has actually ended: however the session ended -- normally, by its
+deadline, by a failure, or by an interruption -- one cleanup path takes
+over the subprocess (``industry.sdk_children``, whose teardown outlives
+this coroutine) and waits for it and for the outstanding calls (bounded
+by ``SIDE_EFFECT_GRACE_S``) before a result is reported, so the charged
+duration covers them and no retry, resume, or delivery can overlap a
+write or a model process that is still running. A call that outlives
+the grace raises ``WorkerHung`` instead of a result, and a drain the
+interruption itself cuts short propagates; in these cases and when the
+subprocess is still alive the slot is retained as a survivor and
+released by the work's own completion, so nothing new is admitted in
+this process until it ends and the run stops with its checkpoint intact
+rather than reporting an attempt finished while its work goes on.
 """
 
 import asyncio
+import functools
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -36,8 +39,10 @@ from typing import Any
 import claude_agent_sdk
 import pydantic
 
+from industry import admission
 from industry import budget
 from industry import records
+from industry import sdk_children
 from industry import tools
 from research import agent as legacy_agent
 
@@ -300,7 +305,12 @@ def options_for(
             "schema": TaskOutput.model_json_schema(),
         },
         setting_sources=[],
-        env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
+        # The marker is how the attempt finds the CLI subprocess this
+        # session starts, so it can own it past its own cancellation.
+        env={
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            **sdk_children.marked_env(work.attempt.id),
+        },
     )
 
 
@@ -380,6 +390,35 @@ def _result(
     )
 
 
+def _describe(watch: sdk_children.Watch, outstanding: tools.Outstanding) -> str:
+    """What the attempt still holds, for the admission ledger."""
+    parts = [outstanding.describe()]
+    child = watch.describe()
+    if child:
+        parts.append(child)
+    return ", ".join(parts)
+
+
+async def _await_child(ended: asyncio.Future, seconds: float) -> None:
+    """Wait for the SDK subprocess to have gone, bounded by the grace.
+
+    The ordinary ends of a session wait: the SDK's own cleanup has
+    usually reaped the child before the deadline or the failure
+    surfaces, and waiting for the rest keeps a finished attempt from
+    leaving a survivor behind for nothing. An interruption does not
+    wait. The teardown started in ``Watch.close`` owns the child either
+    way and the slot is retained until it has really gone, so the
+    interruption goes on at once and nothing new is admitted meanwhile
+    -- which is the whole point of retaining it.
+    """
+    if ended.done():
+        return
+    task = asyncio.current_task()
+    if task is not None and task.cancelling():
+        return
+    await asyncio.wait({ended}, timeout=seconds)
+
+
 async def run_attempt(
     work: records.WorkerInput,
     runtime: budget.Runtime,
@@ -409,6 +448,8 @@ async def run_attempt(
       WorkerHung: If a blocking tool call did not end within ``grace``.
       admission.Blocked: If work that outlived its cancellation is still
         live in this process; nothing is started.
+      sdk_children.UnsupportedSDK: If the installed SDK no longer lets
+        an attempt own the subprocess it starts; nothing is started.
     """
     meter = runtime.meter_for(work.thread_id)
     collector = tools.Collector(work.attempt.id, work.task.id)
@@ -421,6 +462,10 @@ async def run_attempt(
             error="replayed attempt not admitted in this invocation",
         )
     outstanding = tools.Outstanding()
+    # The CLI subprocess this session is about to start is the attempt's
+    # own too: the SDK's teardown is not proof against a raw asyncio
+    # cancellation, so the attempt watches for its child itself.
+    watch = sdk_children.Watch(work.attempt.id)
     server, allowed, _ = tools.build_tools(
         collector, meter, backend, runtime.index_lock, outstanding
     )
@@ -431,7 +476,9 @@ async def run_attempt(
     # One of the process's session slots, shared with the role calls; a
     # survivor anywhere in the process refuses this before any SDK call.
     slot = await runtime.admission.acquire(
-        "session", work.attempt.id, outstanding.describe
+        "session",
+        work.attempt.id,
+        functools.partial(_describe, watch, outstanding),
     )
     # The charged duration is execution time: it starts once a session
     # slot is held, like the timeout, so waiting for a slot is never
@@ -441,6 +488,8 @@ async def run_attempt(
     # carried, and whether the usage is unknown.
     failure: tuple[str, records.Usage | None, bool] | None = None
     drained = False
+    # Resolved once the session's CLI subprocess has terminated.
+    ended: asyncio.Future | None = None
     try:
         try:
             await asyncio.wait_for(
@@ -467,20 +516,27 @@ async def run_attempt(
             )
         finally:
             # One cleanup path however the session ended -- normally, by
-            # its deadline, by a failure, or by an interruption: the
-            # blocking calls its tools started are the attempt's own
-            # until they end (cancelling a handler does not stop its
-            # thread), so the attempt waits for them, bounded by the
-            # grace, before anything is reported and before an
-            # interruption goes on. A second interruption arriving here
-            # propagates from this wait.
+            # its deadline, by a failure, or by an interruption. Two
+            # kinds of work outlive the session here. The SDK's CLI
+            # subprocess is ended by a transport cleanup a raw asyncio
+            # cancellation still interrupts, so the attempt takes it over
+            # first, in a statement no cancellation can arrive inside,
+            # and that teardown then runs on its own. The blocking calls
+            # the tools started are the attempt's own until they end
+            # (cancelling a handler does not stop its thread). The
+            # attempt waits for both, bounded by the grace, before
+            # anything is reported and before an interruption goes on; a
+            # second interruption arriving here propagates from a wait.
+            ended = watch.close()
             drained = await outstanding.drain(grace)
+            await _await_child(ended, grace)
     finally:
         # The slot ends with the work, not with this coroutine: released
-        # now if every call has ended, kept as a survivor until the last
-        # one ends otherwise (a drain the interruption cut short, or a
-        # call that outlived the grace).
-        slot.settle(outstanding.when_idle())
+        # now if every call has ended and the subprocess has gone, kept
+        # as a survivor until the last of them does otherwise (a drain
+        # the interruption cut short, a call that outlived the grace, a
+        # cleanup the interruption caught mid-teardown).
+        slot.settle(admission.when_all(outstanding.when_idle(), ended))
     if not drained:
         raise WorkerHung(
             f"{work.attempt.id}: {outstanding.running} tool call(s) "

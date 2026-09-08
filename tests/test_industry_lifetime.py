@@ -21,11 +21,13 @@ import functools
 import threading
 import time
 
+import claude_agent_sdk
 import industry_workflow
 import mcp.types
 import pytest
 import studio
 import test_industry_graph as fakes
+import test_industry_sdk_children as sdk_tests
 import test_industry_worker as worker_tests
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -33,6 +35,7 @@ from industry import budget
 from industry import graph as graph_module
 from industry import records
 from industry import roles
+from industry import sdk_children
 from industry import state as state_module
 from industry import worker
 from research import crew
@@ -688,3 +691,214 @@ def test_two_model_sessions_never_run_at_once_at_concurrency_one(
     calls = final["single_calls"]
     assert [calls[f"scope.{n}"].status for n in (1, 2)] == ["unknown"] * 2
     assert "scope.3" in calls and "scope.4" not in calls
+
+
+# --- the SDK's own subprocess: C2 round 3 --------------------------------
+
+
+def sdk_then_fake(cli, backend, sessions, tools=()):
+    """The real SDK for the first session, the counting fake after it.
+
+    The first session runs through the installed SDK and its transport,
+    against a stand-in CLI that never answers, so it ends on its
+    deadline with the child still running; every later session is the
+    ordinary fake, so the run can go on to delivery.
+    """
+    fake = counting_query(backend, sessions, tools)
+    calls = []
+
+    def query(prompt, options):
+        calls.append(prompt)
+        if len(calls) == 1:
+            options.cli_path = str(cli)
+            return claude_agent_sdk.query(prompt=prompt, options=options)
+        return fake(prompt, options)
+
+    return query
+
+
+def test_an_interruption_during_sdk_cleanup_keeps_the_slot(
+    tmp_path, monkeypatch
+):
+    # C2 round 3, finding 1: the attempt settled its slot on the tool
+    # threads alone. The SDK's transport cleanup shields with AnyIO,
+    # which a raw asyncio cancellation still interrupts, so a
+    # cancellation during cleanup left the CLI subprocess running with
+    # the slot free, and the next session started over it at
+    # concurrency 1.
+    sdk_tests.arm(monkeypatch, grace=1.5)
+    cli = sdk_tests.peer(tmp_path)
+    runtime = single_slot_runtime("T2.1", "T2.2", "T2.3")
+    backend = worker_tests.BlockingIndexBackend(0.05)
+    sessions = []
+    query = sdk_then_fake(cli, backend, sessions)
+
+    async def go():
+        task = asyncio.create_task(
+            worker.run_attempt(
+                worker_tests.attempt_with("T2.1", 0.3),
+                runtime,
+                backend,
+                query=query,
+            )
+        )
+        await sdk_tests.wait_for_child("T2.1")
+        await asyncio.sleep(0.5)  # past the deadline: in the SDK cleanup
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert sdk_children.live("T2.1"), "needs a surviving subprocess"
+        with pytest.raises(RuntimeError, match=STILL_LIVE):
+            await worker.run_attempt(
+                worker_tests.attempt_with("T2.2", 5),
+                runtime,
+                backend,
+                query=query,
+            )
+        assert not sessions, "a session started over the subprocess"
+        survivors = runtime.admission.survivors()
+        assert len(survivors) == 1, "the slot outlived nothing"
+        assert "SDK subprocess" in survivors[0].describe()
+        # The teardown the attempt started ends the child, and only then
+        # is the slot given back.
+        while runtime.admission.live():
+            await asyncio.sleep(0.05)
+        assert not sdk_children.live("T2.1")
+        result = await worker.run_attempt(
+            worker_tests.attempt_with("T2.3", 5), runtime, backend, query=query
+        )
+        assert result.status == "done"
+        await sdk_tests.forget("T2.1")
+
+    asyncio.run(go())
+    assert sessions == [0], "the admitted session ran over surviving work"
+
+
+def test_a_same_runtime_resume_over_a_surviving_subprocess_is_refused(
+    tmp_path, monkeypatch
+):
+    # The same defect through the CLI's streaming function and SQLite:
+    # the run is interrupted while the SDK's cleanup is under way, and
+    # the resume in the same runtime must start no session and deliver
+    # no report while that subprocess is alive.
+    sdk_tests.arm(monkeypatch, grace=1.5)
+    cli = sdk_tests.peer(tmp_path)
+    backend = worker_tests.BlockingIndexBackend(0.05)
+    sessions = []
+    query = sdk_then_fake(cli, backend, sessions)
+
+    async def scenario():
+        path = str(tmp_path / "sdk-resume.db")
+        thread = "sdk-resume-1"
+        async with persist.open_checkpointer(path) as saver:
+            limits = records.Limits(concurrency=1, task_timeout_s=0.3)
+            runtime = budget.Runtime(
+                limits, reports_dir=str(tmp_path / "reports")
+            )
+            compiled = graph_module.build_graph(
+                runtime,
+                backend=backend,
+                api=fakes.FakeRoles(),
+                worker_fn=functools.partial(worker.run_attempt, query=query),
+                checkpointer=saver,
+            )
+            config = persist.thread_config(thread)
+            runtime.begin(thread)
+            payload = graph_module.initial_state("q", limits)
+            task = asyncio.create_task(
+                industry_workflow.stream(compiled, payload, config, runtime)
+            )
+            session = await sdk_tests.marked_session()
+            await asyncio.sleep(0.5)  # past the deadline: in the cleanup
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert sdk_children.live(session), "needs a live subprocess"
+            snapshot = await persist.load_industry_state(
+                compiled, thread, state_module.WORKFLOW_VERSION
+            )
+            assert tuple(snapshot.next) == ("run_task",)
+            runtime.begin(thread)
+            with pytest.raises(RuntimeError, match=STILL_LIVE):
+                await industry_workflow.stream(
+                    compiled,
+                    None,
+                    persist.resume_config(thread, snapshot),
+                    runtime,
+                )
+            assert not sessions, "the resume started a session"
+            assert not (tmp_path / "reports").exists(), "delivered over it"
+            while runtime.admission.live():
+                await asyncio.sleep(0.05)
+            assert not sdk_children.live(session)
+            snapshot = await persist.load_industry_state(
+                compiled, thread, state_module.WORKFLOW_VERSION
+            )
+            runtime.begin(thread)
+            final = await industry_workflow.stream(
+                compiled, None, persist.resume_config(thread, snapshot), runtime
+            )
+            await sdk_tests.forget(session)
+            return final
+
+    final = asyncio.run(scenario())
+    assert final["meta"].execution_status == "completed"
+    assert sessions and all(active == 0 for active in sessions)
+
+
+def test_the_next_studio_run_is_refused_over_a_surviving_subprocess(
+    tmp_path, monkeypatch
+):
+    # And through Studio: the client goes away while the SDK's cleanup
+    # is under way, and the next question must be refused rather than
+    # start worker sessions and write a report over the live subprocess.
+    monkeypatch.setattr(studio.web, "api_key", lambda: "fake")
+    sdk_tests.arm(monkeypatch, grace=1.5)
+    cli = sdk_tests.peer(tmp_path)
+    limits = records.Limits(concurrency=1, task_timeout_s=0.3)
+    runtime = budget.Runtime(limits, reports_dir=str(tmp_path / "reports"))
+    backend = worker_tests.BlockingIndexBackend(0.05)
+    sessions = []
+    query = sdk_then_fake(cli, backend, sessions)
+    graph = graph_module.build_graph(
+        runtime,
+        backend=backend,
+        api=fakes.FakeRoles(),
+        worker_fn=functools.partial(worker.run_attempt, query=query),
+        checkpointer=MemorySaver(),
+    )
+    app = studio_app(graph, runtime)
+
+    async def go():
+        first = await studio.run_question(FakeRequest(app))
+        seen = []
+
+        async def consume():
+            async for frame in aiter(first.body_iterator):
+                seen.append(decoded(frame)["type"])
+
+        consumer = asyncio.create_task(consume())
+        session = await sdk_tests.marked_session()
+        await asyncio.sleep(0.5)  # past the deadline: in the cleanup
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        assert "end" not in seen
+        assert sdk_children.live(session), "needs a live subprocess"
+        assert not app.state.lock.locked()
+        second = await frames_of(await studio.run_question(FakeRequest(app)))
+        assert not sessions, "the next run started a session over it"
+        assert not (tmp_path / "reports").exists(), "delivered over it"
+        assert [f["type"] for f in second] == ["error"]
+        assert STILL_LIVE in second[0]["message"]
+        assert "SDK subprocess" in second[0]["message"]
+        while runtime.admission.live():
+            await asyncio.sleep(0.05)
+        assert not sdk_children.live(session)
+        third = await frames_of(await studio.run_question(FakeRequest(app)))
+        await sdk_tests.forget(session)
+        return third
+
+    third = asyncio.run(go())
+    assert third[0]["type"] == "thread" and third[-1]["type"] == "end"
+    assert sessions and all(active == 0 for active in sessions)
