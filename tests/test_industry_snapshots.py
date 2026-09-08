@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import pathlib
+import threading
 
 import pytest
 from langchain_core import documents as lc_documents
@@ -542,3 +543,62 @@ def test_v3_indexing_leaves_v2_chunks_untouched():
     snapshots.index_version(store, version, "https://example.com/a", chunks)
     assert store.docs["v1:0"].page_content == "old v2 text"
     assert all(k == "v1:0" or k.startswith("v1:v3:") for k in store.docs)
+
+
+class RacingFetched(snapshots.Fetched):
+    """A fetch whose second ``url`` read waits for the other caller.
+
+    ``store_snapshot`` reads ``url`` once to key the version and once
+    more, after it has found no record, to write the metadata; meeting
+    at the second read puts both callers exactly at the write boundary.
+    """
+
+    def __init__(
+        self, url, body, retrieved_at, barrier
+    ):  # pylint: disable=super-init-not-called
+        object.__setattr__(self, "_url", url)
+        object.__setattr__(self, "final_url", url)
+        object.__setattr__(self, "content_type", "text/html")
+        object.__setattr__(self, "content", body)
+        object.__setattr__(self, "retrieved_at", retrieved_at)
+        object.__setattr__(self, "barrier", barrier)
+        object.__setattr__(self, "reads", 0)
+
+    @property
+    def url(self):
+        object.__setattr__(self, "reads", self.reads + 1)
+        if self.reads == 2:
+            self.barrier.wait(5)
+        return self._url
+
+
+def test_two_first_snapshots_at_once_share_one_record(tmp_path):
+    # C2 round 1, finding 3: os.replace is atomic replacement, not a
+    # create, so two first fetches of the same bytes both wrote the
+    # metadata and returned different retrieval times, one of which
+    # matched nothing on disk.
+    root = str(tmp_path / "sources")
+    barrier = threading.Barrier(2)
+    times = ["2026-09-07T00:00:00+00:00", "2026-09-07T00:00:01+00:00"]
+    results = {}
+
+    def store(when):
+        results[when] = snapshots.store_snapshot(
+            RacingFetched("https://example.com/a", HTML, when, barrier),
+            "S1",
+            root,
+        )
+
+    threads = [threading.Thread(target=store, args=(when,)) for when in times]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    first, second = (results[when] for when in times)
+    assert first.id == second.id
+    stored = json.loads(
+        pathlib.Path(first.meta_path).read_text(encoding="utf-8")
+    )
+    assert first.retrieved_at == second.retrieved_at == stored["retrieved_at"]
+    assert stored["retrieved_at"] in times
+    assert len(list((tmp_path / "sources" / "versions").iterdir())) == 1

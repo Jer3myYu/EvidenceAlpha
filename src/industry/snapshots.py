@@ -233,6 +233,30 @@ def _atomic_write(path: pathlib.Path, data: bytes) -> None:
             os.remove(handle.name)
 
 
+def _create_once(path: pathlib.Path, data: bytes) -> bool:
+    """Create ``path`` with ``data`` atomically; ``False`` if it exists.
+
+    ``os.replace`` replaces; a record that must never be rewritten needs
+    a create that fails when the file is already there, which a hard
+    link from the finished temporary file is, on every local filesystem.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        dir=path.parent, prefix=".tmp-", delete=False
+    )
+    try:
+        handle.write(data)
+        handle.close()
+        try:
+            os.link(handle.name, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if os.path.exists(handle.name):
+            os.remove(handle.name)
+
+
 # What the metadata file records beside the version's own fields; the
 # registry id of the source is attempt-local and is never written.
 _METADATA_ONLY = ("url", "canonical_url", "publisher", "published")
@@ -316,21 +340,35 @@ def store_snapshot(
         # revision and chunk count in the state describe what this run
         # indexed (the file keeps what it first recorded, and is never
         # rewritten), so a v3 run over an old blob reports v3.
-        return recorded.model_copy(
-            update={
-                "extraction_version": EXTRACTION_VERSION,
-                "chunk_count": chunk_count,
-            }
-        )
+        return _as_indexed(recorded, chunk_count)
     payload = version.model_dump(exclude={"source_id"})
     payload["url"] = fetched.url
     payload["canonical_url"] = canonical
     payload["publisher"] = publisher
     payload["published"] = published
-    _atomic_write(
+    created = _create_once(
         meta, json.dumps(payload, ensure_ascii=False, indent=1).encode()
     )
+    if not created:
+        # Two first fetches of the same bytes at once: the record the
+        # other caller created wins, and both callers report it.
+        recorded = _recorded_version(meta, source_id)
+        if recorded is None:
+            raise FetchError(f"snapshot metadata {meta} could not be read")
+        return _as_indexed(recorded, chunk_count)
     return version
+
+
+def _as_indexed(
+    recorded: records.SourceVersion, chunk_count: int
+) -> records.SourceVersion:
+    """A recorded version as this run indexed it."""
+    return recorded.model_copy(
+        update={
+            "extraction_version": EXTRACTION_VERSION,
+            "chunk_count": chunk_count,
+        }
+    )
 
 
 def read_metadata(
