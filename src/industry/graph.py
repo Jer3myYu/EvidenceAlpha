@@ -385,6 +385,29 @@ def _material_open_issues(
 REVIEW_BATCH = records.Limits().review_batch
 
 
+def reviewable(
+    state: state_module.IndustryState,
+) -> list[records.Claim]:
+    """The material claims a verifier verdict could still settle.
+
+    One selection, so the node and its router can never disagree:
+    ``pending_review`` orders and truncates this list and
+    ``review_remaining`` counts it. A claim whose producer chain is not
+    intact is not among them -- only ``calc.recompute_stale`` can settle
+    that one -- so a router that asks for another review round can never
+    ask for a batch the node would find empty.
+    """
+    claims = state.get("claims", {})
+    calculations = state.get("calculations", {})
+    return [
+        c
+        for c in claims.values()
+        if c.needs_review()
+        and c.material
+        and merge.producer_chain_intact(c, claims, calculations)
+    ]
+
+
 def pending_review(
     state: state_module.IndustryState, batch: int | None = None
 ) -> list[str]:
@@ -397,16 +420,8 @@ def pending_review(
     remaining material claims; at most ``batch`` per call (the run's
     ``Limits.review_batch``; ``REVIEW_BATCH`` is only the default).
     """
-    calculations = state.get("calculations", {})
-    claims = state.get("claims", {})
     unreviewed = sorted(
-        (
-            c
-            for c in state.get("claims", {}).values()
-            if c.needs_review()
-            and c.material
-            and merge.producer_chain_intact(c, claims, calculations)
-        ),
+        reviewable(state),
         key=lambda c: merge.schedule.task_number(c.id),
     )
     queues: dict[str, list[str]] = {"map": []}
@@ -488,18 +503,12 @@ def scope_review(
 def review_remaining(state: state_module.IndustryState) -> int:
     """How many material claims review could still settle.
 
-    A derived claim whose calculation was stopped is not among them:
-    only recomputation can settle it (``calc.recompute_stale``).
+    Exactly the claims ``pending_review`` draws its batches from: a
+    derived claim whose calculation was stopped, or whose inputs were
+    withdrawn, is not among them -- only recomputation can settle it
+    (``calc.recompute_stale``).
     """
-    calculations = state.get("calculations", {})
-    claims = state.get("claims", {})
-    return sum(
-        1
-        for c in claims.values()
-        if c.needs_review()
-        and c.material
-        and merge.calculation_current(c, claims, calculations)
-    )
+    return len(reviewable(state))
 
 
 def write_instructions(state: state_module.IndustryState) -> str:
@@ -656,6 +665,14 @@ def _tasks_from_plan(
                 "budget allows; dropped"
             )
             continue
+        if issue is not None:
+            # The attempt is counted as the task is admitted, so a plan
+            # naming one issue several times spends the allowance once
+            # per task: the next spec on the same issue sees the count
+            # this one made, exactly as a later plan would.
+            issues[issue.id] = issue.model_copy(
+                update={"attempts": issue.attempts + 1, "evidence_added": False}
+            )
         key_to_id[spec.key] = f"T{next_number}"
         next_number += 1
         accepted.append(spec)
@@ -670,11 +687,6 @@ def _tasks_from_plan(
                 depends.append(resolved)
         references = [r for r in spec.references if r in evidence]
         issue_id = spec.issue_id if spec.issue_id in issues else None
-        if issue_id:
-            issue = issues[issue_id]
-            issues[issue_id] = issue.model_copy(
-                update={"attempts": issue.attempts + 1, "evidence_added": False}
-            )
         tasks[task_id] = records.Task(
             id=task_id,
             kind=kind,
@@ -827,7 +839,20 @@ def build_graph(
         if reservation is None:
             return None, {"route_log": [f"{node}: skipped (no reservation)"]}
         max_turns = budget.max_turns_for(reservation.reserved.turns, limits)
-        output, usage = await call(max_turns, reservation.reserved.seconds)
+        try:
+            output, usage = await call(max_turns, reservation.reserved.seconds)
+        except (crew.RoleTimeout, crew.RoleHung) as error:
+            # The adapter's own deadline, not a program fault: the
+            # reservation stays charged in full and the node degrades
+            # exactly as a refused one does, so the reserve can still
+            # write and deliver instead of the run ending on a
+            # traceback with everything it collected undelivered.
+            return None, {
+                "single_calls": _complete(
+                    state, reservation, records.Usage(unknown=True)
+                ),
+                "route_log": [f"{node}: {type(error).__name__}: {error}"],
+            }
         return output, {"single_calls": _complete(state, reservation, usage)}
 
     async def scope(state: state_module.IndustryState) -> dict[str, Any]:
@@ -1096,6 +1121,13 @@ def build_graph(
 
         analysis, update = await call_with_reservation(state, "analyze", first)
         update.setdefault("route_log", []).extend(log)
+        if log:
+            # Recomputation is deterministic arithmetic, not a model
+            # call: it stands whether or not the analyst was admitted,
+            # so an exhausted reservation never leaves a derived claim
+            # withdrawn over a result Python already has.
+            update["claims"] = claims
+            update["calculations"] = calculations
         if analysis is None:
             return update
         if analysis.calc_requests:
@@ -1348,10 +1380,14 @@ def build_graph(
             return "dispatch"
         last = running_reservation(state, "review")
         if (
-            review_remaining(state) > 0
+            pending_review(state, limits.review_batch)
             and last is None
             and budget.admit_single_call(state, limits, "review") > 0
         ):
+            # The router asks for the batch the node will actually take,
+            # never for a count computed another way: a round that the
+            # node would find empty releases its reservation unused and
+            # would be routed here again forever.
             return "again"
         return "analyze"
 

@@ -17,6 +17,7 @@ from typing import Any
 from industry import merge
 from industry import quantities
 from industry import records
+from industry import schedule
 
 
 class CalcError(ValueError):
@@ -328,39 +329,53 @@ def recompute_stale(
     calculation whose inputs are still unusable stays stopped and its
     claim stays uncitable. Returns the updated claims, the updated
     calculations, and the log lines.
+
+    A calculation may consume a claim another calculation produces, so
+    one pass in id order is not enough (``K10`` reads what ``K2``
+    writes, and lexicographic order visits ``K10`` first): the pass
+    repeats while it recovers anything, which terminates because every
+    repetition moves at least one calculation out of ``error`` for
+    good.
     """
     claims = dict(claims)
     calculations = dict(calculations)
     log: list[str] = []
-    for calc_id in sorted(calculations):
-        record = calculations[calc_id]
-        if record.status != "error" or record.request is None:
-            continue
-        if not (record.message or "").startswith(STALE_INPUT):
-            continue
-        fresh = compute(
-            calc_id, record.request, inputs_from_claims(claims, calculations)
-        )
-        if fresh.status != "ok":
-            continue
-        # A new version of the calculation, so a claim still reporting
-        # the old one stays uncitable until it is rewritten below.
-        fresh = fresh.model_copy(update={"version": record.version + 1})
-        calculations[calc_id] = fresh
-        for claim_id, claim in list(claims.items()):
-            if claim.calculation_id != calc_id:
+    recovered = True
+    while recovered:
+        recovered = False
+        for calc_id in sorted(calculations, key=schedule.task_number):
+            record = calculations[calc_id]
+            if record.status != "error" or record.request is None:
                 continue
-            claims[claim_id] = claim.model_copy(
-                update={
-                    **derived_fields(fresh, claims),
-                    "version": claim.version + 1,
-                    "supersedes": f"{claim_id}@{claim.version}",
-                    "reviewed_topics": [],
-                }
+            if not (record.message or "").startswith(STALE_INPUT):
+                continue
+            fresh = compute(
+                calc_id,
+                record.request,
+                inputs_from_claims(claims, calculations),
             )
-            log.append(
-                f"analyze: {calc_id} recomputed = {fresh.result} "
-                f"{quantities.render(fresh.unit)} -> {claim_id} version "
-                f"{claim.version + 1}"
-            )
+            if fresh.status != "ok":
+                continue
+            # A new version of the calculation, so a claim still
+            # reporting the old one stays uncitable until it is
+            # rewritten below.
+            fresh = fresh.model_copy(update={"version": record.version + 1})
+            calculations[calc_id] = fresh
+            recovered = True
+            for claim_id, claim in list(claims.items()):
+                if claim.calculation_id != calc_id:
+                    continue
+                claims[claim_id] = claim.model_copy(
+                    update={
+                        **derived_fields(fresh, claims),
+                        "version": claim.version + 1,
+                        "supersedes": f"{claim_id}@{claim.version}",
+                        "reviewed_topics": [],
+                    }
+                )
+                log.append(
+                    f"analyze: {calc_id} recomputed = {fresh.result} "
+                    f"{quantities.render(fresh.unit)} -> {claim_id} version "
+                    f"{claim.version + 1}"
+                )
     return claims, calculations, log

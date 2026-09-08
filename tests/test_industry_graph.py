@@ -14,12 +14,14 @@ from langgraph.checkpoint.memory import MemorySaver
 
 import quantity_support as support
 from industry import budget
+from industry import calc
 from industry import coverage
 from industry import graph as graph_module
 from industry import merge
 from industry import report
 from industry import records
 from industry import roles
+from research import crew
 from research import persist
 
 NOW = "2026-09-07T00:00:00+00:00"
@@ -1725,3 +1727,225 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
     )
     state["calculations"]["K1"] = current
     assert graph_module.pending_review(state, 10) == ["C3"]
+
+
+def _withdrawn_input_state():
+    """A derived claim awaiting review over an input the verifier rejected.
+
+    Its calculation is still ``ok`` and still agrees with the claim, so
+    ``calculation_current`` holds while ``producer_chain_intact`` does
+    not: exactly the shape the C1 round-5 review routed to C2.
+    """
+    measured = records.Claim(
+        id="C1",
+        statement="a measured claim",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.bound(52, "亿元", "E1", "52亿元"),
+        review="unsupported",
+        material=True,
+        partition="q4",
+        questions=[4],
+    )
+    producer = records.Calculation(
+        id="K1",
+        kind="share",
+        label="share",
+        inputs=[
+            support.cinput(measured.model_copy(update={"review": "supported"}))
+        ],
+        formula="f",
+        result=52.0,
+        unit=support.unit("%"),
+        status="ok",
+    )
+    claims = {"C1": measured}
+    claims["C3"] = records.Claim(
+        id="C3",
+        kind="derived",
+        material=True,
+        partition="q4",
+        questions=[4],
+        **{
+            **merge.derived_fields(producer, claims),
+            "review": "unreviewed",
+            "review_reason": None,
+        },
+    )
+    return {"claims": claims, "calculations": {"K1": producer}}
+
+
+def test_a_withdrawn_input_never_asks_for_another_review_round(tmp_path):
+    # C1 round 5, routed to C2: review_remaining counted a claim
+    # pending_review would never hand over, so the router asked for a
+    # batch the node found empty, released its reservation unused and
+    # was routed back -- a cycle that charges nothing and ends only at
+    # LangGraph's recursion limit, with no report.
+    state = _withdrawn_input_state()
+    assert merge.calculation_current(
+        state["claims"]["C3"], state["claims"], state["calculations"]
+    )
+    assert not merge.producer_chain_intact(
+        state["claims"]["C3"], state["claims"], state["calculations"]
+    )
+    assert graph_module.pending_review(state, 10) == []
+    assert graph_module.review_remaining(state) == 0
+
+    saver = MemorySaver()
+    runtime, api, _, compiled = make(tmp_path, saver=saver)
+    config = persist.thread_config("t-loop")
+    seeded = {
+        **state,
+        "question": "q",
+        "meta": graph_module.initial_state("q", runtime.limits)["meta"],
+        "brief": roles.default_brief("q"),
+        "phase": "researching",
+        "review_rounds": 0,
+    }
+    run(compiled.aupdate_state(config, seeded, as_node="merge"))
+    runtime.begin("t-loop")
+    state = run(compiled.ainvoke(None, {**config, "recursion_limit": 200}))
+    assert state["route_log"][:2] == [
+        "reserve_review: review.1 reserved (10 turns)",
+        "review: nothing unreviewed",
+    ]
+    assert "analyze" in api.calls  # the run went on instead of repeating
+    reservations = [
+        c for c in state["single_calls"].values() if c.task_id == "review"
+    ]
+    assert len(reservations) <= state["review_rounds"]
+    assert state["meta"].execution_status == "completed"
+
+
+def test_recomputation_stands_without_the_analysts_reservation(tmp_path):
+    # Recomputing a stopped calculation is deterministic arithmetic, so
+    # an analyze node that could not reserve a model call must still
+    # write it: it used to log the recomputation and drop it.
+    quantity = support.bound(52, "亿元", "E1", "52亿元", period="2024")
+    parent = records.Claim(
+        id="C1",
+        statement="a measured claim",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=quantity,
+        review="supported",
+        material=True,
+        partition="q4",
+        questions=[4],
+    )
+    claims = {"C1": parent}
+    request = records.CalcRequest(
+        kind="share",
+        label="share",
+        numerator_claim_id="C1",
+        denominator_claim_id="C1",
+    )
+    producer = calc.compute("K1", request, calc.inputs_from_claims(claims, {}))
+    claims["C2"] = records.Claim(
+        id="C2",
+        kind="derived",
+        material=True,
+        partition="q4",
+        questions=[4],
+        origin="K1",
+        **calc.derived_fields(producer, claims),
+    )
+    claims["C1"] = claims["C1"].model_copy(
+        update={"review": "qualified", "review_reason": "sample only"}
+    )
+    stale = merge.cascade_changes(
+        {"claims": claims, "calculations": {"K1": producer}}, {"C1"}, claims
+    )
+    claims, calculations = stale["claims"], stale["calculations"]
+    assert calculations["K1"].status == "error"
+
+    runtime, api, _, compiled = make(tmp_path)
+    api.calls.clear()
+    state = {
+        "claims": claims,
+        "calculations": calculations,
+        "single_calls": {},
+        "attempts": {},
+        "issues": {},
+        "analysis_rounds": 0,
+        "meta": graph_module.initial_state("q", runtime.limits)["meta"],
+    }
+    node = compiled.nodes["analyze"].node
+    update = run(node.steps[0].afunc(state))
+    assert "analyze" not in api.calls  # no reservation, no model call
+    assert update["calculations"]["K1"].status == "ok"
+    assert merge.citable(
+        update["claims"]["C2"], update["claims"], update["calculations"]
+    )
+
+
+def test_the_follow_up_allowance_is_spent_within_one_plan():
+    # C0 round 14, finding 4, second half: the allowance was read once
+    # for the whole plan, so several tasks naming one open issue all
+    # passed admission and the issue ended past its limit.
+    limits = records.Limits()
+    issue = records.Issue(
+        id="I1",
+        key="missing_evidence:Q4",
+        category="missing_evidence",
+        severity="material",
+        target="Q4",
+        description="no payer data",
+        requested_action="research",
+    )
+    plan = roles.TaskPlan(
+        tasks=[
+            roles.TaskSpec(
+                key=f"k{n}",
+                role="industry",
+                objective=f"on I1 #{n}",
+                issue_id="I1",
+            )
+            for n in range(limits.issue_follow_ups + 2)
+        ]
+    )
+    tasks, issues, log = (
+        graph_module._tasks_from_plan(  # pylint: disable=protected-access
+            {"tasks": {}, "issues": {"I1": issue}, "evidence": {}},
+            plan,
+            len(plan.tasks),
+            "follow_up",
+            limits,
+        )
+    )
+    assert len(tasks) == limits.issue_follow_ups
+    assert issues["I1"].attempts == limits.issue_follow_ups
+    assert graph_module.followups_exhausted(issues["I1"], limits)
+    assert sum("works on I1" in line for line in log) == 2
+
+
+def test_a_role_deadline_charges_its_reservation_and_the_run_delivers(
+    tmp_path,
+):
+    # A single call that misses its deadline is cancelled by the
+    # adapter; the graph used to let RoleTimeout end the whole run, so
+    # everything already collected went undelivered.
+    runtime, api, _, compiled = make(tmp_path)
+
+    async def analyze(state, note, max_turns, deadline):
+        del state, note, max_turns
+        api.calls.append("analyze")
+        raise crew.RoleTimeout(f"Analyst exceeded {deadline:.0f} s")
+
+    api.analyze = analyze
+    config = persist.thread_config("t-deadline")
+    runtime.begin("t-deadline")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    calls = [
+        c for c in state["single_calls"].values() if c.task_id == "analyze"
+    ]
+    assert calls and all(c.status == "failed" for c in calls)
+    assert all(
+        budget.attempt_charge(c).turns == c.reserved.turns for c in calls
+    )
+    assert any("RoleTimeout" in line for line in state["route_log"])
+    assert state["meta"].execution_status == "completed"
+    assert state["meta"].report_status in (
+        "complete_with_limitations",
+        "incomplete",
+    )

@@ -651,3 +651,83 @@ def test_a_structural_problem_is_reported_before_the_semantic_checks():
     }
     problems = persist.validate_records(values)
     assert problems and "dict where Claim is required" in problems[0]
+
+
+def graph_with_pending_run_task(payload):
+    """A graph that leaves one ``run_task`` ``Send`` pending on ``payload``."""
+
+    async def fill(_):
+        return sample_state()
+
+    def fan_out(_):
+        return [Send("run_task", payload)]
+
+    async def run_task(work):
+        raise RuntimeError(f"interrupted on {type(work).__name__}")
+
+    graph = StateGraph(state_module.IndustryState)
+    graph.add_node("fill", fill)
+    graph.add_node("run_task", run_task)
+    graph.add_edge(START, "fill")
+    graph.add_conditional_edges("fill", fan_out, ["run_task"])
+    graph.add_edge("run_task", END)
+    return graph
+
+
+def worker_input():
+    state = sample_state()
+    return records.WorkerInput(
+        thread_id="t",
+        attempt=state["attempts"]["T1.1"],
+        task=state["tasks"]["T1"],
+        brief=state["brief"],
+        language="zh",
+        allowance=records.Reservation(turns=12, tool_calls=24, seconds=1200),
+        model="claude-sonnet-5",
+        prompt_version="10.1",
+    )
+
+
+def interrupt_with(path, payload):
+    async def write():
+        async with persist.open_checkpointer(path) as saver:
+            compiled = graph_with_pending_run_task(payload).compile(
+                checkpointer=saver
+            )
+            with pytest.raises(RuntimeError):
+                await compiled.ainvoke(
+                    {"question": "q"},
+                    persist.thread_config("t"),
+                    durability="sync",
+                )
+
+    asyncio.run(write())
+
+
+def load_after_interrupt(path):
+    async def read():
+        async with persist.open_checkpointer(path) as saver:
+            compiled = graph_with_pending_run_task(worker_input()).compile(
+                checkpointer=saver
+            )
+            return await persist.load_industry_state(
+                compiled, "t", state_module.WORKFLOW_VERSION
+            )
+
+    return asyncio.run(read())
+
+
+def test_a_pending_send_payload_is_checked_before_the_resume(tmp_path):
+    # C1 round 3, finding 4, routed to C2: the pre-resume check read the
+    # state channels only, so a Send payload that did not survive
+    # deserialization was found inside run_task, part way through the
+    # resumed run, instead of refusing the resume.
+    good = str(tmp_path / "good.db")
+    interrupt_with(good, worker_input())
+    snapshot = load_after_interrupt(good)
+    assert snapshot.next == ("run_task",)
+
+    bad = str(tmp_path / "bad.db")
+    interrupt_with(bad, worker_input().model_dump())
+    with pytest.raises(persist.LegacyThreadError, match="pending run_task"):
+        load_after_interrupt(bad)

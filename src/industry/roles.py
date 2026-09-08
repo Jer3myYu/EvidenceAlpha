@@ -488,7 +488,11 @@ def render_claims(
     never omitted.
     """
     claims = state.get("claims", {})
-    chosen = [claims[cid] for cid in (claim_ids or claims) if cid in claims]
+    # ``None`` means "no selection was made"; an empty list is a
+    # selection that chose nothing, and must render nothing rather than
+    # fall back to every claim.
+    selected = claims if claim_ids is None else claim_ids
+    chosen = [claims[cid] for cid in selected if cid in claims]
     chosen.sort(key=lambda c: (not c.material, budget_number(c.id)))
     lines: list[str] = []
     used = 0

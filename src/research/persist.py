@@ -20,6 +20,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from langgraph import constants as langgraph_constants
 from langgraph.checkpoint.serde import jsonplus
 from langgraph.checkpoint.sqlite import aio
 from langgraph.graph.state import CompiledStateGraph
@@ -145,6 +146,7 @@ async def load_industry_state(
             "Studio, it cannot be resumed here."
         )
     problems = validate_records(snapshot.values)
+    problems.extend(await pending_send_problems(graph, thread_id))
     if problems:
         raise LegacyThreadError(
             f"Thread {thread_id!r} holds records the current schema "
@@ -204,6 +206,65 @@ def nested_problems(label: str, item: Any) -> list[str]:
     return problems
 
 
+def record_problems(label: str, item: Any, model: type | None) -> list[str]:
+    """Why one loaded value is not the record it has to be.
+
+    The serializer rebuilds a model that fails validation with
+    ``model_construct`` and no error, leaving nested values as
+    dictionaries, so the loaded object's own type and attributes are
+    what is checked, not a re-validated dump of them.
+    """
+    if model is not None and not isinstance(item, model):
+        return [
+            f"{label}: {type(item).__name__} where {model.__name__} "
+            "is required"
+        ]
+    if not hasattr(item, "model_dump"):
+        return []
+    try:
+        type(item).model_validate(item.model_dump())
+    except (AttributeError, ValueError) as error:
+        return [f"{label}: {str(error)[:120]}"]
+    return nested_problems(label, item)
+
+
+# The record each fan-out node's ``Send`` carries as its payload.
+SEND_PAYLOADS: dict[str, type] = {"run_task": industry_records.WorkerInput}
+
+
+async def pending_send_problems(
+    graph: CompiledStateGraph, thread_id: str
+) -> list[str]:
+    """Why the thread's queued ``Send`` payloads could not be run.
+
+    ``validate_records`` sees the state channels only. A ``Send`` queued
+    when the run was interrupted carries its own record and LangGraph
+    replays it before any node can look at it, so it is checked here,
+    before the resume, rather than discovered inside ``run_task`` as a
+    failure part way through the run.
+    """
+    saver = graph.checkpointer
+    if saver is None:
+        return []
+    recorded = await saver.aget_tuple(thread_config(thread_id))
+    if recorded is None:
+        return []
+    channels = recorded.checkpoint.get("channel_values", {})
+    sends = channels.get(langgraph_constants.TASKS) or []
+    problems: list[str] = []
+    for index, send in enumerate(sends):
+        node = str(getattr(send, "node", "")) or "send"
+        label = f"pending {node}[{index}]"
+        model = SEND_PAYLOADS.get(node)
+        if model is None:
+            problems.append(f"{label}: no payload contract for this node")
+            continue
+        problems.extend(
+            record_problems(label, getattr(send, "arg", None), model)
+        )
+    return problems
+
+
 def validate_records(values: dict[str, Any]) -> list[str]:
     """Re-validate the registries of a loaded state; return the problems.
 
@@ -215,20 +276,7 @@ def validate_records(values: dict[str, Any]) -> list[str]:
     expected = state_module.record_types()
 
     def check(label: str, item: Any, model: type | None) -> None:
-        if model is not None and not isinstance(item, model):
-            problems.append(
-                f"{label}: {type(item).__name__} where {model.__name__} "
-                "is required"
-            )
-            return
-        if not hasattr(item, "model_dump"):
-            return
-        try:
-            type(item).model_validate(item.model_dump())
-        except (AttributeError, ValueError) as error:
-            problems.append(f"{label}: {str(error)[:120]}")
-            return
-        problems.extend(nested_problems(label, item))
+        problems.extend(record_problems(label, item, model))
 
     for key, value in values.items():
         container, model = expected.get(key, (None, None))

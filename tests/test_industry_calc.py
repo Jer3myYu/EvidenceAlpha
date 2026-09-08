@@ -4,6 +4,7 @@ import pytest
 
 import quantity_support as support
 from industry import calc
+from industry import merge
 from industry import quantities
 from industry import records
 
@@ -290,3 +291,79 @@ def test_inputs_are_preserved_copies_of_citable_claims():
     )
     good = request.model_copy(update={"numerator_claim_id": "C1"})
     assert calc.compute("K2", good, inputs).result == pytest.approx(52.0)
+
+
+def test_a_chain_recomputes_whatever_the_order_of_its_ids():
+    # K10 consumes what K2 produces, and lexicographic order visits K10
+    # first, so one pass left the downstream result withdrawn over
+    # arithmetic that was already recoverable.
+    parent = records.Claim(
+        id="C1",
+        statement="a measured claim",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.bound(52, "亿元", "E1", "52亿元", period="2024"),
+        review="supported",
+        material=True,
+        partition="q4",
+        questions=[4],
+    )
+    claims = {"C1": parent}
+    upstream = calc.compute(
+        "K2",
+        records.CalcRequest(
+            kind="share",
+            label="share",
+            numerator_claim_id="C1",
+            denominator_claim_id="C1",
+        ),
+        calc.inputs_from_claims(claims, {}),
+    )
+    claims["C2"] = records.Claim(
+        id="C2",
+        kind="derived",
+        material=True,
+        partition="q4",
+        questions=[4],
+        origin="K2",
+        **calc.derived_fields(upstream, claims),
+    )
+    calculations = {"K2": upstream}
+    downstream = calc.compute(
+        "K10",
+        records.CalcRequest(
+            kind="share",
+            label="share2",
+            numerator_claim_id="C2",
+            denominator_claim_id="C2",
+        ),
+        calc.inputs_from_claims(claims, calculations),
+    )
+    assert downstream.status == "ok"
+    claims["C3"] = records.Claim(
+        id="C3",
+        kind="derived",
+        material=True,
+        partition="q4",
+        questions=[4],
+        origin="K10",
+        **calc.derived_fields(downstream, claims),
+    )
+    calculations["K10"] = downstream
+    assert sorted(calculations) == ["K10", "K2"]  # the order that broke it
+
+    # A verdict re-qualifies the parent: the whole chain goes stale.
+    claims["C1"] = claims["C1"].model_copy(
+        update={"review": "qualified", "review_reason": "sample only"}
+    )
+    stale = merge.cascade_changes(
+        {"claims": claims, "calculations": calculations}, {"C1"}, claims
+    )
+    claims, calculations = stale["claims"], stale["calculations"]
+    assert [c.status for c in calculations.values()] == ["error", "error"]
+
+    claims, calculations, log = calc.recompute_stale(claims, calculations)
+    assert calculations["K2"].status == "ok"
+    assert calculations["K10"].status == "ok"
+    assert merge.citable(claims["C3"], claims, calculations)
+    assert len(log) == 2

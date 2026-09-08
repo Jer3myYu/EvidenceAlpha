@@ -293,3 +293,26 @@ def test_claim_line_carries_value_period_and_qualification_to_every_reader():
     assert "qualification=" not in roles.render_claims(
         state, ["C1"], False, 9_999
     )
+
+
+def test_an_empty_reviewed_selection_renders_no_claims():
+    # C1 round 9, finding 1: `claim_ids or claims` made an empty
+    # selection mean "every claim", so the analyst, the editor and the
+    # final review saw unreviewed claims whenever none were citable yet.
+    state = {
+        "claims": {
+            "C1": records.Claim(
+                id="C1",
+                statement="an unreviewed claim",
+                kind="fact",
+                review="unreviewed",
+                material=True,
+                partition="q4",
+                questions=[4],
+            )
+        },
+        "calculations": {},
+    }
+    assert roles.reviewed_claim_ids(state) == []
+    assert roles.render_claims(state, [], False, 10_000) == "Claims: none."
+    assert "C1" in roles.render_claims(state, None, False, 10_000)
