@@ -10,6 +10,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 import quantity_support as support
+import test_industry_graph as fakes
+from industry import budget
+from industry import graph as graph_module
 from industry import merge
 from industry import records
 from industry import state as state_module
@@ -748,3 +751,68 @@ class _no_next:  # pylint: disable=invalid-name,too-few-public-methods
     """A snapshot whose run has finished."""
 
     next: tuple[str, ...] = ()
+
+
+def test_every_node_boundary_resumes_through_sqlite(tmp_path):
+    # C2 owns interruption and resume "at every node boundary": the
+    # tests reached scope and run_task, and the rest were argued from
+    # the design. Each boundary is interrupted here and resumed exactly
+    # the way scripts/industry_workflow.py --resume does.
+    boundaries = [
+        "scope",
+        "dispatch",
+        "run_task",
+        "merge",
+        "prepare_tasks",
+        "assess_coverage",
+        "analyze",
+        "review",
+        "write",
+        "final_review",
+        "deliver",
+    ] + [f"reserve_{n}" for n in state_module.SINGLE_CALL_NODES]
+
+    async def interrupt_and_resume(node):
+        path = str(tmp_path / f"{node}.db")
+        thread = f"b-{node}"
+        async with persist.open_checkpointer(path) as saver:
+            runtime, _, _, compiled = fakes.make(tmp_path, saver=saver)
+            config = persist.thread_config(thread)
+            runtime.begin(thread)
+            await compiled.ainvoke(
+                graph_module.initial_state("q", runtime.limits),
+                config,
+                durability="sync",
+                interrupt_before=[node],
+            )
+            snapshot = await persist.load_industry_state(
+                compiled, thread, state_module.WORKFLOW_VERSION
+            )
+            pending = snapshot.next[0]
+            resumed = persist.resume_config(thread, snapshot)
+            if pending in state_module.SINGLE_CALL_NODES:
+                await compiled.aupdate_state(
+                    resumed,
+                    graph_module.resume_updates(
+                        snapshot.values, pending, runtime.limits
+                    ),
+                    as_node=f"reserve_{pending}",
+                )
+            runtime.begin(thread)
+            final = await compiled.ainvoke(None, resumed, durability="sync")
+            return pending, final
+
+    for node in boundaries:
+        pending, final = asyncio.run(interrupt_and_resume(node))
+        assert pending == node, node
+        assert final["meta"].execution_status == "completed", node
+        assert final["meta"].report_status == "complete", node
+        spent = budget.ledger(final)
+        # An interrupted single call is charged its whole reservation
+        # once, and an interrupted attempt is charged as unknown; a
+        # boundary between nodes costs nothing.
+        interrupted = node in state_module.SINGLE_CALL_NODES
+        assert spent.unknown_attempts == (
+            1 if interrupted or node == "run_task" else 0
+        ), node
+        assert spent.task_executions >= 3, node
