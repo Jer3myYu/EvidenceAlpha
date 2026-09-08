@@ -80,13 +80,19 @@ Rules of evidence:
    source, fetch it and cite the passage you retrieved from it.
 2. Cite only the [E#] labels the tools returned. A finding whose
    evidence_refs do not exist is discarded.
-3. Copy numbers exactly as the excerpt writes them (as_written) and
-   give the unit its full meaning, scale included: value=52 with
-   unit="USD million" for "52 million USD", value=52 with unit="亿元"
-   for "52亿元", value=60 with unit="%" for "60%". Never convert or
-   estimate, and never leave the scale out of the unit for the
-   surrounding text to supply: a quantity whose unit the excerpt does
-   not state beside the number is dropped, with the finding kept.
+3. For a number, give quote = the number with its unit text exactly
+   as the excerpt writes it ("52亿元", "$52 million", "60%"),
+   evidence_ref = the one [E#] label it is in, unit_text = the
+   complete unit with its scale, spelled as the excerpt spells it
+   ("亿元", "$ million", "USD million", "人民币万元" for "人民币52万元",
+   "%"), and occurrence = which occurrence of that quote in the
+   excerpt (1 = the first; only needed when the same text appears
+   more than once). value is the number itself: value=52 for
+   "52亿元". Never convert or estimate, never copy a unit from another
+   sentence or column, and never change the currency spelling: Python
+   locates the quote and checks it against what the excerpt says; a
+   quote that is not there, or a unit the excerpt does not state
+   beside the number, drops the quantity and keeps the finding.
 4. Kind: "fact" for what a document reports; "company_claim" for what
    a company says about itself; "inference" for your own reasoning;
    "forecast" for projections. Mark material=true only for findings

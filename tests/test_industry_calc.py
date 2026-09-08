@@ -2,14 +2,15 @@
 
 import pytest
 
+import quantity_support as support
 from industry import calc
+from industry import quantities
 from industry import records
 
 
 def cinput(cid, value, unit="亿元", period="2024", scope=None):
-    return records.CalcInput(
-        claim_id=cid, value=value, unit=unit, period=period, scope=scope
-    )
+    quantity = support.bound(value, unit, "E1", period=period, scope=scope)
+    return records.CalcInput(claim_id=cid, claim_version=1, quantity=quantity)
 
 
 def test_parse_period_forms():
@@ -35,7 +36,8 @@ def test_growth_derives_years_from_periods():
     result = calc.compute("K1", request, inputs)
     assert result.status == "ok"
     assert result.result == pytest.approx(18.9207, abs=1e-3)
-    assert result.unit == "% per year" and "1/4" in result.formula
+    assert quantities.render(result.unit) == "%/year"
+    assert "1/4" in result.formula
 
 
 @pytest.mark.parametrize(
@@ -89,9 +91,8 @@ def test_share_and_ratio_need_same_period_and_scope():
     )
     aligned = share.model_copy(update={"denominator_claim_id": "C4"})
     result = calc.compute("K2", aligned, inputs)
-    assert (
-        result.status == "ok" and result.result == 25.0 and result.unit == "%"
-    )
+    assert result.status == "ok" and result.result == 25.0
+    assert result.unit == quantities.atom("%")
     period_mismatch = share.model_copy(update={"denominator_claim_id": "C3"})
     assert calc.compute("K3", period_mismatch, inputs).status == "error"
     explained = period_mismatch.model_copy(
@@ -114,7 +115,12 @@ def test_ratio_units_and_denominator():
         denominator_claim_id="C2",
     )
     result = calc.compute("K1", ratio, inputs)
-    assert result.status == "ok" and result.unit == "亿元/万平方米"
+    assert result.status == "ok"
+    # The quotient keeps both operands whole: no simplification.
+    assert result.unit == quantities.divide(
+        support.unit("亿元"), support.unit("万平方米")
+    )
+    assert quantities.render(result.unit) == "亿元/万m²"
     zero = ratio.model_copy(update={"denominator_claim_id": "C3"})
     assert "non_positive_denominator" in str(
         calc.compute("K2", zero, inputs).message
@@ -128,6 +134,67 @@ def test_ratio_units_and_denominator():
     assert "unit_mismatch" in str(
         calc.compute("K3", unit_mismatch, inputs).message
     )
+
+
+def test_a_quotient_of_a_quotient_keeps_its_grouping():
+    # C1 round 6, finding 3: 52 USD / 1 kg/day and 52 USD/kg / 1 day
+    # both emitted "USD/kg/day" and a share over the two returned 100%.
+    per_day = cinput("C1", 1, unit="kg/day")
+    usd = cinput("C2", 52, unit="USD")
+    usd_per_kg = cinput("C3", 52, unit="USD/kg")
+    day = cinput("C4", 1, unit="day")
+    inputs = {"C1": per_day, "C2": usd, "C3": usd_per_kg, "C4": day}
+    first = calc.compute(
+        "K1",
+        records.CalcRequest(
+            kind="ratio",
+            label="a",
+            numerator_claim_id="C2",
+            denominator_claim_id="C1",
+        ),
+        inputs,
+    )
+    second = calc.compute(
+        "K2",
+        records.CalcRequest(
+            kind="ratio",
+            label="b",
+            numerator_claim_id="C3",
+            denominator_claim_id="C4",
+        ),
+        inputs,
+    )
+    assert quantities.render(first.unit) == "USD/(kg/day)"
+    assert quantities.render(second.unit) == "USD/kg/day"
+    assert first.unit != second.unit
+    # A share over the two different dimensions refuses.
+    derived = {
+        "K1": records.CalcInput(
+            claim_id="D1",
+            claim_version=1,
+            quantity=records.Quantity(
+                value=first.result, unit=first.unit, binding=None
+            ),
+        ),
+        "K2": records.CalcInput(
+            claim_id="D2",
+            claim_version=1,
+            quantity=records.Quantity(
+                value=second.result, unit=second.unit, binding=None
+            ),
+        ),
+    }
+    share = calc.compute(
+        "K3",
+        records.CalcRequest(
+            kind="share",
+            label="s",
+            numerator_claim_id="K1",
+            denominator_claim_id="K2",
+        ),
+        derived,
+    )
+    assert share.status == "error" and "unit_mismatch" in str(share.message)
 
 
 def test_missing_quantity_is_an_error_not_a_guess():
@@ -181,36 +248,40 @@ def test_equivalent_period_labels_are_the_same_period():
     assert calc.compute("K2", fiscal, inputs).status == "error"
 
 
-def test_inputs_come_only_from_reviewed_consistent_quantities():
-    # C0 round 13, finding 2: a value that is not the number written
-    # must never become a calculation input.
-    def claim(cid, review, value, as_written):
+def test_inputs_are_preserved_copies_of_citable_claims():
+    # C0 round 13, finding 2 (a value that is not the number written)
+    # is now impossible by construction: only an admitted quantity
+    # exists on a claim. What remains is that only citable claims
+    # become inputs, and that an input copies the parent as consumed.
+    def claim(cid, review, value):
         return records.Claim(
             id=cid,
             statement="s",
             kind="fact",
+            evidence_ids=["E1"],
             review=review,
             review_reason="scope narrowed" if review == "qualified" else None,
-            quantity=records.Quantity(
-                value=value, unit="亿元", period="2024", as_written=as_written
-            ),
+            quantity=support.bound(value, "亿元", "E1", period="2024"),
         )
 
     claims = {
-        "C1": claim("C1", "supported", 52, "52"),
-        "C2": claim("C2", "supported", 520, "52"),
-        "C3": claim("C3", "unreviewed", 52, "52"),
+        "C1": claim("C1", "supported", 52),
+        "C3": claim("C3", "unreviewed", 52),
         "C4": records.Claim(
             id="C4", statement="s", kind="fact", review="supported"
         ),
-        "C5": claim("C5", "qualified", 100, "100亿元"),
+        "C5": claim("C5", "qualified", 100),
     }
     inputs = calc.inputs_from_claims(claims)
-    assert sorted(inputs) == ["C1", "C5"] and inputs["C1"].value == 52
+    assert sorted(inputs) == ["C1", "C5"]
+    assert inputs["C1"].quantity == claims["C1"].quantity
+    assert inputs["C1"].claim_version == 1
+    assert inputs["C1"].qualification is None
+    assert inputs["C5"].qualification == "scope narrowed"
     request = records.CalcRequest(
         kind="share",
         label="share",
-        numerator_claim_id="C2",
+        numerator_claim_id="C3",
         denominator_claim_id="C5",
     )
     result = calc.compute("K1", request, inputs)

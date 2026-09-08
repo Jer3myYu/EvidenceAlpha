@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from industry import merge
+from industry import quantities
 from industry import records
 
 
@@ -109,12 +110,16 @@ def _same_period_and_scope(
     a: records.CalcInput, b: records.CalcInput, note: str | None
 ) -> str | None:
     """Check ratio/share alignment; return a qualification or raise."""
-    if not _same_period(a.period, b.period) or a.scope != b.scope:
+    if (
+        not _same_period(a.quantity.period, b.quantity.period)
+        or a.quantity.scope != b.quantity.scope
+    ):
         if note:
             return note
         raise CalcError(
             "misaligned_inputs: periods or scopes differ "
-            f"({a.period!r}/{a.scope!r} vs {b.period!r}/{b.scope!r}) and "
+            f"({a.quantity.period!r}/{a.quantity.scope!r} vs "
+            f"{b.quantity.period!r}/{b.quantity.scope!r}) and "
             "no alignment note explains why they are comparable"
         )
     return None
@@ -131,27 +136,26 @@ def inputs_from_claims(
 ) -> dict[str, records.CalcInput]:
     """The quantities a calculation may consume, by claim id.
 
-    Only a claim reviewed supported or qualified whose quantity is
-    consistent (``merge.quantity_consistent``: the numeric value is the
-    number as written) becomes an input; anything else is a missing
-    input, never a number. A claim that reports a calculation of its own
-    is an input only while the whole chain under it is live
-    (``merge.citable``), so a result withdrawn by a changed input never
-    feeds the next one.
+    Only a claim reviewed supported or qualified with an admitted
+    quantity becomes an input; anything else is a missing input, never
+    a number. A claim that reports a calculation of its own is an input
+    only while the whole chain under it is live (``merge.citable``).
+    Each input is a preserved copy of the parent as consumed -- its
+    version, its whole quantity and its qualification -- so a parent
+    that later changes is detected even if a cascade missed it.
     """
     live = calculations or {}
     return {
         cid: records.CalcInput(
             claim_id=cid,
-            value=claim.quantity.value,
-            unit=claim.quantity.unit,
-            period=claim.quantity.period,
-            scope=claim.quantity.scope,
+            claim_version=claim.version,
+            quantity=claim.quantity,
+            qualification=(
+                claim.review_reason if claim.review == "qualified" else None
+            ),
         )
         for cid, claim in claims.items()
-        if claim.quantity is not None
-        and merge.citable(claim, claims, live)
-        and merge.quantity_consistent(claim.quantity)
+        if claim.quantity is not None and merge.citable(claim, claims, live)
     }
 
 
@@ -219,58 +223,71 @@ def _compute(
     if request.kind == "growth":
         start = _input(request.start_claim_id, inputs, "start")
         end = _input(request.end_claim_id, inputs, "end")
-        if start.unit != end.unit:
-            raise CalcError(f"unit_mismatch: {start.unit!r} vs {end.unit!r}")
-        if start.scope != end.scope and not request.alignment_note:
+        if start.quantity.unit != end.quantity.unit:
+            raise CalcError(
+                "unit_mismatch: "
+                f"{quantities.render(start.quantity.unit)!r} vs "
+                f"{quantities.render(end.quantity.unit)!r}"
+            )
+        if (
+            start.quantity.scope != end.quantity.scope
+            and not request.alignment_note
+        ):
             raise CalcError("scope_mismatch: growth inputs differ in scope")
-        _finite(start.value, "start")
-        _finite(end.value, "end")
-        if start.value <= 0:
+        first, last = start.quantity.value, end.quantity.value
+        _finite(first, "start")
+        _finite(last, "end")
+        if first <= 0:
             raise CalcError("non_positive_start: growth needs a start > 0")
-        if end.value <= 0:
+        if last <= 0:
             raise CalcError("non_positive_end: growth needs an end > 0")
         years = elapsed_years(
-            parse_period(start.period), parse_period(end.period)
+            parse_period(start.quantity.period),
+            parse_period(end.quantity.period),
         )
-        result = ((end.value / start.value) ** (1.0 / years) - 1.0) * 100.0
+        result = ((last / first) ** (1.0 / years) - 1.0) * 100.0
         return records.Calculation(
             id=calc_id,
             kind="growth",
             label=request.label,
             inputs=[start, end],
-            formula=(
-                f"(({end.value} / {start.value}) ^ (1/{years}) - 1) * 100"
-            ),
+            formula=(f"(({last} / {first}) ^ (1/{years}) - 1) * 100"),
             result=round(result, 4),
-            unit="% per year",
+            unit=quantities.divide(
+                quantities.atom("%"), quantities.atom("year")
+            ),
             status="ok",
             alignment_note=request.alignment_note,
         )
     numerator = _input(request.numerator_claim_id, inputs, "numerator")
     denominator = _input(request.denominator_claim_id, inputs, "denominator")
-    _finite(numerator.value, "numerator")
-    _finite(denominator.value, "denominator")
-    if denominator.value <= 0:
+    above, below = numerator.quantity, denominator.quantity
+    _finite(above.value, "numerator")
+    _finite(below.value, "denominator")
+    if below.value <= 0:
         raise CalcError("non_positive_denominator")
     note = _same_period_and_scope(
         numerator, denominator, request.alignment_note
     )
     if request.kind == "share":
-        if numerator.unit != denominator.unit:
+        if above.unit != below.unit:
             raise CalcError(
-                f"unit_mismatch: {numerator.unit!r} vs {denominator.unit!r}"
+                "unit_mismatch: "
+                f"{quantities.render(above.unit)!r} vs "
+                f"{quantities.render(below.unit)!r}"
             )
-        result = numerator.value / denominator.value * 100.0
-        unit = "%"
-        formula = f"{numerator.value} / {denominator.value} * 100"
+        result = above.value / below.value * 100.0
+        unit = quantities.atom("%")
+        formula = f"{above.value} / {below.value} * 100"
     else:
-        result = numerator.value / denominator.value
+        result = above.value / below.value
+        # Whole operands: USD/(kg/day) and (USD/kg)/day stay different.
         unit = (
-            "ratio"
-            if numerator.unit == denominator.unit
-            else f"{numerator.unit}/{denominator.unit}"
+            quantities.atom("ratio")
+            if above.unit == below.unit
+            else quantities.divide(above.unit, below.unit)
         )
-        formula = f"{numerator.value} / {denominator.value}"
+        formula = f"{above.value} / {below.value}"
     return records.Calculation(
         id=calc_id,
         kind=request.kind,
@@ -292,50 +309,11 @@ def derived_fields(
 ) -> dict[str, Any]:
     """The claim fields that report one calculation's result.
 
-    A derived claim states the result, cites the evidence of every claim
-    the calculation consumed, and inherits their restrictions: it is
-    qualified when an input was, or when the periods or scopes were only
-    comparable under an alignment note, and supported otherwise. Its
-    approval comes from its inputs and the arithmetic, never from a
-    verdict on its text.
+    The one projection rule lives in ``merge.derived_fields`` (the
+    citability check compares a derived claim against it); this is the
+    same function.
     """
-    cited = [item.claim_id for item in result.inputs]
-    evidence_ids: list[str] = []
-    for cid in cited:
-        for eid in claims[cid].evidence_ids:
-            if eid not in evidence_ids:
-                evidence_ids.append(eid)
-    qualifications = [
-        f"{cid}: {claims[cid].review_reason}"
-        for cid in cited
-        if claims[cid].review == "qualified" and claims[cid].review_reason
-    ]
-    if result.alignment_note:
-        qualifications.append(f"alignment: {result.alignment_note}")
-    cited_text = ", ".join(cited)
-    return {
-        "statement": (
-            f"{result.label}: {result.result} {result.unit} "
-            f"(computed from {cited_text}; {result.formula})"
-        ),
-        "evidence_ids": evidence_ids,
-        "calculation_id": result.id,
-        "calculation_version": result.version,
-        "review": "qualified" if qualifications else "supported",
-        "review_reason": "; ".join(qualifications) or None,
-        "quantity": records.Quantity(
-            value=result.result or 0.0,
-            unit=result.unit or "",
-            period=result.inputs[-1].period,
-            scope=result.inputs[-1].scope,
-            as_written=str(result.result),
-        ),
-        "limitations": (
-            [f"alignment: {result.alignment_note}"]
-            if result.alignment_note
-            else []
-        ),
-    }
+    return merge.derived_fields(result, claims)
 
 
 def recompute_stale(
@@ -382,6 +360,7 @@ def recompute_stale(
             )
             log.append(
                 f"analyze: {calc_id} recomputed = {fresh.result} "
-                f"{fresh.unit} -> {claim_id} version {claim.version + 1}"
+                f"{quantities.render(fresh.unit)} -> {claim_id} version "
+                f"{claim.version + 1}"
             )
     return claims, calculations, log

@@ -46,6 +46,7 @@ from industry import budget
 from industry import calc
 from industry import coverage as coverage_module
 from industry import merge
+from industry import quantities
 from industry import records
 from industry import report
 from industry import roles
@@ -497,7 +498,7 @@ def review_remaining(state: state_module.IndustryState) -> int:
         for c in claims.values()
         if c.needs_review()
         and c.material
-        and merge.calculation_current(c, calculations)
+        and merge.calculation_current(c, claims, calculations)
     )
 
 
@@ -1126,8 +1127,8 @@ def build_graph(
                         **calc.derived_fields(result, claims),
                     )
                     update["route_log"].append(
-                        f"analyze: {calc_id} = {result.result} {result.unit} "
-                        f"-> {claim_id}"
+                        f"analyze: {calc_id} = {result.result} "
+                        f"{quantities.render(result.unit)} -> {claim_id}"
                     )
                 else:
                     update["route_log"].append(

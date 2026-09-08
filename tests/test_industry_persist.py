@@ -9,6 +9,7 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
+import quantity_support as support
 from industry import records
 from industry import state as state_module
 from research import persist
@@ -42,12 +43,19 @@ def sample_state():
         id="E1",
         source_id="S1",
         source_version_id="v1",
-        excerpt="e",
+        excerpt="one input of 1 USD",
         locator="p1",
         kind="passage",
         extraction="html_text",
         task_id="T1",
         retrieved_at=NOW,
+    )
+    claim = records.Claim(
+        id="C1",
+        statement="s",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.admitted(1, "USD", "1 USD", evidence),
     )
     return {
         "question": "光掩模产业调研",
@@ -117,9 +125,7 @@ def sample_state():
                     records.FindingDraft(
                         statement="s",
                         evidence_refs=["E1"],
-                        quantity=records.Quantity(
-                            value=1, unit="u", as_written="1"
-                        ),
+                        quantity=support.draft(1, "USD", "1 USD"),
                         relationships=[
                             records.RelationshipDraft(
                                 from_entity="a",
@@ -156,14 +162,7 @@ def sample_state():
         },
         "source_versions": {},
         "evidence": {"E1": evidence},
-        "claims": {
-            "C1": records.Claim(
-                id="C1",
-                statement="s",
-                kind="fact",
-                quantity=records.Quantity(value=1, unit="u", as_written="1"),
-            )
-        },
+        "claims": {"C1": claim},
         "relationships": {
             "R1": records.Relationship(
                 id="R1",
@@ -178,10 +177,10 @@ def sample_state():
                 id="K1",
                 kind="ratio",
                 label="l",
-                inputs=[records.CalcInput(claim_id="C1", value=1, unit="u")],
+                inputs=[support.cinput(claim)],
                 formula="1/1",
                 result=1.0,
-                unit="ratio",
+                unit=support.unit("ratio"),
                 status="ok",
             )
         },
@@ -506,95 +505,114 @@ def test_a_record_may_not_be_built_without_validation():
 
 def test_a_nested_record_left_as_a_dictionary_is_rejected():
     # Defence in depth: whatever leaves a declared record as a plain
-    # value, no reader should be handed it.
-    claim = records.Claim(id="C1", statement="s", kind="fact").model_copy(
-        update={
-            "quantity": {
-                "value": 52,
-                "unit": "亿元",
-                "as_written": "52亿元",
-                "period": None,
-                "scope": None,
-            }
-        }
+    # value, no reader should be handed it -- even a dictionary that
+    # would re-validate into a valid record.
+    holder = support.evidence("E1", "收入52亿元。")
+    good = records.Claim(
+        id="C1",
+        statement="s",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.admitted(52, "亿元", "52亿元", holder),
     )
-    problems = persist.validate_records({"claims": {"C1": claim}})
+    assert not persist.validate_records(
+        {"evidence": {"E1": holder}, "claims": {"C1": good}}
+    )
+    claim = good.model_copy(update={"quantity": good.quantity.model_dump()})
+    problems = persist.validate_records(
+        {"evidence": {"E1": holder}, "claims": {"C1": claim}}
+    )
     assert problems and "dict where Quantity is required" in problems[0]
-    good = claim.model_copy(
-        update={
-            "quantity": records.Quantity(
-                value=52, unit="亿元", as_written="52亿元"
-            )
-        }
-    )
-    assert not persist.validate_records({"claims": {"C1": good}})
     calculation = records.Calculation(
         id="K1",
         kind="share",
         label="l",
-        inputs=[records.CalcInput(claim_id="C1", value=1.0, unit="u")],
+        inputs=[support.cinput(good)],
         formula="f",
         status="ok",
-    ).model_copy(
-        update={"inputs": [{"claim_id": "C1", "value": 1.0, "unit": "u"}]}
-    )
+    ).model_copy(update={"inputs": [support.cinput(good).model_dump()]})
     deep = persist.validate_records({"calculations": {"K1": calculation}})
     assert deep and "CalcInput is required" in deep[0]
 
 
 def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
-    # C1 round 3, finding 2: the load side of the same inconsistency —
+    # C1 round 3, finding 2: the load side of the same inconsistency --
     # a derived claim must never come back citable while the
     # calculation behind it is stopped.
-    claim = records.Claim(
-        id="C3",
-        statement="share: 52.0 %",
-        kind="derived",
-        calculation_id="K1",
-        calculation_version=1,
-        quantity=records.Quantity(value=52.0, unit="%", as_written="52.0"),
+    holder = support.evidence("E1", "the input was 52亿元 of 100亿元.")
+    supported_input = records.Claim(
+        id="C1",
+        statement="an input",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.admitted(52, "亿元", "52亿元", holder),
         review="supported",
-        material=True,
-        partition="q4",
     )
     stopped = records.Calculation(
         id="K1",
         kind="share",
         label="share",
-        inputs=[records.CalcInput(claim_id="C1", value=52, unit="亿元")],
+        inputs=[support.cinput(supported_input)],
         formula="f",
         status="error",
         message="stale_input: C1 changed after the calculation",
     )
+    claim = records.Claim(
+        id="C3",
+        statement="share: 52.0 %",
+        kind="derived",
+        evidence_ids=["E1"],
+        calculation_id="K1",
+        calculation_version=1,
+        quantity=support.derived(52.0, "%"),
+        review="supported",
+        material=True,
+        partition="q4",
+    )
+    evidence = {"E1": holder}
     problems = persist.validate_records(
-        {"claims": {"C3": claim}, "calculations": {"K1": stopped}}
+        {
+            "evidence": evidence,
+            "claims": {"C3": claim, "C1": supported_input},
+            "calculations": {"K1": stopped},
+        }
     )
     assert problems and "not current" in problems[0]
     current = stopped.model_copy(
-        update={"status": "ok", "message": None, "result": 52.0, "unit": "%"}
-    )
-    supported_input = records.Claim(
-        id="C1",
-        statement="an input",
-        kind="fact",
-        quantity=records.Quantity(value=52, unit="亿元", as_written="52亿元"),
-        review="supported",
+        update={
+            "status": "ok",
+            "message": None,
+            "result": 52.0,
+            "unit": support.unit("%"),
+        }
     )
     assert not persist.validate_records(
         {
+            "evidence": evidence,
             "claims": {"C3": claim, "C1": supported_input},
             "calculations": {"K1": current},
         }
     )
     # The producer registry may not simply be absent either.
-    missing = persist.validate_records({"claims": {"C3": claim}})
+    missing = persist.validate_records(
+        {"evidence": evidence, "claims": {"C3": claim, "C1": supported_input}}
+    )
     assert missing and "no calculations" in missing[0]
     # Nor may the claim report a version the producer has moved past.
     moved_on = current.model_copy(update={"version": 2})
     stale = persist.validate_records(
         {
+            "evidence": evidence,
             "claims": {"C3": claim, "C1": supported_input},
             "calculations": {"K1": moved_on},
         }
     )
     assert stale and "not current" in stale[0]
+    # And an observed quantity whose binding the evidence refutes.
+    changed = {
+        "E1": holder.model_copy(update={"excerpt": "the input was 53亿元."})
+    }
+    unbound = persist.validate_records(
+        {"evidence": changed, "claims": {"C1": supported_input}}
+    )
+    assert unbound and "binding not established" in unbound[0]

@@ -19,6 +19,7 @@ import pydantic
 from industry import budget
 from industry import merge
 from industry import calc as calc_module
+from industry import quantities
 from industry import records
 from industry import state as state_module
 from research import crew
@@ -411,8 +412,13 @@ def _claim_line(
         fields.append(f"period={claim.period}")
     if claim.quantity:
         quantity = claim.quantity
+        written = (
+            quantity.binding.as_written
+            if quantity.binding is not None
+            else f"{quantity.value:g}"
+        )
         fields.append(
-            f"quantity={quantity.as_written} {quantity.unit}"
+            f"quantity={written} {quantities.render(quantity.unit)}"
             + (f" ({quantity.scope})" if quantity.scope else "")
             + f" [value={quantity.value:g}"
             + (f", period={quantity.period}" if quantity.period else "")
@@ -599,11 +605,14 @@ def render_calculations(state: state_module.IndustryState) -> str:
     unknown = "?"
     for calc in items.values():
         inputs = ", ".join(
-            f"{i.claim_id}={i.value} {i.unit} ({i.period or unknown})"
+            f"{i.claim_id}={i.quantity.value} "
+            f"{quantities.render(i.quantity.unit)} "
+            f"({i.quantity.period or unknown})"
             for i in calc.inputs
         )
         if calc.status == "ok":
-            outcome = f"{calc.result} {calc.unit}"
+            unit = quantities.render(calc.unit) if calc.unit else ""
+            outcome = f"{calc.result} {unit}"
         elif (calc.message or "").startswith(calc_module.STALE_INPUT):
             # Not a request that could not be answered: a result its own
             # inputs withdrew, waiting to be computed again.

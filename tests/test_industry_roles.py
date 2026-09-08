@@ -1,5 +1,6 @@
 """Rendering and defaults of the single-call roles."""
 
+import quantity_support as support
 from industry import records
 from industry import roles
 
@@ -60,9 +61,7 @@ def sample_state():
             material=True,
             topics=["payer_flow"],
             questions=[3],
-            quantity=records.Quantity(
-                value=60, unit="%", scope="全球", as_written="60%"
-            ),
+            quantity=support.bound(60, "%", "E1", "60%", scope="全球"),
         ),
         "C2": records.Claim(
             id="C2", statement="other", kind="fact", evidence_ids=["E2"]
@@ -270,12 +269,8 @@ def test_claim_line_carries_value_period_and_qualification_to_every_reader():
         update={
             "review": "qualified",
             "review_reason": "merchant market only, excludes captive",
-            "quantity": records.Quantity(
-                value=60,
-                unit="%",
-                scope="全球",
-                period="2024",
-                as_written="60%",
+            "quantity": support.bound(
+                60, "%", "E1", "60%", period="2024", scope="全球"
             ),
         }
     )

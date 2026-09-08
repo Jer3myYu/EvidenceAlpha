@@ -12,6 +12,7 @@ import pathlib
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
+import quantity_support as support
 from industry import budget
 from industry import coverage
 from industry import graph as graph_module
@@ -1520,9 +1521,7 @@ def test_a_claim_a_live_calculation_consumes_is_still_cited():
     # C1 round 1, finding 1: an unsupported issue on a calculation input
     # closed as "claim no longer cited" while the derived number that
     # depended on it was still deliverable.
-    quantity = records.Quantity(
-        value=52, unit="亿元", period="2024", as_written="52亿元"
-    )
+    quantity = support.bound(52, "亿元", "E1", "52亿元", period="2024")
     claims = {
         "C1": records.Claim(
             id="C1",
@@ -1549,10 +1548,10 @@ def test_a_claim_a_live_calculation_consumes_is_still_cited():
         id="K1",
         kind="share",
         label="share",
-        inputs=[records.CalcInput(claim_id="C1", value=52, unit="亿元")],
+        inputs=[support.cinput(claims["C1"])],
         formula="f",
         result=52.0,
-        unit="%",
+        unit=support.unit("%"),
         status="ok",
     )
     issues, issue = merge.open_issue(
@@ -1583,26 +1582,29 @@ def test_one_review_batch_stales_everything_it_touched():
     # the cascade had staled through a calculation. Staling for rejected
     # claims and staling through the cascade are now one pass over one
     # authority, so neither can drop the other.
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="an input",
+            kind="fact",
+            evidence_ids=["E1"],
+            quantity=support.bound(52, "亿元", "E1", "52亿元"),
+            review="supported",
+            material=True,
+            partition="q4",
+        )
+    }
     state = {
         "claims": {
-            "C1": records.Claim(
-                id="C1",
-                statement="an input",
-                kind="fact",
-                evidence_ids=["E1"],
-                quantity=records.Quantity(
-                    value=52, unit="亿元", as_written="52亿元"
-                ),
-                review="supported",
-                material=True,
-                partition="q4",
-            ),
+            **claims,
             "C3": records.Claim(
                 id="C3",
                 statement="share: 52.0 %",
                 kind="derived",
                 evidence_ids=["E1"],
                 calculation_id="K1",
+                calculation_version=1,
+                quantity=support.derived(52.0, "%"),
                 review="supported",
                 material=True,
                 partition="q4",
@@ -1622,12 +1624,10 @@ def test_one_review_batch_stales_everything_it_touched():
                 id="K1",
                 kind="share",
                 label="share",
-                inputs=[
-                    records.CalcInput(claim_id="C1", value=52, unit="亿元")
-                ],
+                inputs=[support.cinput(claims["C1"])],
                 formula="f",
                 result=52.0,
-                unit="%",
+                unit=support.unit("%"),
                 status="ok",
             )
         },
@@ -1672,17 +1672,19 @@ def test_one_review_batch_stales_everything_it_touched():
 def test_a_stale_derived_claim_is_not_offered_for_review():
     # C1 round 2, finding 1: review cannot settle it, only recomputation
     # can, so it must not consume a review slot either.
+    measured = records.Claim(
+        id="C1",
+        statement="a measured claim",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.bound(52, "亿元", "E1", "52亿元"),
+        review="unreviewed",
+        material=True,
+        partition="q4",
+        questions=[4],
+    )
     claims = {
-        "C1": records.Claim(
-            id="C1",
-            statement="a measured claim",
-            kind="fact",
-            evidence_ids=["E1"],
-            review="unreviewed",
-            material=True,
-            partition="q4",
-            questions=[4],
-        ),
+        "C1": measured,
         "C3": records.Claim(
             id="C3",
             statement="share: 52.0 %",
@@ -1690,7 +1692,7 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
             evidence_ids=["E1"],
             calculation_id="K1",
             calculation_version=1,
-            quantity=records.Quantity(value=52.0, unit="%", as_written="52.0"),
+            quantity=support.derived(52.0, "%"),
             review="unreviewed",
             material=True,
             partition="q4",
@@ -1701,7 +1703,7 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
         id="K1",
         kind="share",
         label="share",
-        inputs=[records.CalcInput(claim_id="C1", value=52, unit="亿元")],
+        inputs=[support.cinput(measured)],
         formula="f",
         status="error",
         message="stale_input: C1 changed after the calculation",
@@ -1715,6 +1717,11 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
         update={"review": "supported", "review_reason": None}
     )
     state["calculations"]["K1"] = stopped.model_copy(
-        update={"status": "ok", "message": None, "result": 52.0, "unit": "%"}
+        update={
+            "status": "ok",
+            "message": None,
+            "result": 52.0,
+            "unit": support.unit("%"),
+        }
     )
     assert graph_module.pending_review(state, 10) == ["C3"]

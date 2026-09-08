@@ -26,6 +26,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import StateSnapshot
 
 from industry import merge
+from industry import quantities
 from industry import records as industry_records
 from industry import state as state_module
 
@@ -87,10 +88,23 @@ async def load_state(
     return snapshot
 
 
+def recorded_meta(values: dict[str, Any], field: str) -> Any:
+    """A ``RunMeta`` field of a loaded state, model or raw mapping.
+
+    A thread written by another record schema comes back with its
+    ``meta`` as the raw mapping the serializer read (``Record.
+    model_construct`` refuses to rebuild it); it is still that
+    workflow's thread, so readers classify it by what it recorded.
+    """
+    meta = values.get("meta")
+    if isinstance(meta, dict):
+        return meta.get(field)
+    return getattr(meta, field, None)
+
+
 def thread_version(snapshot: StateSnapshot) -> str | None:
     """The workflow version a thread was recorded with; ``None`` if legacy."""
-    meta = snapshot.values.get("meta")
-    return getattr(meta, "workflow_version", None)
+    return recorded_meta(snapshot.values, "workflow_version")
 
 
 async def load_industry_state(
@@ -118,7 +132,7 @@ async def load_industry_state(
             f"Thread {thread_id!r} was recorded by workflow "
             f"{version!r}; this program runs {expected_version!r}."
         )
-    schema = getattr(snapshot.values.get("meta"), "schema_version", None)
+    schema = recorded_meta(snapshot.values, "schema_version")
     if schema != industry_records.SCHEMA_VERSION:
         # A record schema this program does not write is not resumable:
         # the serializer drops the fields it does not know without an
@@ -232,7 +246,45 @@ def validate_records(values: dict[str, Any]) -> list[str]:
                 check(f"{key}[{index}]", item, model)
         else:
             check(key, value, model)
+    problems.extend(_unbound_quantities(values))
     problems.extend(_withdrawn_but_citable(values))
+    return problems
+
+
+def _unbound_quantities(values: dict[str, Any]) -> list[str]:
+    """Observed quantities whose binding the stored evidence refutes.
+
+    An admitted quantity is only as good as the occurrence that
+    established it, so a state in which one names missing evidence, a
+    changed excerpt, or spans and a parse the evidence does not
+    reproduce is not a state this program could have written. The
+    stored binding is verified; nothing is searched for.
+    """
+    claims = values.get("claims")
+    evidence = values.get("evidence")
+    if not isinstance(claims, dict):
+        return []
+    problems = []
+    for cid, claim in claims.items():
+        quantity = getattr(claim, "quantity", None)
+        if quantity is None or getattr(claim, "calculation_id", None):
+            continue
+        if not isinstance(quantity, industry_records.Quantity):
+            # A quantity that came back as a mapping is reported by
+            # ``nested_problems``; there is no binding to verify here.
+            continue
+        binding = getattr(quantity, "binding", None)
+        holder = (
+            evidence.get(binding.evidence_id)
+            if isinstance(evidence, dict) and binding is not None
+            else None
+        )
+        refused = quantities.verify_binding(quantity, holder)
+        if refused is not None:
+            problems.append(
+                f"claims[{cid}]: quantity binding not established by the "
+                f"evidence ({refused.detail or refused.code})"
+            )
     return problems
 
 
