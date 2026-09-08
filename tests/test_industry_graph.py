@@ -2003,3 +2003,54 @@ def test_a_whole_run_stays_well_inside_the_superstep_bound(tmp_path):
 
     steps = run(count())
     assert steps < persist.RECURSION_LIMIT / 3
+
+
+def test_a_single_call_that_never_succeeds_is_stopped_by_the_ledger(tmp_path):
+    # Single calls have no retry counter: a role that fails on every
+    # resume is bounded only by what its lost reservations cost. That
+    # bound has to exist and the run has to end honestly.
+    saver = MemorySaver()
+    runtime, api, _, compiled = make(tmp_path, saver=saver)
+    api.scope_failures = 10_000
+    limits = runtime.limits
+    config = persist.thread_config("t-forever")
+    payload = graph_module.initial_state("q", limits)
+    runtime.begin("t-forever")
+    refusals = []
+    for _ in range(40):
+        try:
+            state = run(compiled.ainvoke(payload, config, durability="sync"))
+            break
+        except RuntimeError:
+            snapshot = run(compiled.aget_state(config))
+            pending = snapshot.next[0]
+            config = persist.resume_config("t-forever", snapshot)
+            updates = graph_module.resume_updates(
+                snapshot.values, pending, limits
+            )
+            run(
+                compiled.aupdate_state(config, updates, as_node="reserve_scope")
+            )
+            refusals += [
+                line
+                for line in updates["route_log"]
+                if "budget exhausted" in line
+            ]
+            payload = None
+            runtime.begin("t-forever")
+    else:
+        raise AssertionError("the failing call was never stopped")
+    assert refusals  # the ledger, not a counter, is what stopped it
+    assert api.calls.count("scope") < 10
+    scope_calls = [
+        c for c in state["single_calls"].values() if c.task_id == "scope"
+    ]
+    assert all(c.status == "unknown" for c in scope_calls)
+    assert any(
+        "deterministic defaults used" in line for line in state["route_log"]
+    )
+    assert state["meta"].execution_status == "completed"
+    assert state["meta"].report_status == "incomplete"
+    spent = budget.ledger(state)
+    assert spent.turns <= limits.model_calls
+    assert spent.wall_clock_s <= limits.wall_clock_s
