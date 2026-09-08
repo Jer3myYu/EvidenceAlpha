@@ -322,6 +322,7 @@ class Collector:
         extraction: records.Extraction,
         limitations: list[str] | None = None,
         version_id: str | None = None,
+        table: records.TableLayout | None = None,
     ) -> records.Evidence:
         """Record one excerpt and return it with its label."""
         item = records.Evidence(
@@ -335,6 +336,7 @@ class Collector:
             limitations=list(limitations or []),
             task_id=self.task_id,
             retrieved_at=records.now_iso(),
+            table=table,
         )
         self.evidence.append(item)
         return item
@@ -355,6 +357,14 @@ def _hit_locator(metadata: dict[str, Any]) -> str:
     index = metadata.get("chunk_index", 0)
     parts.append(f"chunk {index}")
     return ", ".join(parts)
+
+
+def _hit_table(metadata: dict[str, Any]) -> records.TableLayout | None:
+    """The layout a v3 table chunk carries; ``None`` for anything else."""
+    payload = metadata.get("table_json")
+    if not payload:
+        return None
+    return records.TableLayout.model_validate_json(str(payload))
 
 
 def _hit_kind(
@@ -469,6 +479,7 @@ def build_tools(
                 extraction,
                 limitations,
                 hit.metadata.get("source_version_id") or None,
+                _hit_table(hit.metadata),
             )
             label = band(
                 hit.distance,

@@ -5,7 +5,9 @@ import json
 import pathlib
 
 import pytest
+from langchain_core import documents as lc_documents
 
+from industry import quantities
 from industry import records
 from industry import snapshots
 
@@ -135,16 +137,29 @@ def test_html_extraction_keeps_headings_tables_and_flags():
 
 
 def test_text_extraction_and_chunking_respect_blocks():
-    text = b"# Intro\n\n" + b"a" * 1000 + b"\n\n## Next\n\nshort paragraph here"
+    sentence = b"Acme sold 52 units in a year. "
+    text = (
+        b"# Intro\n\n" + sentence * 40 + b"\n\n## Next\n\nshort paragraph here"
+    )
     blocks = snapshots.extract_text(text)
     assert [b.section for b in blocks] == ["Intro", "Next"]
     chunks = snapshots.chunk_blocks(blocks, size=400, overlap=50)
-    assert all(len(c.text) <= 400 for c in chunks)
+    # Prose is packed at certified boundaries: every cut falls after a
+    # sentence end, pieces overlap by whole spans, and the size is met
+    # whenever a boundary allows it.
+    assert all(len(c.text) <= 400 for c in chunks[:-1])
+    assert all(c.text.endswith(".") for c in chunks[:-1])
     assert (
         chunks[-1].section == "Next"
         and chunks[-1].text == "short paragraph here"
     )
     assert [c.index for c in chunks] == list(range(len(chunks)))
+    # A span with no certified boundary stays whole, however long: a
+    # chunk never holds part of an expression without the rest.
+    solid = snapshots.extract_text(b"a" * 1000 + b" 52 USD per kg")
+    assert [len(c.text) for c in snapshots.chunk_blocks(solid, 400, 50)] == [
+        1014
+    ]
     assert (
         snapshots.language_of("光掩模") == "zh"
         and snapshots.language_of("mask") == "en"
@@ -236,8 +251,10 @@ def test_index_version_upserts_by_version_and_index():
     count = snapshots.index_version(
         store, version, "https://example.com/a", chunks
     )
+    # The extraction revision is part of the id: v2 chunks of the same
+    # version keep their own ids and text in their own collection.
     assert count == len(chunks) and set(store.docs) == {
-        f"v1:{i}" for i in range(count)
+        f"v1:v3:{i}" for i in range(count)
     }
     table_doc = [
         d for d in store.docs.values() if d.metadata["kind"] == "table"
@@ -246,6 +263,14 @@ def test_index_version_upserts_by_version_and_index():
         table_doc.metadata["limitations"]
         == "table_merged_cells,table_unequal_rows"
     )
+    layout = records.TableLayout.model_validate_json(
+        table_doc.metadata["table_json"]
+    )
+    assert layout.header_rows == 1 and layout.limitations == [
+        "table_merged_cells",
+        "table_unequal_rows",
+    ]
+    assert table_doc.metadata["extraction_version"] == "v3"
     assert table_doc.metadata["section"] == "Market share"
     assert table_doc.metadata["source_version_id"] == "v1"
     # Indexing again (a retry or a resume) changes nothing.
@@ -327,8 +352,10 @@ def test_a_refetch_reports_the_recorded_version_not_the_new_fetch(tmp_path):
     assert again.id == first.id
     assert again.retrieved_at == first.retrieved_at
     assert again.content_type == first.content_type
-    assert again.extraction_version == first.extraction_version
-    assert again.chunk_count == first.chunk_count == 7
+    # The extraction fields describe what *this* run indexed (plan
+    # revision 22 §4.28): the file keeps what it first recorded.
+    assert again.extraction_version == snapshots.EXTRACTION_VERSION
+    assert again.chunk_count == 0 and first.chunk_count == 7
     # The registry id of the source stays attempt-local.
     assert again.source_id == "S2"
     recorded = json.loads(
@@ -336,6 +363,7 @@ def test_a_refetch_reports_the_recorded_version_not_the_new_fetch(tmp_path):
     )
     assert recorded["retrieved_at"] == first.retrieved_at
     assert recorded["content_type"] == "text/html"
+    assert recorded["chunk_count"] == 7
 
 
 def test_recorded_bytes_are_read_again_the_way_they_were_read(tmp_path):
@@ -377,3 +405,140 @@ def test_recorded_bytes_are_read_again_the_way_they_were_read(tmp_path):
     assert "<p>" not in later[0].text
     # The registry id of the source stays attempt-local.
     assert again.source_id == "S2"
+
+
+def test_a_table_carries_its_layout_and_never_splits_a_cell():
+    blocks = snapshots.extract_html(HTML)
+    table = [b for b in blocks if b.kind == "table"][0]
+    layout = table.table
+    assert layout.header_rows == 1
+    assert [(c.text, c.row, c.col, c.header) for c in layout.cells[:4]] == [
+        ("Company", 0, 0, True),
+        ("Share", 0, 1, True),
+        ("HOYA", 1, 0, False),
+        ("60%", 1, 1, False),
+    ]
+    # Offsets address the rendered text exactly.
+    assert all(table.text[c.start : c.end] == c.text for c in layout.cells)
+    merged = [c for c in layout.cells if c.col_span == 2]
+    assert merged and merged[0].text == "AGC 16%"
+    assert (
+        "table_nested"
+        in snapshots.extract_html(
+            b"<table><tr><td><table><tr><td>1</td></tr></table>"
+            b"</td></tr></table>"
+        )[0].limitations
+    )
+    # Row packing repeats the header rows and keeps original row ids.
+    rows = "".join(
+        f"<tr><td>row {n}</td><td>{n} USD</td></tr>" for n in range(40)
+    )
+    big = snapshots.extract_html(
+        f"<table><tr><th>Item</th><th>Price</th></tr>{rows}</table>".encode()
+    )
+    pieces = snapshots.chunk_blocks(big, size=200, overlap=50)
+    assert len(pieces) > 1
+    for piece in pieces:
+        assert piece.text.startswith("[table]\nItem | Price\n")
+        assert piece.table.header_rows == 1
+        assert all(
+            piece.text[c.start : c.end] == c.text for c in piece.table.cells
+        )
+    seen_rows = [c.row for piece in pieces for c in piece.table.cells if c.row]
+    assert sorted(set(seen_rows)) == list(range(1, 41))
+
+
+def test_page_edges_are_gaps_and_stay_on_the_edge_pieces():
+    blocks = [
+        snapshots.Block(
+            text="Revenue was 52 USD. " * 60,
+            section="",
+            page=2,
+            kind="text",
+            limitations=(
+                "pdf_text_no_table_structure",
+                "page_cut_start",
+                "page_cut_end",
+            ),
+        )
+    ]
+    pieces = snapshots.chunk_blocks(blocks, size=300, overlap=50)
+    assert len(pieces) > 2
+    assert "page_cut_start" in pieces[0].limitations
+    assert "page_cut_start" not in pieces[1].limitations
+    assert "page_cut_end" in pieces[-1].limitations
+    assert "page_cut_end" not in pieces[-2].limitations
+    assert all("pdf_text_no_table_structure" in p.limitations for p in pieces)
+
+
+def test_chunking_never_changes_what_a_figure_means():
+    # The closing invariant of the chunk-boundary review: parsing a
+    # chunk at a figure gives exactly what parsing the intact block
+    # gives, for every chunk that contains the figure, or the same
+    # refusal. The cases are the reproductions of C1 rounds 3-6 plus
+    # generated padding that moves every expression across a boundary.
+    expressions = [
+        "52元器件。",
+        "人民币52亿元。",
+        "US$52m。",
+        "94% 至 97%。",
+        "1,234元。",
+        "0.52元。",
+        "1，234元。",
+        "52 USD per kg.",
+        "收入为52亿元，同比增长12%。",
+        "价格52 USD/kg；",
+        "占比13.19%-26.39%，",
+    ]
+    checked = 0
+    for expression in expressions:
+        for pad in range(760, 812):
+            block = "文" * pad + expression + "文" * 900 + "。"
+            chunks = quantities.pack_spans(block, 800, 100)
+            assert chunks[0][0] == 0 and chunks[-1][1] == len(block)
+            for anchor in [
+                t.start for t in quantities.lex(block) if t.kind == "number"
+            ]:
+                base = quantities.parse_expression(block, anchor)
+                containing = [(s, e) for s, e in chunks if s <= anchor < e]
+                assert containing, "every figure lies in a chunk"
+                for start, end in containing:
+                    got = quantities.parse_expression(
+                        block[start:end], anchor - start
+                    )
+                    checked += 1
+                    if isinstance(base, quantities.Refusal):
+                        assert isinstance(got, quantities.Refusal)
+                        assert got.code == base.code, (expression, pad)
+                        continue
+                    assert not isinstance(got, quantities.Refusal), (
+                        expression,
+                        pad,
+                    )
+                    assert got.value == base.value and got.unit == base.unit
+                    assert got.expression_start + start == base.expression_start
+                    assert got.expression_end + start == base.expression_end
+    assert checked > 500
+
+
+def test_v3_indexing_leaves_v2_chunks_untouched():
+    store = FakeStore()
+    store.docs["v1:0"] = lc_documents.Document(
+        page_content="old v2 text", metadata={"extraction_version": "v2"}
+    )
+    version = records.SourceVersion(
+        id="v1",
+        source_id="S1",
+        content_hash="h",
+        blob_path="b",
+        meta_path="m",
+        final_url="u",
+        content_type="text/html",
+        size=1,
+        retrieved_at="2026-09-07T00:00:00+00:00",
+        extraction_version="v2",
+    )
+    chunks = snapshots.chunk_blocks(snapshots.extract_html(HTML))
+    snapshots.index_version(store, version, "https://example.com/a", chunks)
+    assert store.docs["v1:0"].page_content == "old v2 text"
+    assert all(k == "v1:0" or k.startswith("v1:v3:") for k in store.docs)

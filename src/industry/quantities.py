@@ -980,6 +980,53 @@ def certified_cuts(text: str) -> list[int]:
     return cuts
 
 
+def pack_spans(text: str, size: int, overlap: int) -> list[tuple[int, int]]:
+    """Exact source slices ``[start, end)`` covering ``text`` in order.
+
+    The chunker's contract (plan revision 22 §4.28): each chunk ends at
+    the rightmost certified cut within ``size`` of its start, else at
+    the first certified cut beyond it, else at the end of the text --
+    never at an arbitrary character, so no chunk ever holds part of a
+    quantity expression without the rest. A chunk always adds at least
+    one span beyond the previous chunk's end. The next chunk starts at
+    the certified cut nearest ``end - overlap`` that leaves its first
+    new span within ``size`` when any does (ties toward more preceding
+    context), else at ``end`` with no overlap. Slices are never trimmed
+    or re-normalized, so every offset is an offset in ``text``.
+    """
+    n = len(text)
+    if n == 0:
+        return []
+    cuts = certified_cuts(text)
+    chunks: list[tuple[int, int]] = []
+    start = 0
+    previous_end = 0
+    while True:
+        if n - start <= size:
+            end = n
+        else:
+            later = [c for c in cuts if c > start and c > previous_end]
+            within = [c for c in later if c - start <= size]
+            if within:
+                end = within[-1]
+            elif later:
+                end = later[0]
+            else:
+                end = n
+        chunks.append((start, end))
+        previous_end = end
+        if end >= n:
+            return chunks
+        beyond = [c for c in cuts if c > end]
+        next_span_end = beyond[0] if beyond else n
+        candidates = [c for c in cuts if start < c <= end]
+        target = end - overlap
+        fitting = [c for c in candidates if next_span_end - c <= size]
+        pool = fitting or candidates
+        nxt = min(pool, key=lambda c: (abs(c - target), c)) if pool else end
+        start = nxt if nxt > start else end
+
+
 def _isolated(text: str, lo: int, hi: int) -> bool:
     """Whether a certified delimiter ends inside ``(lo, hi]`` of the text.
 

@@ -337,17 +337,21 @@ def test_reference_version_is_registered_in_the_collector():
         retrieved_at=NOW,
         extraction_version="v2",
     )
+    layout = records.TableLayout(
+        cells=[records.TableCell(text="Prior", row=0, col=0, start=8, end=13)]
+    )
     reference = records.Reference(
         evidence=records.Evidence(
             id="E9",
             source_id="S4",
             source_version_id="v4",
-            excerpt="Prior",
+            excerpt="[table]\nPrior",
             locator="p2",
-            kind="passage",
+            kind="table",
             extraction="html_text",
             task_id="T1",
             retrieved_at=NOW,
+            table=layout,
         ),
         source_title="Earlier report",
         source_url="https://earlier.example/report",
@@ -359,6 +363,8 @@ def test_reference_version_is_registered_in_the_collector():
     )
     assert out.source_versions[0].id == "v4"
     assert out.source_versions[0].source_id == out.sources[0].id
+    # A copied reference keeps the layout the extractor recorded.
+    assert out.evidence[0].table == layout
 
 
 def test_result_error_is_classified_and_its_usage_recovered():

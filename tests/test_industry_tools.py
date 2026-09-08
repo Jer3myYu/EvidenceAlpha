@@ -97,6 +97,17 @@ class FakeBackend:
                     "page": 3,
                     "kind": "table",
                     "limitations": "table_merged_cells",
+                    "table_json": records.TableLayout(
+                        cells=[
+                            records.TableCell(
+                                text="a", row=0, col=0, start=8, end=9
+                            ),
+                            records.TableCell(
+                                text="b", row=0, col=1, start=12, end=13
+                            ),
+                        ],
+                        limitations=["table_merged_cells"],
+                    ).model_dump_json(),
                 },
                 0.55,
             ),
@@ -177,6 +188,10 @@ def test_fetch_then_search_documents_yields_passages_with_versions():
     passage, table = collector.evidence
     assert passage.kind == "passage" and passage.source_version_id == "v1"
     assert table.kind == "table" and table.limitations == ["table_merged_cells"]
+    # The layout travels with the evidence as an extractor-owned fact.
+    assert passage.table is None
+    assert [c.text for c in table.table.cells] == ["a", "b"]
+    assert table.table.limitations == ["table_merged_cells"]
     assert passage.source_id == table.source_id == "S1"
     assert collector.sources["S1"].kind == "web_page"
 

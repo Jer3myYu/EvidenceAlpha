@@ -234,6 +234,7 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
                 copied.extraction,
                 copied.limitations,
                 copied.source_version_id,
+                copied.table,
             )
             dated = (
                 f" | {reference.version_date}" if reference.version_date else ""

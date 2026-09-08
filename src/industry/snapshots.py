@@ -34,16 +34,20 @@ import requests
 from langchain_chroma import Chroma
 from langchain_core import documents as lc_documents
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from industry import quantities
 from industry import records
 from research import sources as sources_module
 
-EXTRACTION_VERSION = "v2"
+# v3 (plan revision 22 §4.28): prose is packed at certified boundaries
+# and never cut inside a quantity expression; table chunks carry their
+# layout; PDF page edges are flagged. v2 chunks in ``documents_v2`` keep
+# their ids and text, and a version's metadata file is never rewritten.
+EXTRACTION_VERSION = "v3"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-COLLECTION_NAME = "documents_v2"
+COLLECTION_NAME = "documents_v3"
 CHROMA_DIR = "data/chroma"
 SOURCES_DIR = "data/sources"
 USER_AGENT = "EvidenceAlpha/0.3 (industry research agent)"
@@ -307,11 +311,17 @@ def store_snapshot(
     )
     recorded = _recorded_version(meta, source_id)
     if recorded is not None:
-        # The version is immutable: a later fetch of the same bytes
-        # keeps the recorded retrieval time, content type, extraction
-        # version and chunk count, so every chunk indexed under this
-        # version id keeps one consistent interpretation.
-        return recorded
+        # The fetch is immutable: a later fetch of the same bytes keeps
+        # the recorded retrieval time and content type. The extraction
+        # revision and chunk count in the state describe what this run
+        # indexed (the file keeps what it first recorded, and is never
+        # rewritten), so a v3 run over an old blob reports v3.
+        return recorded.model_copy(
+            update={
+                "extraction_version": EXTRACTION_VERSION,
+                "chunk_count": chunk_count,
+            }
+        )
     payload = version.model_dump(exclude={"source_id"})
     payload["url"] = fetched.url
     payload["canonical_url"] = canonical
@@ -382,37 +392,92 @@ class Block:
     page: int | None
     kind: str
     limitations: tuple[str, ...] = ()
+    # Extractor-owned geometry of a table block: every cell with its
+    # row, column, header flag, spans and offsets in ``text``.
+    table: records.TableLayout | None = None
 
 
 _SKIP_TAGS = ("script", "style", "noscript", "nav", "footer", "header")
 
 
+def _cell_text(cell: bs4.Tag) -> str:
+    return " ".join(cell.get_text(" ", strip=True).split())
+
+
 def _table_block(table: bs4.Tag, section: str) -> Block | None:
+    """A table as ``cell | cell`` rows plus its layout.
+
+    The rendering is for readers; the ``TableLayout`` is the fact
+    admission uses: physical cells with row, column, header flag,
+    spans and their offsets in the rendered text. A merged cell, an
+    unequal row width or a nested table is recorded as a limitation and
+    keeps a bare cell from inheriting a header's unit; a complete inline
+    quantity still binds to its own cell.
+    """
     rows: list[str] = []
+    cells: list[records.TableCell] = []
     limitations: set[str] = set()
     widths: set[int] = set()
+    header_rows = 0
+    leading = True
+    offset = len("[table]\n")
+    if table.find("table") is not None:
+        limitations.add("table_nested")
     for row in table.find_all("tr"):
-        cells = row.find_all(["th", "td"])
-        if not cells:
+        found = row.find_all(["th", "td"])
+        if not found:
             continue
-        for cell in cells:
-            if cell.get("colspan") or cell.get("rowspan"):
+        texts: list[str] = []
+        position = offset
+        all_header = all(
+            cell.name == "th" or cell.find_parent("thead") is not None
+            for cell in found
+        )
+        if leading and all_header:
+            header_rows += 1
+        else:
+            leading = False
+        for col, cell in enumerate(found):
+            row_span = int(cell.get("rowspan") or 1)
+            col_span = int(cell.get("colspan") or 1)
+            if row_span != 1 or col_span != 1:
                 limitations.add("table_merged_cells")
-        texts = [
-            " ".join(cell.get_text(" ", strip=True).split()) for cell in cells
-        ]
+            text = _cell_text(cell)
+            cells.append(
+                records.TableCell(
+                    text=text,
+                    row=len(rows),
+                    col=col,
+                    header=(
+                        cell.name == "th"
+                        or cell.find_parent("thead") is not None
+                    ),
+                    row_span=row_span,
+                    col_span=col_span,
+                    start=position,
+                    end=position + len(text),
+                )
+            )
+            texts.append(text)
+            position += len(text) + 3
         widths.add(len(texts))
-        rows.append(" | ".join(texts))
+        line = " | ".join(texts)
+        rows.append(line)
+        offset += len(line) + 1
     if not rows:
         return None
     if len(widths) > 1:
         limitations.add("table_unequal_rows")
+    layout = records.TableLayout(
+        cells=cells, header_rows=header_rows, limitations=sorted(limitations)
+    )
     return Block(
         text="[table]\n" + "\n".join(rows),
         section=section,
         page=None,
         kind="table",
         limitations=tuple(sorted(limitations)),
+        table=layout,
     )
 
 
@@ -463,16 +528,25 @@ def extract_pdf(content: bytes) -> list[Block]:
     """Page text with page locators; tables are not reconstructed."""
     blocks: list[Block] = []
     with pymupdf.open(stream=content, filetype="pdf") as document:
+        last = len(document)
         for number, page in enumerate(document, start=1):
             text = " ".join(page.get_text().split())
             if text:
+                # A page edge is not a boundary of the text: an
+                # expression may continue on the next page, so the
+                # edges are unknown gaps to admission.
+                limitations = ["pdf_text_no_table_structure"]
+                if number > 1:
+                    limitations.append("page_cut_start")
+                if number < last:
+                    limitations.append("page_cut_end")
                 blocks.append(
                     Block(
                         text=text,
                         section="",
                         page=number,
                         kind="text",
-                        limitations=("pdf_text_no_table_structure",),
+                        limitations=tuple(limitations),
                     )
                 )
     return blocks
@@ -521,6 +595,7 @@ class Chunk:
     page: int | None
     kind: str
     limitations: tuple[str, ...]
+    table: records.TableLayout | None = None
 
 
 def chunk_blocks(
@@ -528,29 +603,97 @@ def chunk_blocks(
     size: int = CHUNK_SIZE,
     overlap: int = CHUNK_OVERLAP,
 ) -> list[Chunk]:
-    """Split within blocks so a chunk never crosses a heading or table."""
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=size, chunk_overlap=overlap
-    )
+    """Pieces that never cross a block and never cut a quantity.
+
+    Prose is packed at certified boundaries (``quantities.pack_spans``:
+    sentence punctuation and the like, never an arbitrary character,
+    so ``size`` is a target and a delimiter-free span stays whole).
+    A table is packed by rows with its leading header rows repeated on
+    every piece; a cell, a row or the header attachment is never split.
+    A page-edge flag stays only on the first or last piece of its page.
+    """
     chunks: list[Chunk] = []
     for block in blocks:
-        pieces = (
-            [block.text]
-            if len(block.text) <= size
-            else splitter.split_text(block.text)
-        )
-        for piece in pieces:
+        if block.kind == "table" and block.table is not None:
+            pieces = _table_pieces(block, size)
+        else:
+            spans = quantities.pack_spans(block.text, size, overlap)
+            pieces = [(block.text[a:b], None) for a, b in spans]
+        for number, (text, layout) in enumerate(pieces):
+            limitations = tuple(
+                flag
+                for flag in block.limitations
+                if not (flag == "page_cut_start" and number > 0)
+                and not (flag == "page_cut_end" and number < len(pieces) - 1)
+            )
             chunks.append(
                 Chunk(
                     index=len(chunks),
-                    text=piece,
+                    text=text,
                     section=block.section,
                     page=block.page,
                     kind=block.kind,
-                    limitations=block.limitations,
+                    limitations=limitations,
+                    table=layout,
                 )
             )
     return chunks
+
+
+def _table_pieces(
+    block: Block, size: int
+) -> list[tuple[str, records.TableLayout]]:
+    """Row groups of a table, each with the header rows and a layout."""
+    layout = block.table
+    lines = block.text.split("\n")[1:]
+    by_row: dict[int, list[records.TableCell]] = {}
+    for cell in layout.cells:
+        by_row.setdefault(cell.row, []).append(cell)
+    header = list(range(layout.header_rows))
+    data = [r for r in range(len(lines)) if r >= layout.header_rows]
+    groups: list[list[int]] = []
+    current: list[int] = []
+    budget = size - sum(len(lines[r]) + 1 for r in header) - len("[table]\n")
+    used = 0
+    for row in data:
+        length = len(lines[row]) + 1
+        if current and used + length > budget:
+            groups.append(current)
+            current, used = [], 0
+        current.append(row)
+        used += length
+    if current or not groups:
+        groups.append(current)
+    pieces = []
+    for group in groups:
+        rows = header + group
+        text = "[table]\n" + "\n".join(lines[r] for r in rows)
+        cells: list[records.TableCell] = []
+        offset = len("[table]\n")
+        for row in rows:
+            position = offset
+            for cell in by_row.get(row, []):
+                cells.append(
+                    cell.model_copy(
+                        update={
+                            "start": position,
+                            "end": position + len(cell.text),
+                        }
+                    )
+                )
+                position += len(cell.text) + 3
+            offset += len(lines[row]) + 1
+        pieces.append(
+            (
+                text,
+                records.TableLayout(
+                    cells=cells,
+                    header_rows=layout.header_rows,
+                    limitations=list(layout.limitations),
+                ),
+            )
+        )
+    return pieces
 
 
 def language_of(text: str) -> str:
@@ -586,29 +729,36 @@ def index_version(
     canonical_url: str,
     chunks: list[Chunk],
 ) -> int:
-    """Upsert the chunks under ``<version_id>:<index>``; return the count."""
+    """Upsert the chunks under ``<version_id>:v3:<index>``; return the count."""
     if not chunks:
         return 0
-    documents = [
-        lc_documents.Document(
-            page_content=chunk.text,
-            metadata={
-                "source": canonical_url,
-                "source_version_id": version.id,
-                "section": chunk.section,
-                "chunk_index": chunk.index,
-                "page": chunk.page if chunk.page is not None else -1,
-                "kind": chunk.kind,
-                "extraction_version": version.extraction_version,
-                "retrieved_at": version.retrieved_at,
-                "language": language_of(chunk.text),
-                "limitations": ",".join(chunk.limitations),
-            },
+    documents = []
+    for chunk in chunks:
+        metadata: dict[str, Any] = {
+            "source": canonical_url,
+            "source_version_id": version.id,
+            "section": chunk.section,
+            "chunk_index": chunk.index,
+            "page": chunk.page if chunk.page is not None else -1,
+            "kind": chunk.kind,
+            "extraction_version": EXTRACTION_VERSION,
+            "retrieved_at": version.retrieved_at,
+            "language": language_of(chunk.text),
+            "limitations": ",".join(chunk.limitations),
+        }
+        if chunk.table is not None:
+            metadata["table_json"] = chunk.table.model_dump_json()
+        documents.append(
+            lc_documents.Document(page_content=chunk.text, metadata=metadata)
         )
-        for chunk in chunks
-    ]
+    # The revision is part of the chunk id: v2 chunks of the same
+    # version keep their own ids and text in their own collection.
     store.add_documents(
-        documents, ids=[f"{version.id}:{chunk.index}" for chunk in chunks]
+        documents,
+        ids=[
+            f"{version.id}:{EXTRACTION_VERSION}:{chunk.index}"
+            for chunk in chunks
+        ],
     )
     return len(chunks)
 
