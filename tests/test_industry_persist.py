@@ -5,6 +5,8 @@ import hashlib
 import json
 import pathlib
 import sqlite3
+import threading
+import time
 from typing import TypedDict
 
 import pytest
@@ -18,9 +20,11 @@ from industry import budget
 from industry import graph as graph_module
 from industry import merge
 from industry import records
+from industry import roles
 from industry import snapshots
 from industry import state as state_module
 from industry import tools
+from research import crew
 from research import persist
 from research import workflow
 
@@ -866,3 +870,85 @@ def test_a_resume_refuses_a_fixture_that_has_changed(tmp_path):
     )
     problem = industry_workflow.check_fixture(meta, backend())
     assert problem is not None and "has changed" in problem
+
+
+class SlowSdk(crew.ClaudeLLM):
+    """The real adapter with the SDK response stream replaced by a sleep."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self.seconds = seconds
+        self.started = threading.Event()
+        self.ended = threading.Event()
+        self.cancelled = False
+
+    async def acall(self, messages, *args, **kwargs):
+        del messages, args, kwargs
+        self.started.set()
+        try:
+            await asyncio.sleep(self.seconds)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        finally:
+            self.ended.set()
+        return "Final Answer: slept"
+
+
+class LiveScope(fakes.FakeRoles):
+    """The Lead's scoping call through the real role, adapter and crew."""
+
+    def __init__(self, llm):
+        super().__init__()
+        self.llm = llm
+
+    async def scope(self, question, max_turns, deadline):
+        del deadline
+        brief = await roles.scope(question, self.llm, max_turns, 30.0)
+        return brief, records.Usage(turns=1, duration_s=0.1)
+
+
+def test_an_interruption_during_a_live_call_stops_the_call(tmp_path, capsys):
+    # C2 round 1, finding 1, through the CLI's own streaming function:
+    # the boundary test above interrupts between nodes; this interrupts
+    # while the Lead's model call is running. The call must be
+    # cancelled before the interruption goes on, nothing may survive
+    # unrecorded, and the thread must resume at scope.
+    llm = SlowSdk(8)
+
+    async def scenario():
+        path = str(tmp_path / "live.db")
+        async with persist.open_checkpointer(path) as saver:
+            runtime = budget.Runtime(reports_dir=str(tmp_path / "reports"))
+            compiled = graph_module.build_graph(
+                runtime,
+                backend=object(),
+                api=LiveScope(llm),
+                worker_fn=fakes.FakeWorker(),
+                checkpointer=saver,
+            )
+            thread = "live-1"
+            config = persist.thread_config(thread)
+            runtime.begin(thread)
+            payload = graph_module.initial_state("q", runtime.limits)
+            task = asyncio.create_task(
+                industry_workflow.stream(compiled, payload, config, runtime)
+            )
+            loop = asyncio.get_running_loop()
+            assert await loop.run_in_executor(None, llm.started.wait, 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert llm.ended.is_set() and llm.cancelled, "call not stopped"
+            assert not crew.hung_calls()
+            snapshot = await persist.load_industry_state(
+                compiled, thread, state_module.WORKFLOW_VERSION
+            )
+            return tuple(snapshot.next)
+
+    started = time.monotonic()
+    pending = asyncio.run(scenario())
+    assert time.monotonic() - started < 5, "exit waited for the call"
+    assert pending == ("scope",)
+    assert "Interrupted." in capsys.readouterr().out
+

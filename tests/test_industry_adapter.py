@@ -170,3 +170,64 @@ def test_hung_call_blocks_further_calls_until_it_ends():
         assert out == "slept"
 
     asyncio.run(scenario())
+
+
+def test_an_interrupted_call_is_stopped_before_the_interruption_goes_on():
+    # C2 round 1, finding 1: an external CancelledError escaped run_task
+    # without cancelling the call, so the shielded kickoff ran on with
+    # no deadline watcher and no record of it, and process exit blocked
+    # on its thread.
+    llm = SleepingLLM(8)
+
+    async def scenario():
+        task = asyncio.create_task(
+            crew.run_task(crew.REPORTER, "hi", "one word", llm, deadline=30)
+        )
+        while not llm.threads:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert llm.ended.is_set(), "the call was not stopped"
+        assert not crew.hung_calls()
+
+    started = time.monotonic()
+    asyncio.run(scenario())
+    assert time.monotonic() - started < 5, "exit waited for the sleep"
+
+
+def test_an_interrupted_call_that_will_not_stop_is_retained():
+    stubborn = StubbornLLM(1.5)
+
+    async def scenario():
+        task = asyncio.create_task(
+            crew.run_task(
+                crew.REPORTER,
+                "hi",
+                "one word",
+                stubborn,
+                deadline=30,
+                grace=0.2,
+            )
+        )
+        while not stubborn.threads:
+            await asyncio.sleep(0.01)
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The cancellation went on after the grace, not after the call.
+        assert 0.2 <= time.monotonic() - started < 1.0
+        assert crew.hung_calls(), "the surviving kickoff is retained"
+        with pytest.raises(crew.RoleHung, match="still live"):
+            await crew.run_task(
+                crew.REPORTER, "hi", "one word", SleepingLLM(0.01)
+            )
+        stubborn.ended.wait(5)
+        for _ in range(50):
+            if not crew.hung_calls():
+                break
+            await asyncio.sleep(0.1)
+        assert not crew.hung_calls()
+
+    asyncio.run(scenario())

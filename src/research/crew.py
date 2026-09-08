@@ -55,10 +55,6 @@ FINAL_ANSWER = "Final Answer: "
 # How long a cancelled call may take to wind down before run_task gives
 # up waiting for CrewAI's worker thread.
 CANCEL_GRACE_SECONDS = 30.0
-# What a cancelled kickoff ends with: CrewAI wraps the cancellation in
-# its own error types, so every outcome of the cancelled task is
-# expected here and only the deadline matters.
-_CANCEL_OUTCOMES = (Exception, asyncio.CancelledError)
 
 
 class RoleTimeout(TimeoutError):
@@ -77,6 +73,39 @@ class RoleHung(RuntimeError):
 
 # Kickoff tasks that outlived their cancellation; pruned when they end.
 HUNG_CALLS: list[asyncio.Future] = []
+
+
+async def _stop(
+    kickoff: asyncio.Future, llm: crewai.BaseLLM, grace: float
+) -> bool:
+    """Cancel the call in flight and wait for its kickoff to end.
+
+    Returns ``True`` when the kickoff ended within ``grace`` (CrewAI
+    wraps the cancellation in its own error types, so every outcome of
+    the cancelled task counts as ended) and ``False`` when it did not,
+    in which case it is retained in ``HUNG_CALLS``. A cancellation of
+    this wait itself (a second interruption) retains a live kickoff the
+    same way and propagates.
+    """
+    cancel = getattr(llm, "cancel", None)
+    if cancel is not None:
+        cancel()
+    try:
+        await asyncio.wait_for(asyncio.shield(kickoff), grace)
+    except asyncio.TimeoutError:
+        HUNG_CALLS.append(kickoff)
+        return False
+    except asyncio.CancelledError:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            if not kickoff.done():
+                HUNG_CALLS.append(kickoff)
+            raise
+        # The cancelled call ended with CancelledError itself.
+        return True
+    except Exception:  # pylint: disable=broad-exception-caught
+        return True
+    return True
 
 
 def hung_calls() -> list[asyncio.Future]:
@@ -297,7 +326,11 @@ async def run_task(
         ``cancel`` is called and the crew is awaited until that thread
         has finished (bounded by ``grace``) before ``RoleTimeout`` is
         raised; if it has not finished by then ``RoleHung`` is raised
-        instead, so nothing keeps running unobserved.
+        instead, so nothing keeps running unobserved. An external
+        cancellation of this coroutine (an interruption, a shutdown)
+        stops the call the same way, retains a survivor in
+        ``HUNG_CALLS``, and then propagates: the kickoff never outlives
+        its deadline watcher unrecorded.
       grace: Seconds to wait for the cancelled call to wind down.
 
     Returns:
@@ -348,22 +381,21 @@ async def run_task(
     try:
         output = await asyncio.wait_for(asyncio.shield(kickoff), deadline)
     except asyncio.TimeoutError:
-        cancel = getattr(llm, "cancel", None)
-        if cancel is not None:
-            cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(kickoff), grace)
-        except asyncio.TimeoutError:
-            HUNG_CALLS.append(kickoff)
+        if not await _stop(kickoff, llm, grace):
             raise RoleHung(
                 f"{role.name} exceeded {deadline:.0f} s and did not stop "
                 f"within {grace:.0f} s after cancellation."
             ) from None
-        except _CANCEL_OUTCOMES:
-            pass
         raise RoleTimeout(
             f"{role.name} exceeded {deadline:.0f} s and was cancelled."
         ) from None
+    except asyncio.CancelledError:
+        # The shield keeps the kickoff alive through this cancellation;
+        # left alone it would run on with no deadline watcher and no
+        # record of it. It is stopped like a timed-out call, and a
+        # survivor blocks the next call, before the cancellation goes on.
+        await _stop(kickoff, llm, grace)
+        raise
     task_output = output.tasks_output[0]
     if role.output is None:
         return task_output.raw
