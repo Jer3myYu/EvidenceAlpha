@@ -445,3 +445,55 @@ def test_waiting_for_a_session_slot_is_not_charged_as_execution():
     assert first.status == "done" and second.status == "done"
     for out in (first, second):
         assert delay <= out.usage.duration_s < 2 * delay
+
+
+def test_no_more_sessions_run_at_once_than_the_limit_allows():
+    # The brief's bound is two concurrent tool-using SDK sessions. The
+    # suite proved one slot serializes two attempts; this proves the
+    # bound itself holds when a wave is larger than it.
+    limits = records.Limits(concurrency=2)
+    runtime = budget.Runtime(limits)
+    attempt_ids = [f"T2.{n}" for n in range(1, 6)]
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
+    for attempt_id in attempt_ids:
+        meter.register(attempt_id, 24)
+    live = 0
+    peak = 0
+
+    def counting_query(prompt, options):
+        del prompt, options
+
+        async def messages():
+            nonlocal live, peak
+            live += 1
+            peak = max(peak, live)
+            try:
+                await asyncio.sleep(0.05)
+                yield result_message()
+            finally:
+                live -= 1
+
+        return messages()
+
+    async def go():
+        runs = []
+        for attempt_id in attempt_ids:
+            work = work_input()
+            work = work.model_copy(
+                update={
+                    "attempt": work.attempt.model_copy(
+                        update={"id": attempt_id}
+                    )
+                }
+            )
+            runs.append(
+                worker.run_attempt(
+                    work, runtime, Backend(), query=counting_query
+                )
+            )
+        return await asyncio.gather(*runs)
+
+    results = asyncio.run(go())
+    assert [r.status for r in results] == ["done"] * len(attempt_ids)
+    assert peak == limits.concurrency
+    assert live == 0
