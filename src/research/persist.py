@@ -61,9 +61,28 @@ def new_thread_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+# The most supersteps one run may take. The budget is what actually
+# bounds a run -- task executions, model turns, wall clock, and the
+# bounded follow-up, review, analysis and remediation counters -- so
+# this is only the backstop that catches a router which stopped making
+# progress. It is stated here rather than left to LangGraph's default
+# because that default is a library detail, not this program's
+# contract: the installed line allows 10,007 supersteps, which at
+# ``durability="sync"`` is ten thousand checkpoint writes before a
+# stuck run gives up, and other versions document 25, which a real run
+# passes before it has finished mapping. Measured runs take 29 to 58
+# supersteps (the heaviest: twelve task executions, sixty claims a
+# task, six review batches and a remediation cycle); the worst case the
+# counters allow is under two hundred.
+RECURSION_LIMIT = 300
+
+
 def thread_config(thread_id: str) -> dict[str, Any]:
     """The run config that puts a graph call on one thread."""
-    return {"configurable": {"thread_id": thread_id}}
+    return {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": RECURSION_LIMIT,
+    }
 
 
 async def load_state(

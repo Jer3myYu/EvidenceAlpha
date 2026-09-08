@@ -731,3 +731,20 @@ def test_a_pending_send_payload_is_checked_before_the_resume(tmp_path):
     interrupt_with(bad, worker_input().model_dump())
     with pytest.raises(persist.LegacyThreadError, match="pending run_task"):
         load_after_interrupt(bad)
+
+
+def test_the_run_config_states_its_own_superstep_bound():
+    # The bound a run stops at was LangGraph's default, not this
+    # program's: the installed line allows 10,007 supersteps, other
+    # versions document 25, and a real run needs well over 40.
+    config = persist.thread_config("t")
+    assert config["recursion_limit"] == persist.RECURSION_LIMIT
+    assert persist.resume_config("t", _no_next())["recursion_limit"] == (
+        persist.RECURSION_LIMIT
+    )
+
+
+class _no_next:  # pylint: disable=invalid-name,too-few-public-methods
+    """A snapshot whose run has finished."""
+
+    next: tuple[str, ...] = ()

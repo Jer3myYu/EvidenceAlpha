@@ -508,6 +508,9 @@ async def get_thread(request: requests.Request) -> responses.Response:
     return responses.JSONResponse(payload)
 
 
+BUSY = "A run is already in progress; wait for it to finish."
+
+
 async def run_question(request: requests.Request) -> responses.Response:
     """Start a live run and stream its events; one run at a time."""
     question = request.query_params.get("question", "").strip()
@@ -515,8 +518,6 @@ async def run_question(request: requests.Request) -> responses.Response:
     refusal = None
     if not question:
         refusal = "A question is required."
-    elif lock.locked():
-        refusal = "A run is already in progress; wait for it to finish."
     else:
         try:
             web.api_key()
@@ -527,7 +528,16 @@ async def run_question(request: requests.Request) -> responses.Response:
         if refusal is not None:
             yield sse({"type": "error", "message": refusal})
             return
-        async with lock:
+        if lock.locked():
+            # Tested and taken with nothing awaited in between, so two
+            # requests that arrive together cannot both pass: the
+            # earlier check ran before the response body was streamed
+            # and the second run queued behind the first instead of
+            # being refused.
+            yield sse({"type": "error", "message": BUSY})
+            return
+        await lock.acquire()
+        try:
             thread_id = persist.new_thread_id()
             try:
                 async for event in run(
@@ -545,6 +555,8 @@ async def run_question(request: requests.Request) -> responses.Response:
                         "thread_id": thread_id,
                     }
                 )
+        finally:
+            lock.release()
 
     return responses.StreamingResponse(
         events(),

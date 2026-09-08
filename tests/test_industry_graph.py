@@ -1949,3 +1949,57 @@ def test_a_role_deadline_charges_its_reservation_and_the_run_delivers(
         "complete_with_limitations",
         "incomplete",
     )
+
+
+def test_a_whole_run_stays_well_inside_the_superstep_bound(tmp_path):
+    # The bound must be a backstop, not something a heavy but legitimate
+    # run can reach: twelve task executions, sixty extra claims a task,
+    # six review batches and a remediation cycle.
+    runtime, api, worker, _ = make(tmp_path)
+    original = worker.__call__
+
+    async def crowded(work, rt, backend, on_event=None):
+        result = await original(work, rt, backend, on_event)
+        if work.task.kind == "map":
+            return result
+        extra = [
+            records.FindingDraft(
+                statement=f"claim number {n}",
+                evidence_refs=["E1"],
+                material=True,
+                topics=["other"],
+                questions=[8],
+                entity=f"co{n}",
+            )
+            for n in range(60)
+        ]
+        return result.model_copy(update={"findings": result.findings + extra})
+
+    api.final_issues = [
+        records.SectionIssue(
+            section_id="intro",
+            category="unsupported",
+            severity="material",
+            description="d",
+        )
+    ]
+    compiled = graph_module.build_graph(
+        runtime,
+        backend=object(),
+        api=api,
+        worker_fn=crowded,
+        checkpointer=MemorySaver(),
+    )
+    config = persist.thread_config("t-steps")
+    runtime.begin("t-steps")
+
+    async def count():
+        steps = 0
+        async for _ in compiled.astream(
+            {"question": "q"}, config, stream_mode="values"
+        ):
+            steps += 1
+        return steps
+
+    steps = run(count())
+    assert steps < persist.RECURSION_LIMIT / 3

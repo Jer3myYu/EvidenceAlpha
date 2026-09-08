@@ -263,3 +263,54 @@ def test_a_thread_of_another_record_schema_replays_as_recorded(monkeypatch):
         json.dumps(event)  # everything is encoded, mappings included
     assert summary["version"] == state_module.WORKFLOW_VERSION
     assert summary["schema"] == 2 and summary["thread_id"] == "d201db8c"
+
+
+def test_a_second_live_run_is_refused_and_never_queued(tmp_path, monkeypatch):
+    # The check read lock.locked() before the streaming body took the
+    # lock, so two requests that arrived together both passed it and
+    # the second waited for the first instead of being refused.
+    runtime, graph = make(tmp_path)
+    monkeypatch.setattr(studio.web, "api_key", lambda: "fake")
+
+    class FakeRequest:
+        """Only what run_question reads."""
+
+        def __init__(self, app):
+            self.query_params = {"question": "q"}
+            self.app = app
+
+    class App:
+        pass
+
+    app = App()
+    app.state = App()
+    app.state.graph = graph
+    app.state.runtime = runtime
+    app.state.lock = asyncio.Lock()
+
+    async def both():
+        first = await studio.run_question(FakeRequest(app))
+        second = await studio.run_question(FakeRequest(app))
+        # Both response bodies exist before either has been read: this
+        # is the moment the old check had already run for both.
+        started = aiter(first.body_iterator)
+        opening = await anext(started)
+
+        async def drain():
+            return [frame async for frame in aiter(second.body_iterator)]
+
+        # The refusal has to come back without the first run being
+        # driven any further: a second run that merely waits for the
+        # lock never answers here.
+        queued = await asyncio.wait_for(drain(), 5)
+        rest = [frame async for frame in started]
+        return opening, queued, rest
+
+    opening, queued, rest = run(both())
+    assert json.loads(opening.split("data: ", 1)[1])["type"] == "thread"
+    assert len(queued) == 1
+    refusal = json.loads(queued[0].split("data: ", 1)[1])
+    assert refusal == {"type": "error", "message": studio.BUSY}
+    events = [json.loads(f.split("data: ", 1)[1]) for f in rest]
+    assert not any(e["type"] == "error" for e in events)
+    assert any(e.get("node") == "deliver" for e in events)
