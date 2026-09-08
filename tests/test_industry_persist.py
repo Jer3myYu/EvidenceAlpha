@@ -901,13 +901,16 @@ class SlowSdk(crew.ClaudeLLM):
 class LiveScope(fakes.FakeRoles):
     """The Lead's scoping call through the real role, adapter and crew."""
 
-    def __init__(self, llm):
+    def __init__(self, llm, admission=None):
         super().__init__()
         self.llm = llm
+        self.admission = admission
 
     async def scope(self, question, max_turns, deadline):
         del deadline
-        brief = await roles.scope(question, self.llm, max_turns, 30.0)
+        brief = await roles.scope(
+            question, self.llm, max_turns, 30.0, admission=self.admission
+        )
         return brief, records.Usage(turns=1, duration_s=0.1)
 
 
@@ -926,7 +929,7 @@ def test_an_interruption_during_a_live_call_stops_the_call(tmp_path, capsys):
             compiled = graph_module.build_graph(
                 runtime,
                 backend=object(),
-                api=LiveScope(llm),
+                api=LiveScope(llm, runtime.admission),
                 worker_fn=fakes.FakeWorker(),
                 checkpointer=saver,
             )
@@ -943,7 +946,7 @@ def test_an_interruption_during_a_live_call_stops_the_call(tmp_path, capsys):
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert llm.ended.is_set() and llm.cancelled, "call not stopped"
-            assert not crew.hung_calls()
+            assert not runtime.admission.live()
             snapshot = await persist.load_industry_state(
                 compiled, thread, state_module.WORKFLOW_VERSION
             )

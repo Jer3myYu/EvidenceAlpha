@@ -7,6 +7,7 @@ import time
 import crewai
 import pytest
 
+from industry import admission
 from research import crew
 
 
@@ -153,17 +154,17 @@ def test_hung_call_blocks_further_calls_until_it_ends():
                 deadline=0.2,
                 grace=0.2,
             )
-        assert crew.hung_calls(), "the live kickoff is retained"
-        with pytest.raises(crew.RoleHung, match="still live"):
+        assert crew.PROCESS.survivors(), "the live kickoff is retained"
+        with pytest.raises(admission.Blocked, match="still live"):
             await crew.run_task(
                 crew.REPORTER, "hi", "one word", SleepingLLM(0.01)
             )
         stubborn.ended.wait(5)
         for _ in range(50):
-            if not crew.hung_calls():
+            if not crew.PROCESS.survivors():
                 break
             await asyncio.sleep(0.1)
-        assert not crew.hung_calls()
+        assert not crew.PROCESS.survivors()
         out = await crew.run_task(
             crew.REPORTER, "hi", "one word", SleepingLLM(0.01)
         )
@@ -189,7 +190,7 @@ def test_an_interrupted_call_is_stopped_before_the_interruption_goes_on():
         with pytest.raises(asyncio.CancelledError):
             await task
         assert llm.ended.is_set(), "the call was not stopped"
-        assert not crew.hung_calls()
+        assert not crew.PROCESS.survivors()
 
     started = time.monotonic()
     asyncio.run(scenario())
@@ -218,16 +219,16 @@ def test_an_interrupted_call_that_will_not_stop_is_retained():
             await task
         # The cancellation went on after the grace, not after the call.
         assert 0.2 <= time.monotonic() - started < 1.0
-        assert crew.hung_calls(), "the surviving kickoff is retained"
-        with pytest.raises(crew.RoleHung, match="still live"):
+        assert crew.PROCESS.survivors(), "the surviving kickoff is retained"
+        with pytest.raises(admission.Blocked, match="still live"):
             await crew.run_task(
                 crew.REPORTER, "hi", "one word", SleepingLLM(0.01)
             )
         stubborn.ended.wait(5)
         for _ in range(50):
-            if not crew.hung_calls():
+            if not crew.PROCESS.survivors():
                 break
             await asyncio.sleep(0.1)
-        assert not crew.hung_calls()
+        assert not crew.PROCESS.survivors()
 
     asyncio.run(scenario())

@@ -42,6 +42,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
+from industry import admission as admission_module
 from industry import budget
 from industry import calc
 from industry import coverage as coverage_module
@@ -143,12 +144,24 @@ def _usage_of(llm: crew.ClaudeLLM, started: float) -> records.Usage:
 
 
 class LiveRoles:
-    """The real roles over the CrewAI adapter, returning usage too."""
+    """The real roles over the CrewAI adapter, returning usage too.
+
+    Every call takes its slot from ``admission`` -- the runtime's, so
+    role calls and worker sessions share one bound and one record of
+    what is live in the process.
+    """
+
+    def __init__(
+        self, admission: admission_module.Admission | None = None
+    ) -> None:
+        self.admission = admission
 
     async def scope(self, question, max_turns, deadline):
         llm = roles.llm_for("lead", max_turns)
         started = time.monotonic()
-        brief = await roles.scope(question, llm, max_turns, deadline)
+        brief = await roles.scope(
+            question, llm, max_turns, deadline, admission=self.admission
+        )
         return brief, _usage_of(llm, started)
 
     async def plan_tasks(
@@ -157,40 +170,65 @@ class LiveRoles:
         llm = roles.llm_for("lead", max_turns)
         started = time.monotonic()
         plan = await roles.plan_tasks(
-            state, limits, slots, purpose, llm, max_turns, deadline
+            state,
+            limits,
+            slots,
+            purpose,
+            llm,
+            max_turns,
+            deadline,
+            admission=self.admission,
         )
         return plan, _usage_of(llm, started)
 
     async def assess_coverage(self, state, max_turns, deadline):
         llm = roles.llm_for("lead", max_turns)
         started = time.monotonic()
-        out = await roles.assess_coverage(state, llm, max_turns, deadline)
+        out = await roles.assess_coverage(
+            state, llm, max_turns, deadline, admission=self.admission
+        )
         return out, _usage_of(llm, started)
 
     async def analyze(self, state, note, max_turns, deadline):
         llm = roles.llm_for("analyst", max_turns)
         started = time.monotonic()
-        out = await roles.analyze(state, note, llm, max_turns, deadline)
+        out = await roles.analyze(
+            state, note, llm, max_turns, deadline, admission=self.admission
+        )
         return out, _usage_of(llm, started)
 
     async def review_claims(self, state, claim_ids, max_turns, deadline):
         llm = roles.llm_for("verifier", max_turns)
         started = time.monotonic()
         out = await roles.review_claims(
-            state, claim_ids, llm, max_turns, deadline
+            state,
+            claim_ids,
+            llm,
+            max_turns,
+            deadline,
+            admission=self.admission,
         )
         return out, _usage_of(llm, started)
 
     async def write(self, state, instructions, max_turns, deadline):
         llm = roles.llm_for("editor", max_turns)
         started = time.monotonic()
-        out = await roles.write(state, instructions, llm, max_turns, deadline)
+        out = await roles.write(
+            state,
+            instructions,
+            llm,
+            max_turns,
+            deadline,
+            admission=self.admission,
+        )
         return out, _usage_of(llm, started)
 
     async def final_review(self, state, max_turns, deadline):
         llm = roles.llm_for("verifier", max_turns)
         started = time.monotonic()
-        out = await roles.final_review(state, llm, max_turns, deadline)
+        out = await roles.final_review(
+            state, llm, max_turns, deadline, admission=self.admission
+        )
         return out, _usage_of(llm, started)
 
 
@@ -818,7 +856,8 @@ def build_graph(
     """Compile the industry research graph.
 
     Args:
-      runtime: The process runtime (limits, meters, semaphore, index lock).
+      runtime: The process runtime (limits, meters, the admission
+        authority, index lock).
       backend: The services behind the tools; the live backend if
         ``None``.
       api: The single-call roles; the live ones if ``None``.
@@ -827,7 +866,7 @@ def build_graph(
     """
     limits = runtime.limits
     backend = backend or tools.LiveBackend()
-    api = api or LiveRoles()
+    api = api or LiveRoles(runtime.admission)
 
     async def call_with_reservation(
         state: state_module.IndustryState,
@@ -842,11 +881,15 @@ def build_graph(
         try:
             output, usage = await call(max_turns, reservation.reserved.seconds)
         except (crew.RoleTimeout, crew.RoleHung) as error:
-            # The adapter's own deadline, not a program fault: the
+            # This call's own deadline, not a program fault: the
             # reservation stays charged in full and the node degrades
             # exactly as a refused one does, so the reserve can still
             # write and deliver instead of the run ending on a
-            # traceback with everything it collected undelivered.
+            # traceback with everything it collected undelivered. An
+            # ``admission.Blocked`` -- work that outlived its
+            # cancellation is still live in this process -- is not
+            # caught here: it ends the run resumably before anything
+            # starts over that work.
             return None, {
                 "single_calls": _complete(
                     state, reservation, records.Usage(unknown=True)
@@ -1563,6 +1606,10 @@ def build_graph(
         return "deliver"
 
     async def deliver(state: state_module.IndustryState) -> dict[str, Any]:
+        # The report is not written over work that outlived its
+        # cancellation: the same authority that admits sessions stops
+        # delivery, resumably, until the survivor has ended.
+        runtime.admission.check()
         derived = coverage_module.derive(state, state.get("assessment"))
         review = state.get("final_review")
         verified = (

@@ -696,6 +696,7 @@ async def scope(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> records.Brief:
     """The Lead's brief on top of the deterministic defaults."""
     defaults = default_brief(question)
@@ -707,6 +708,7 @@ async def scope(
         EXPECTED["scope"],
         llm or llm_for("lead", max_turns),
         deadline,
+        admission=admission,
     )
     updates: dict[str, Any] = {
         "industry": output.industry or defaults.industry,
@@ -752,6 +754,7 @@ async def plan_tasks(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> TaskPlan:
     """The Lead's task allocation for the next wave(s)."""
     description = plan_description(state, limits, slots, purpose)
@@ -762,6 +765,7 @@ async def plan_tasks(
         EXPECTED["prepare_tasks"],
         llm or llm_for("lead", max_turns),
         deadline,
+        admission=admission,
     )
 
 
@@ -800,6 +804,7 @@ async def assess_coverage(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> records.LeadAssessment:
     """The Lead's coverage proposal; Python clamps it afterwards."""
     role = crew.Role(
@@ -811,6 +816,7 @@ async def assess_coverage(
         EXPECTED["assess_coverage"],
         llm or llm_for("lead", max_turns),
         deadline,
+        admission=admission,
     )
 
 
@@ -842,6 +848,7 @@ async def analyze(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> Analysis:
     """The Analyst's findings, calculation requests, evidence requests."""
     return await crew.run_task(
@@ -850,6 +857,7 @@ async def analyze(
         EXPECTED["analyze"],
         llm or llm_for("analyst", max_turns),
         deadline,
+        admission=admission,
     )
 
 
@@ -892,6 +900,7 @@ async def review_claims(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> records.ClaimReview:
     """The Verifier's judgement of the named claims and their relations."""
     return await crew.run_task(
@@ -900,6 +909,7 @@ async def review_claims(
         EXPECTED["review"],
         llm or llm_for("verifier", max_turns),
         deadline,
+        admission=admission,
     )
 
 
@@ -939,6 +949,7 @@ async def write(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> Draft:
     """The Editor's draft or revision."""
     return await crew.run_task(
@@ -947,6 +958,7 @@ async def write(
         EXPECTED["write"],
         llm or llm_for("editor", max_turns),
         deadline,
+        admission=admission,
     )
 
 
@@ -993,6 +1005,7 @@ async def final_review(
     llm: Any = None,
     max_turns: int = 5,
     deadline: float | None = None,
+    admission: Any = None,
 ) -> records.DraftReview:
     """The Verifier's check of the exact draft against the claims."""
     role = crew.Role(
@@ -1004,6 +1017,7 @@ async def final_review(
         EXPECTED["final_review"],
         llm or llm_for("verifier", max_turns),
         deadline,
+        admission=admission,
     )
 
 

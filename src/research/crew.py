@@ -31,6 +31,7 @@ from typing import Any
 import claude_agent_sdk
 import pydantic
 
+from industry import admission as admission_module
 from research import evaluate as evaluate_module
 from research import plan as plan_module
 from research import sources as sources_module
@@ -62,17 +63,22 @@ class RoleTimeout(TimeoutError):
 
 
 class RoleHung(RuntimeError):
-    """A cancelled call did not stop within the grace period.
+    """This call's cancellation did not stop it within the grace period.
 
-    Raised instead of routing onward, so nothing keeps running
-    unobserved; the run is left resumable. The live kickoff is kept in
-    ``HUNG_CALLS`` and ``run_task`` refuses to start another call while
-    any of them is still alive.
+    One meaning only: the call missed its deadline and its kickoff is
+    still alive. The caller charges the reservation and degrades, as
+    for ``RoleTimeout``; the live kickoff keeps its admission slot as a
+    survivor, so the next admission anywhere in the process raises
+    ``admission.Blocked`` until it ends -- that guard is the authority's,
+    not this exception's.
     """
 
 
-# Kickoff tasks that outlived their cancellation; pruned when they end.
-HUNG_CALLS: list[asyncio.Future] = []
+# The admission authority for callers without a runtime (the Phase 6-9
+# workflow): unbounded, survivors tracked. The industry graph passes its
+# ``Runtime.admission`` instead, so role calls and worker sessions share
+# one bound and one record of what is live.
+PROCESS = admission_module.Admission(None)
 
 
 async def _stop(
@@ -82,10 +88,10 @@ async def _stop(
 
     Returns ``True`` when the kickoff ended within ``grace`` (CrewAI
     wraps the cancellation in its own error types, so every outcome of
-    the cancelled task counts as ended) and ``False`` when it did not,
-    in which case it is retained in ``HUNG_CALLS``. A cancellation of
-    this wait itself (a second interruption) retains a live kickoff the
-    same way and propagates.
+    the cancelled task counts as ended) and ``False`` when it did not.
+    A cancellation of this wait itself (a second interruption)
+    propagates; either way the caller settles the kickoff's slot, which
+    is retained while the kickoff is alive.
     """
     cancel = getattr(llm, "cancel", None)
     if cancel is not None:
@@ -93,25 +99,16 @@ async def _stop(
     try:
         await asyncio.wait_for(asyncio.shield(kickoff), grace)
     except asyncio.TimeoutError:
-        HUNG_CALLS.append(kickoff)
         return False
     except asyncio.CancelledError:
         task = asyncio.current_task()
         if task is not None and task.cancelling():
-            if not kickoff.done():
-                HUNG_CALLS.append(kickoff)
             raise
         # The cancelled call ended with CancelledError itself.
         return True
     except Exception:  # pylint: disable=broad-exception-caught
         return True
     return True
-
-
-def hung_calls() -> list[asyncio.Future]:
-    """The cancelled calls still running in this process."""
-    HUNG_CALLS[:] = [task for task in HUNG_CALLS if not task.done()]
-    return list(HUNG_CALLS)
 
 
 def split_messages(messages: str | list[dict[str, Any]]) -> tuple[str, str]:
@@ -308,7 +305,8 @@ async def run_task(
     expected_output: str,
     llm: crewai.BaseLLM | None = None,
     deadline: float | None = None,
-    grace: float = CANCEL_GRACE_SECONDS,
+    grace: float | None = None,
+    admission: admission_module.Admission | None = None,
 ) -> str | pydantic.BaseModel:
     """Run one task as a crew of one agent and return its output.
 
@@ -328,10 +326,15 @@ async def run_task(
         raised; if it has not finished by then ``RoleHung`` is raised
         instead, so nothing keeps running unobserved. An external
         cancellation of this coroutine (an interruption, a shutdown)
-        stops the call the same way, retains a survivor in
-        ``HUNG_CALLS``, and then propagates: the kickoff never outlives
-        its deadline watcher unrecorded.
-      grace: Seconds to wait for the cancelled call to wind down.
+        stops the call the same way and then propagates: the kickoff
+        never outlives its deadline watcher unrecorded.
+      grace: Seconds to wait for the cancelled call to wind down
+        (``CANCEL_GRACE_SECONDS`` unless given).
+      admission: The authority the call takes its slot from, held until
+        the kickoff has actually ended: a kickoff that outlives its
+        cancellation keeps the slot as a survivor, and nothing is
+        admitted in that process until it ends. The industry graph
+        passes its runtime's; callers without one get ``PROCESS``.
 
     Returns:
       The task's text, or an instance of ``role.output`` when it has one.
@@ -339,14 +342,14 @@ async def run_task(
     Raises:
       RoleTimeout: If ``deadline`` passed and the call was stopped.
       RoleHung: If ``deadline`` passed and the call did not stop.
+      admission.Blocked: If an earlier operation that outlived its
+        cancellation is still live; no call is started.
       RuntimeError: If the model call fails, or a structured task did
         not produce its model.
     """
-    if hung_calls():
-        raise RoleHung(
-            f"{len(HUNG_CALLS)} earlier call(s) are still live after their "
-            "cancellation; no new call starts until they end."
-        )
+    if grace is None:
+        grace = CANCEL_GRACE_SECONDS
+    authority = admission or PROCESS
     llm = llm or ClaudeLLM()
     agent = crewai.Agent(
         role=role.name,
@@ -377,25 +380,36 @@ async def run_task(
         process=crewai.Process.sequential,
         verbose=False,
     )
-    kickoff = asyncio.ensure_future(crew.akickoff())
+    # One of the process's slots, shared with the worker sessions; a
+    # survivor anywhere in the process refuses this before any call.
+    slot = await authority.acquire("role", role.name)
+    kickoff: asyncio.Future | None = None
     try:
-        output = await asyncio.wait_for(asyncio.shield(kickoff), deadline)
-    except asyncio.TimeoutError:
-        if not await _stop(kickoff, llm, grace):
-            raise RoleHung(
-                f"{role.name} exceeded {deadline:.0f} s and did not stop "
-                f"within {grace:.0f} s after cancellation."
+        kickoff = asyncio.ensure_future(crew.akickoff())
+        try:
+            output = await asyncio.wait_for(asyncio.shield(kickoff), deadline)
+        except asyncio.TimeoutError:
+            if not await _stop(kickoff, llm, grace):
+                raise RoleHung(
+                    f"{role.name} exceeded {deadline:.0f} s and did not stop "
+                    f"within {grace:.0f} s after cancellation."
+                ) from None
+            raise RoleTimeout(
+                f"{role.name} exceeded {deadline:.0f} s and was cancelled."
             ) from None
-        raise RoleTimeout(
-            f"{role.name} exceeded {deadline:.0f} s and was cancelled."
-        ) from None
-    except asyncio.CancelledError:
-        # The shield keeps the kickoff alive through this cancellation;
-        # left alone it would run on with no deadline watcher and no
-        # record of it. It is stopped like a timed-out call, and a
-        # survivor blocks the next call, before the cancellation goes on.
-        await _stop(kickoff, llm, grace)
-        raise
+        except asyncio.CancelledError:
+            # The shield keeps the kickoff alive through this
+            # cancellation; left alone it would run on with no deadline
+            # watcher and no record of it. It is stopped like a timed-out
+            # call before the cancellation goes on.
+            await _stop(kickoff, llm, grace)
+            raise
+    finally:
+        # The slot ends with the kickoff, not with this coroutine:
+        # released now if the kickoff has ended, kept as a survivor until
+        # it does otherwise -- after a grace that expired, or a second
+        # interruption during the wait.
+        slot.settle(kickoff)
     task_output = output.tasks_output[0]
     if role.output is None:
         return task_output.raw

@@ -12,6 +12,10 @@ The ``RunMeter`` bounds what is in flight inside one process: attempts
 are registered when ``dispatch`` creates them, tool handlers ask it for
 admission before doing work, and a worker whose attempt is not
 registered (a replayed ``Send`` in a fresh process) does no work at all.
+What may be *live* at all -- role calls and worker sessions against
+``Limits.concurrency``, and the work that outlived its cancellation --
+is the ``Runtime``'s ``admission`` (``industry.admission``), the one
+authority both model entry points consult.
 """
 
 import asyncio
@@ -19,6 +23,7 @@ import dataclasses
 import math
 import threading
 
+from industry import admission as admission_module
 from industry import records
 from industry import state as state_module
 
@@ -312,7 +317,12 @@ class Runtime:
 
     Attributes:
       limits: The limits every thread on this graph runs under.
-      semaphore: Bounds the tool-using SDK sessions in flight.
+      admission: The one admission authority: every role call and every
+        worker session takes one of ``limits.concurrency`` slots from it
+        and holds the slot until its work has actually ended; a survivor
+        blocks every further admission in this process until it ends.
+        It is never reset by ``begin``: what outlived one invocation is
+        still live in the next.
       index_lock: Serializes writes to the vector index.
     """
 
@@ -323,7 +333,7 @@ class Runtime:
     ) -> None:
         self.limits = limits or records.Limits()
         self.reports_dir = reports_dir
-        self.semaphore = asyncio.Semaphore(self.limits.concurrency)
+        self.admission = admission_module.Admission(self.limits.concurrency)
         self.index_lock = asyncio.Lock()
         self._meters: dict[str, RunMeter] = {}
 

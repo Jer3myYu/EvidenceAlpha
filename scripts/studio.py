@@ -43,6 +43,7 @@ from starlette import requests
 from starlette import responses
 from starlette import routing
 
+from industry import admission as admission_module
 from industry import budget
 from industry import graph as graph_module
 from industry import records
@@ -535,6 +536,15 @@ async def run_question(request: requests.Request) -> responses.Response:
             # and the second run queued behind the first instead of
             # being refused.
             yield sse({"type": "error", "message": BUSY})
+            return
+        try:
+            # An earlier run's work that outlived its cancellation is
+            # still this process's: no new run starts over it. The graph
+            # would refuse the first model call anyway; refusing here
+            # creates no thread for it.
+            request.app.state.runtime.admission.check()
+        except admission_module.Blocked as error:
+            yield sse({"type": "error", "message": str(error)})
             return
         await lock.acquire()
         try:

@@ -508,10 +508,15 @@ def test_no_more_sessions_run_at_once_than_the_limit_allows():
 
 
 class BlockingIndexBackend:
-    """A backend whose index write blocks for a while, counted."""
+    """A backend whose index write blocks for a while, counted.
 
-    def __init__(self, seconds):
+    ``durations`` are taken in order by the first writes; later writes
+    block for ``seconds``.
+    """
+
+    def __init__(self, seconds, durations=()):
         self.seconds = seconds
+        self.durations = list(durations)
         self.active = 0
         self.peak = 0
         self.writes = 0
@@ -546,7 +551,8 @@ class BlockingIndexBackend:
             self.active += 1
             self.peak = max(self.peak, self.active)
             self.writes += 1
-        time.sleep(self.seconds)
+            seconds = self.durations.pop(0) if self.durations else self.seconds
+        time.sleep(seconds)
         with self._lock:
             self.active -= 1
         return len(chunks)
@@ -664,7 +670,7 @@ def test_an_interrupted_attempt_waits_for_its_write():
         # The interruption went on only once the write had ended.
         assert backend.active == 0 and backend.writes == 1
         assert not runtime.index_lock.locked()
-        assert runtime.semaphore._value == 1  # pylint: disable=protected-access
+        assert not runtime.admission.live(), "the slot outlived the work"
 
     asyncio.run(go())
 

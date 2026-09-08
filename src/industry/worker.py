@@ -11,13 +11,21 @@ reservation stays charged; a schema failure ends it with the usage the
 SDK observed. Every tool result is evidence in the attempt's collector,
 and the model's findings cite those ``[E#]`` labels.
 
-The attempt owns the blocking calls its tools started until they end:
-however the session ended, the worker waits for them (bounded by
-``SIDE_EFFECT_GRACE_S``) before it reports a result, so its charged
-duration covers them and no slot, retry, or delivery can overlap a
-write that is still running. A call that outlives the grace raises
-``WorkerHung`` instead of a result: the run stops with its checkpoint
-intact rather than reporting an attempt finished while its work goes on.
+The attempt owns the blocking calls its tools started until they end.
+Its session slot comes from the runtime's admission authority
+(``industry.admission``), shared with the role calls under one
+``Limits.concurrency``, and is held until the work has actually ended:
+however the session ended -- normally, by its deadline, by a failure,
+or by an interruption -- one cleanup path waits for the outstanding
+calls (bounded by ``SIDE_EFFECT_GRACE_S``) before a result is reported,
+so the charged duration covers them and no retry, resume, or delivery
+can overlap a write that is still running. A call that outlives the
+grace raises ``WorkerHung`` instead of a result, and a drain the
+interruption itself cuts short propagates; in both cases the slot is
+retained as a survivor and released by the work's own completion, so
+nothing new is admitted in this process until it ends and the run stops
+with its checkpoint intact rather than reporting an attempt finished
+while its work goes on.
 """
 
 import asyncio
@@ -51,9 +59,11 @@ class WorkerHung(RuntimeError):
     """A blocking tool call outlived the grace after the session ended.
 
     Raised instead of a result, so the attempt is never reported
-    finished while its work continues. The run stops with its
-    checkpoint intact; ``--resume`` refuses the replayed attempt,
-    charges it its whole reservation, and starts a fresh one.
+    finished while its work continues; the attempt's slot stays held as
+    a survivor until the call ends, so nothing else is admitted in this
+    process meanwhile. The run stops with its checkpoint intact;
+    ``--resume`` refuses the replayed attempt, charges it its whole
+    reservation, and starts a fresh one once the survivor has ended.
     """
 
 
@@ -383,7 +393,7 @@ async def run_attempt(
     Args:
       work: The complete payload of the attempt.
       runtime: The process runtime holding the thread's meter, the
-        concurrency semaphore, and the index lock.
+        admission authority, and the index lock.
       backend: The services behind the tools.
       query: The SDK entry point (tests inject a fake).
       on_event: Receives the session's tool events with ``attempt_id``.
@@ -397,6 +407,8 @@ async def run_attempt(
 
     Raises:
       WorkerHung: If a blocking tool call did not end within ``grace``.
+      admission.Blocked: If work that outlived its cancellation is still
+        live in this process; nothing is started.
     """
     meter = runtime.meter_for(work.thread_id)
     collector = tools.Collector(work.attempt.id, work.task.id)
@@ -416,14 +428,20 @@ async def run_attempt(
     prompt = user_prompt(work, collector)
     options = options_for(work, system, server, allowed)
     session = _Session(work.attempt.id, on_event)
-    async with runtime.semaphore:
-        # The charged duration is execution time: it starts once a
-        # session slot is held, like the timeout, so waiting for a slot
-        # is never charged against the attempt's reservation.
-        started = time.monotonic()
-        # How the session failed: the error label, the usage its
-        # payload carried, and whether the usage is unknown.
-        failure: tuple[str, records.Usage | None, bool] | None = None
+    # One of the process's session slots, shared with the role calls; a
+    # survivor anywhere in the process refuses this before any SDK call.
+    slot = await runtime.admission.acquire(
+        "session", work.attempt.id, outstanding.describe
+    )
+    # The charged duration is execution time: it starts once a session
+    # slot is held, like the timeout, so waiting for a slot is never
+    # charged against the attempt's reservation.
+    started = time.monotonic()
+    # How the session failed: the error label, the usage its payload
+    # carried, and whether the usage is unknown.
+    failure: tuple[str, records.Usage | None, bool] | None = None
+    drained = False
+    try:
         try:
             await asyncio.wait_for(
                 session.consume(query(prompt=prompt, options=options)),
@@ -447,37 +465,41 @@ async def run_attempt(
                 None,
                 True,
             )
-        except asyncio.CancelledError:
-            # An interruption: the attempt still owns what its tools
-            # started, so the slot is held until that ends (bounded),
-            # and then the interruption goes on.
-            await outstanding.drain(grace)
-            raise
-        # However the session ended, the blocking calls its tools
-        # started are the attempt's own until they end: cancelling a
-        # handler does not stop its thread. The slot stays held and the
-        # duration covers them, so no retry or delivery can overlap a
-        # write that is still running; one that outlives the grace stops
-        # the run rather than being reported finished.
-        if not await outstanding.drain(grace):
-            raise WorkerHung(
-                f"{work.attempt.id}: {outstanding.running} tool call(s) "
-                f"still running {grace:.0f} s after the session ended."
+        finally:
+            # One cleanup path however the session ended -- normally, by
+            # its deadline, by a failure, or by an interruption: the
+            # blocking calls its tools started are the attempt's own
+            # until they end (cancelling a handler does not stop its
+            # thread), so the attempt waits for them, bounded by the
+            # grace, before anything is reported and before an
+            # interruption goes on. A second interruption arriving here
+            # propagates from this wait.
+            drained = await outstanding.drain(grace)
+    finally:
+        # The slot ends with the work, not with this coroutine: released
+        # now if every call has ended, kept as a survivor until the last
+        # one ends otherwise (a drain the interruption cut short, or a
+        # call that outlived the grace).
+        slot.settle(outstanding.when_idle())
+    if not drained:
+        raise WorkerHung(
+            f"{work.attempt.id}: {outstanding.running} tool call(s) "
+            f"still running {grace:.0f} s after the session ended."
+        )
+    if failure is not None:
+        error, recovered, unknown = failure
+        usage = _usage(session, meter, collector, started, unknown)
+        if recovered is not None:
+            usage = usage.model_copy(
+                update={
+                    "turns": recovered.turns,
+                    "input_tokens": recovered.input_tokens,
+                    "output_tokens": recovered.output_tokens,
+                    "cost_usd": recovered.cost_usd,
+                    "unknown": False,
+                }
             )
-        if failure is not None:
-            error, recovered, unknown = failure
-            usage = _usage(session, meter, collector, started, unknown)
-            if recovered is not None:
-                usage = usage.model_copy(
-                    update={
-                        "turns": recovered.turns,
-                        "input_tokens": recovered.input_tokens,
-                        "output_tokens": recovered.output_tokens,
-                        "cost_usd": recovered.cost_usd,
-                        "unknown": False,
-                    }
-                )
-            return _result(work, collector, "failed", usage, error=error)
+        return _result(work, collector, "failed", usage, error=error)
     result = session.result
     usage = _usage(session, meter, collector, started, result is None)
     if result is None or result.is_error or result.structured_output is None:

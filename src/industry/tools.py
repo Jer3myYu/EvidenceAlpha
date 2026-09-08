@@ -80,11 +80,31 @@ class Outstanding:
 
     def __init__(self) -> None:
         self._futures: set[asyncio.Future] = set()
+        self._idle: list[asyncio.Future] = []
 
     @property
     def running(self) -> int:
         """How many calls are still running."""
         return sum(1 for future in self._futures if not future.done())
+
+    def describe(self) -> str:
+        """The running calls in one phrase, for the admission ledger."""
+        return f"{self.running} tool call(s) still running"
+
+    def when_idle(self) -> asyncio.Future:
+        """A future that completes once no call is running.
+
+        Complete at once when nothing is running. Resolved on this loop
+        by the last thread's completion callback, so a slot settled on
+        it is released when the attempt's work really ends, whatever
+        became of the coroutine that started it.
+        """
+        future = asyncio.get_running_loop().create_future()
+        if self.running:
+            self._idle.append(future)
+        else:
+            future.set_result(None)
+        return future
 
     async def run(
         self,
@@ -113,6 +133,11 @@ class Outstanding:
             self._futures.discard(done)
             if lock is not None:
                 lock.release()
+            if not self.running:
+                idle, self._idle = self._idle, []
+                for waiting in idle:
+                    if not waiting.done():
+                        waiting.set_result(None)
 
         future.add_done_callback(ended)
         return await asyncio.shield(future)
