@@ -195,6 +195,10 @@ class UnitExpr(Record):
     different trees.
     """
 
+    # A value record: immutable, so a snapshot or a projection that
+    # holds it can never be changed under the reader that compares it.
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
+
     kind: UnitKind
     atom: str | None = None
     exponent: int | None = None
@@ -246,6 +250,10 @@ class EvidenceBinding(Record):
     cell whose declaration a bare cell inherited.
     """
 
+    # A value record: immutable, so a snapshot or a projection that
+    # holds it can never be changed under the reader that compares it.
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
+
     evidence_id: str
     excerpt_sha256: str
     number_start: int
@@ -257,6 +265,25 @@ class EvidenceBinding(Record):
     cell_col: int | None = None
     header_row: int | None = None
     header_col: int | None = None
+
+    @pydantic.model_validator(mode="after")
+    def _coordinates_in_pairs(self) -> "EvidenceBinding":
+        """A row and its column are present or absent together, and a
+        header cell only accompanies a number cell."""
+        if (self.cell_row is None) != (self.cell_col is None):
+            raise ValueError("cell_row and cell_col go together")
+        if (self.header_row is None) != (self.header_col is None):
+            raise ValueError("header_row and header_col go together")
+        if self.header_row is not None and self.cell_row is None:
+            raise ValueError("a header cell needs a number cell")
+        if self.number_start >= self.number_end:
+            raise ValueError("the number span is empty")
+        if not (
+            self.expression_start <= self.number_start
+            and self.number_end <= self.expression_end
+        ):
+            raise ValueError("the number lies outside its expression")
+        return self
 
 
 class Quantity(Record):
@@ -274,6 +301,10 @@ class Quantity(Record):
       scope: Geography or definition, for example ``全球``.
       binding: The evidence occurrence, for an observed quantity.
     """
+
+    # A value record: immutable, so a snapshot or a projection that
+    # holds it can never be changed under the reader that compares it.
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
 
     value: float
     unit: UnitExpr
@@ -305,6 +336,10 @@ class QuantityDraft(Record):
 class TableCell(Record):
     """One physical cell of an extracted table, with its text offsets."""
 
+    # A value record: immutable, so a snapshot or a projection that
+    # holds it can never be changed under the reader that compares it.
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
+
     text: str
     row: int
     col: int
@@ -317,6 +352,10 @@ class TableCell(Record):
 
 class TableLayout(Record):
     """Extractor-owned geometry of a table chunk (a flat cell list)."""
+
+    # A value record: immutable, so a snapshot or a projection that
+    # holds it can never be changed under the reader that compares it.
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
 
     cells: list[TableCell] = pydantic.Field(default_factory=list)
     header_rows: int = 0

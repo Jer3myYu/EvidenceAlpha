@@ -318,3 +318,88 @@ def test_folding_keeps_offsets_and_token_kinds():
     kinds = [t.kind for t in quantities.lex(text)]
     assert "sup" in kinds and "number" in kinds and "dash" in kinds
     assert quantities.fold("52²")[-1] == "²"
+
+
+def test_a_signed_quantity_verifies_and_survives_correction():
+    # C1 round 7, finding 1: the binding anchored at the minus sign and
+    # verification re-parsed at a digit offset, so an admitted negative
+    # figure failed verification, was dropped by a statement-only
+    # correction, and made its checkpoint unresumable.
+    for excerpt, quote, unit_text, value in (
+        ("同比-5.2%，", "-5.2%", "%", -5.2),
+        ("USD -52.", "USD -52", "USD", -52.0),
+        ("率 -16.34% -15.02% 1.57%", "-15.02%", "%", -15.02),
+        ("growth of −3.5%.", "−3.5%", "%", -3.5),
+    ):
+        holder = support.evidence("E1", excerpt)
+        quantity = support.admitted(value, unit_text, quote, holder)
+        assert quantity.value == value
+        assert quantities.verify_binding(quantity, holder) is None, excerpt
+        binding = quantity.binding
+        assert (
+            excerpt[binding.number_start : binding.number_end]
+            .lstrip("-−")
+            .replace(".", "")
+            .isdigit()
+        )
+        assert (
+            excerpt[binding.expression_start : binding.expression_end]
+            == binding.as_written
+        )
+        # The currency prefix stays outside the numeric span.
+        assert "USD" not in excerpt[binding.number_start : binding.number_end]
+
+
+def test_the_binding_records_are_immutable_and_never_shared():
+    # C1 round 7, finding 2: a calculation's "preserved" input and a
+    # derived claim's projection shared the parent's Quantity and the
+    # producer's UnitExpr objects, so an in-place change rewrote the
+    # comparison record too.
+    holder = support.evidence("E1", "收入52亿元。")
+    quantity = support.admitted(52, "亿元", "52亿元", holder)
+    with pytest.raises(ValueError):
+        quantity.value = 53
+    with pytest.raises(ValueError):
+        quantity.unit.atom = "USD"
+    with pytest.raises(ValueError):
+        quantity.binding.number_end = 0
+
+
+def test_a_currency_prefix_is_adjacent_and_not_the_previous_figures():
+    # C1 round 7, finding 3: the prefix rule skipped newlines and runs
+    # of spaces, and never asked whether the currency had already
+    # completed the previous figure.
+    assert parse("Revenue: 100 million USD\n52", "52") == "no_unit"
+    assert parse("Revenue: 100 million USD  52", "52") == "no_unit"
+    assert parse("Revenue: 100 million USD 52", "52") == "no_unit"
+    assert parse("Revenue: 100 USD 52", "52") == "no_unit"
+    assert parse("Revenue: USD 52", "52") == ("USD", 52.0)
+    assert parse("Revenue was 52 USD. USD 60 next", "60") == ("USD", 60.0)
+    # ``人民币`` one space after a figure end is that figure's suffix.
+    assert parse("人民币52亿元 人民币 60", "60") == "no_unit"
+    assert parse("总额52亿元。人民币 60", "60") == ("CNY", 60.0)
+    assert parse("总额52亿元人民币 60", "60") == "no_unit"
+
+
+def test_late_occurrence_selection_is_linear():
+    # C1 round 7, finding 4: every match rescanned every number.
+    import time  # pylint: disable=import-outside-toplevel
+
+    text = "52 EUR; " * 4000
+    started = time.perf_counter()
+    at = quantities.find_quote(text, "52 EUR", 4000)
+    missing = quantities.find_quote(text, "52 EUR", 4001)
+    assert time.perf_counter() - started < 0.3
+    assert at == text.rindex("52 EUR")
+    assert missing.code == "occurrence_out_of_range"
+
+
+def test_orphan_cell_coordinates_are_refused():
+    # C1 round 7, finding 5.
+    holder = support.evidence("E1", "收入52亿元。")
+    quantity = support.admitted(52, "亿元", "52亿元", holder)
+    for field in ("cell_col", "header_col", "cell_row", "header_row"):
+        mutated = quantity.model_copy(
+            update={"binding": quantity.binding.model_copy(update={field: 99})}
+        )
+        assert quantities.verify_binding(mutated, holder) is not None, field

@@ -897,6 +897,21 @@ def _spaced_grouping(tokens: list[Token], idx: int) -> bool:
     return idx + 2 < len(tokens) and pair(idx, idx + 2)
 
 
+def _completes_previous_figure(parser: _Parser, i: int) -> bool:
+    """Whether the currency at ``i`` belongs to the figure before it.
+
+    ``100 million USD 52``: the ``USD`` completes ``100 million`` and
+    cannot also prefix ``52``. A figure end (a number, a scale, a unit
+    or a percent) at most one plain space before the currency claims
+    it; punctuation, a newline or an ordinary word leaves it free.
+    """
+    j = i - 1
+    t = parser.tok(j)
+    if t is not None and t.kind == "space" and t.text == " ":
+        j -= 1
+    return _figure_end(parser, j)
+
+
 def _figure_end(parser: _Parser, i: int) -> bool:
     """Whether the token at ``i`` ends a figure (number, unit, ``%``)."""
     t = parser.tok(i)
@@ -1069,6 +1084,18 @@ def parse_expression(
         ),
         None,
     )
+    if idx is None and text[number_start : number_start + 1] in tuple(
+        _SIGN_CHARS
+    ):
+        # A stored binding anchors a signed figure at its sign.
+        idx = next(
+            (
+                k
+                for k, t in enumerate(tokens)
+                if t.kind == "number" and t.start == number_start + 1
+            ),
+            None,
+        )
     if idx is None:
         return Refusal("quote_not_a_token", str(number_start))
     number = tokens[idx]
@@ -1100,8 +1127,14 @@ def parse_expression(
         if not signable:
             return Refusal("range", "a dash that is not a sign")
         sign, start, k = "-", before.start, k - 1
+    number_span_start = start
     kk = k
-    if parser.tok(kk) is not None and parser.tok(kk).kind == "space":
+    # A prefix sits at most one plain space before the figure.
+    if (
+        parser.tok(kk) is not None
+        and parser.tok(kk).kind == "space"
+        and parser.tok(kk).text == " "
+    ):
         kk -= 1
     b = parser.tok(kk)
     prefix: records.UnitExpr | None = None
@@ -1137,7 +1170,12 @@ def parse_expression(
         elif b.kind == "op" and b.text in "/×*":
             if kk == k or (prev is not None and prev.kind == "number"):
                 return Refusal("unsupported_number_form", "paired figures")
-        if b.kind == "word" and b.text in CURRENCIES and kk >= k - 1:
+        if (
+            b.kind == "word"
+            and b.text in CURRENCIES
+            and kk >= k - 1
+            and not _completes_previous_figure(parser, kk)
+        ):
             prefix = atom(CURRENCIES[b.text])
             start = b.start
             if prev is not None and prev.kind == "word" and prev.text == "to":
@@ -1148,7 +1186,9 @@ def parse_expression(
                     return Refusal("range", "to between figures")
         elif b.kind == "cjk" and kk >= k - 1:
             cny = parser.cjk_text(kk - 2, 3)
-            if cny == "人民币":
+            if cny == "人民币" and not _completes_previous_figure(
+                parser, kk - 2
+            ):
                 prefix = atom("CNY")
                 start = tokens[kk - 2].start
     # -- right side: the unit expression.
@@ -1247,7 +1287,7 @@ def parse_expression(
         return Refusal("cut_edge", "an unknown gap before the figure")
     if gap_after is not None and not _isolated(text, expression_end, gap_after):
         return Refusal("cut_edge", "an unknown gap after the expression")
-    spans = (start if sign else number.start, number.end, start, expression_end)
+    spans = (number_span_start, number.end, start, expression_end)
     value = _number_value(number, sign)
     if layout is not None:
         return _table_unit(text, layout, value, unit, spans)
@@ -1442,12 +1482,17 @@ def find_quote(excerpt: str, quote: str, occurrence: int) -> int | Refusal:
     folded = fold(excerpt)
     numbers = [t for t in lex(excerpt) if t.kind == "number"]
     found = 0
+    cursor = 0
     for match in pattern.finditer(folded):
-        inside = [
-            t
-            for t in numbers
-            if t.end > match.start() and t.start < match.end()
-        ]
+        # Numbers and matches are both in text order: advance a cursor
+        # instead of rescanning every number for every match.
+        while cursor < len(numbers) and numbers[cursor].end <= match.start():
+            cursor += 1
+        inside = []
+        probe = cursor
+        while probe < len(numbers) and numbers[probe].start < match.end():
+            inside.append(numbers[probe])
+            probe += 1
         if len(inside) != 1:
             continue
         number = inside[0]
@@ -1578,16 +1623,12 @@ def verify_binding(
     )
     if spans != stored:
         return Refusal("unbound", "spans differ from the evidence")
-    cell = (
-        (binding.cell_row, binding.cell_col)
-        if binding.cell_row is not None
-        else None
-    )
-    header = (
-        (binding.header_row, binding.header_col)
-        if binding.header_row is not None
-        else None
-    )
-    if (parsed.cell, parsed.header_cell) != (cell, header):
+    # Every coordinate is compared: a pair is present or absent together,
+    # so a stray column or row on a prose binding is a difference.
+    cell = parsed.cell or (None, None)
+    if (binding.cell_row, binding.cell_col) != cell:
         return Refusal("unbound", "cell association differs")
+    header = parsed.header_cell or (None, None)
+    if (binding.header_row, binding.header_col) != header:
+        return Refusal("unbound", "header association differs")
     return None
