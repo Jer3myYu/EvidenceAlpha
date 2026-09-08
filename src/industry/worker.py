@@ -10,6 +10,14 @@ transport failure ends the attempt with unknown usage and the full
 reservation stays charged; a schema failure ends it with the usage the
 SDK observed. Every tool result is evidence in the attempt's collector,
 and the model's findings cite those ``[E#]`` labels.
+
+The attempt owns the blocking calls its tools started until they end:
+however the session ended, the worker waits for them (bounded by
+``SIDE_EFFECT_GRACE_S``) before it reports a result, so its charged
+duration covers them and no slot, retry, or delivery can overlap a
+write that is still running. A call that outlives the grace raises
+``WorkerHung`` instead of a result: the run stops with its checkpoint
+intact rather than reporting an attempt finished while its work goes on.
 """
 
 import asyncio
@@ -33,6 +41,20 @@ TRANSPORT_ERRORS = (
 )
 # ResultError terminal reasons that are the service's, not the session's.
 TRANSPORT_REASONS = ("api_error",)
+# How long an attempt waits, once its session has ended, for the
+# blocking calls its tools started (an index write, a fetch, a search)
+# to end. Chroma indexes a large PDF in well under a minute.
+SIDE_EFFECT_GRACE_S = 60.0
+
+
+class WorkerHung(RuntimeError):
+    """A blocking tool call outlived the grace after the session ended.
+
+    Raised instead of a result, so the attempt is never reported
+    finished while its work continues. The run stops with its
+    checkpoint intact; ``--resume`` refuses the replayed attempt,
+    charges it its whole reservation, and starts a fresh one.
+    """
 
 
 def classify_result_error(error: Any) -> tuple[str, records.Usage | None]:
@@ -354,6 +376,7 @@ async def run_attempt(
     backend: tools.Backend,
     query: Callable[..., AsyncIterator[Any]] = claude_agent_sdk.query,
     on_event: Callable[[dict[str, Any]], Any] | None = None,
+    grace: float = SIDE_EFFECT_GRACE_S,
 ) -> records.TaskResult:
     """Run one attempt end to end and return its result.
 
@@ -364,11 +387,16 @@ async def run_attempt(
       backend: The services behind the tools.
       query: The SDK entry point (tests inject a fake).
       on_event: Receives the session's tool events with ``attempt_id``.
+      grace: Seconds to wait, after the session ended, for the blocking
+        calls its tools started to end.
 
     Returns:
       ``done`` with findings, ``failed`` with an ``error`` that starts
       with ``transport:``, ``schema:``, or ``timeout:``, or ``unknown``
       when the attempt was not admitted in this invocation.
+
+    Raises:
+      WorkerHung: If a blocking tool call did not end within ``grace``.
     """
     meter = runtime.meter_for(work.thread_id)
     collector = tools.Collector(work.attempt.id, work.task.id)
@@ -380,8 +408,9 @@ async def run_attempt(
             records.Usage(unknown=True),
             error="replayed attempt not admitted in this invocation",
         )
+    outstanding = tools.Outstanding()
     server, allowed, _ = tools.build_tools(
-        collector, meter, backend, runtime.index_lock
+        collector, meter, backend, runtime.index_lock, outstanding
     )
     system = system_prompt(work)
     prompt = user_prompt(work, collector)
@@ -392,6 +421,9 @@ async def run_attempt(
         # session slot is held, like the timeout, so waiting for a slot
         # is never charged against the attempt's reservation.
         started = time.monotonic()
+        # How the session failed: the error label, the usage its
+        # payload carried, and whether the usage is unknown.
+        failure: tuple[str, records.Usage | None, bool] | None = None
         try:
             await asyncio.wait_for(
                 session.consume(query(prompt=prompt, options=options)),
@@ -400,19 +432,41 @@ async def run_attempt(
         except asyncio.TimeoutError:
             # Assistant messages are not authoritative usage; without a
             # final result the whole reservation stays charged.
-            unknown = session.result is None
-            usage = _usage(session, meter, collector, started, unknown)
             seconds = f"{work.allowance.seconds:.0f}"
-            return _result(
-                work,
-                collector,
-                "failed",
-                usage,
-                error=f"timeout: no result within {seconds} s",
+            failure = (
+                f"timeout: no result within {seconds} s",
+                None,
+                session.result is None,
             )
         except claude_agent_sdk.ResultError as error:
             label, recovered = classify_result_error(error)
-            usage = _usage(session, meter, collector, started, True)
+            failure = (f"{label}: {error}", recovered, True)
+        except TRANSPORT_ERRORS as error:
+            failure = (
+                f"transport: {type(error).__name__}: {error}",
+                None,
+                True,
+            )
+        except asyncio.CancelledError:
+            # An interruption: the attempt still owns what its tools
+            # started, so the slot is held until that ends (bounded),
+            # and then the interruption goes on.
+            await outstanding.drain(grace)
+            raise
+        # However the session ended, the blocking calls its tools
+        # started are the attempt's own until they end: cancelling a
+        # handler does not stop its thread. The slot stays held and the
+        # duration covers them, so no retry or delivery can overlap a
+        # write that is still running; one that outlives the grace stops
+        # the run rather than being reported finished.
+        if not await outstanding.drain(grace):
+            raise WorkerHung(
+                f"{work.attempt.id}: {outstanding.running} tool call(s) "
+                f"still running {grace:.0f} s after the session ended."
+            )
+        if failure is not None:
+            error, recovered, unknown = failure
+            usage = _usage(session, meter, collector, started, unknown)
             if recovered is not None:
                 usage = usage.model_copy(
                     update={
@@ -423,22 +477,7 @@ async def run_attempt(
                         "unknown": False,
                     }
                 )
-            return _result(
-                work,
-                collector,
-                "failed",
-                usage,
-                error=f"{label}: {error}",
-            )
-        except TRANSPORT_ERRORS as error:
-            usage = _usage(session, meter, collector, started, True)
-            return _result(
-                work,
-                collector,
-                "failed",
-                usage,
-                error=f"transport: {type(error).__name__}: {error}",
-            )
+            return _result(work, collector, "failed", usage, error=error)
     result = session.result
     usage = _usage(session, meter, collector, started, result is None)
     if result is None or result.is_error or result.structured_output is None:

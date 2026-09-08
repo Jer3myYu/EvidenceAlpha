@@ -1,15 +1,23 @@
 """One attempt as an SDK session: admission, failures, success."""
 
 import asyncio
+import functools
+import threading
 import time
 
 import claude_agent_sdk
+import mcp.types
 import pytest
+import test_industry_graph as fakes
+from langgraph.checkpoint.memory import MemorySaver
 
 from industry import budget
+from industry import graph as graph_module
 from industry import records
+from industry import snapshots
 from industry import tools
 from industry import worker
+from research import persist
 from research import web
 
 NOW = "2026-09-07T00:00:00+00:00"
@@ -497,3 +505,197 @@ def test_no_more_sessions_run_at_once_than_the_limit_allows():
     assert [r.status for r in results] == ["done"] * len(attempt_ids)
     assert peak == limits.concurrency
     assert live == 0
+
+
+class BlockingIndexBackend:
+    """A backend whose index write blocks for a while, counted."""
+
+    def __init__(self, seconds):
+        self.seconds = seconds
+        self.active = 0
+        self.peak = 0
+        self.writes = 0
+        self._lock = threading.Lock()
+
+    def search_web(self, query, max_results):
+        raise AssertionError("not called")
+
+    def fetch(self, url, source_id):
+        version = records.SourceVersion(
+            id="v1",
+            source_id=source_id,
+            content_hash="h",
+            blob_path="b.html",
+            meta_path="m",
+            final_url=url,
+            content_type="text/html",
+            size=10,
+            retrieved_at=NOW,
+            extraction_version="v3",
+        )
+        chunks = [
+            snapshots.Chunk(
+                0, "HOYA supplies blanks.", "Market", None, "text", ()
+            )
+        ]
+        return version, chunks, url
+
+    def index(self, version, canonical_url, chunks):
+        del version, canonical_url
+        with self._lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            self.writes += 1
+        time.sleep(self.seconds)
+        with self._lock:
+            self.active -= 1
+        return len(chunks)
+
+    def search_documents(self, query, k, source_url):
+        del query, k, source_url
+        return []
+
+
+def fetching_query(prompt, options):
+    """A session that calls fetch_source through the attempt's MCP server."""
+    del prompt
+
+    async def messages():
+        server = options.mcp_servers["research"]["instance"]
+        handler = server.request_handlers[mcp.types.CallToolRequest]
+        await handler(
+            mcp.types.CallToolRequest(
+                method="tools/call",
+                params=mcp.types.CallToolRequestParams(
+                    name="fetch_source",
+                    arguments={"url": "https://a.example/x"},
+                ),
+            )
+        )
+        yield result_message()
+
+    return messages()
+
+
+def attempt_with(aid, seconds):
+    work = work_input()
+    return work.model_copy(
+        update={
+            "attempt": work.attempt.model_copy(update={"id": aid}),
+            "allowance": records.Reservation(
+                turns=12, tool_calls=24, seconds=seconds
+            ),
+        }
+    )
+
+
+def test_a_timed_out_attempt_owns_its_index_write_until_it_ends():
+    # C2 round 1, finding 2: cancelling the await of the index thread
+    # did not stop the thread, yet the handler released the index lock
+    # and the worker released the slot and reported its duration; the
+    # retry then wrote to the index beside the write still running.
+    runtime = budget.Runtime(records.Limits(concurrency=1))
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
+    meter.register("T2.1", 24)
+    meter.register("T2.2", 24)
+    backend = BlockingIndexBackend(0.6)
+
+    async def go():
+        first = await worker.run_attempt(
+            attempt_with("T2.1", 0.15), runtime, backend, query=fetching_query
+        )
+        assert backend.active == 0, "returned while its write ran"
+        second = await worker.run_attempt(
+            attempt_with("T2.2", 5), runtime, backend, query=fetching_query
+        )
+        return first, second
+
+    first, second = asyncio.run(go())
+    assert first.status == "failed" and first.error.startswith("timeout")
+    assert second.status == "done"
+    assert backend.peak == 1, "two index writes ran at once"
+    assert first.usage.duration_s >= 0.6, "the write outlived the charge"
+    assert not runtime.index_lock.locked()
+
+
+def test_a_write_that_outlives_the_grace_stops_the_run_resumably():
+    runtime = budget.Runtime(records.Limits(concurrency=1))
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
+    meter.register("T2.1", 24)
+    backend = BlockingIndexBackend(0.8)
+
+    async def go():
+        with pytest.raises(worker.WorkerHung, match="still running"):
+            await worker.run_attempt(
+                attempt_with("T2.1", 0.1),
+                runtime,
+                backend,
+                query=fetching_query,
+                grace=0.2,
+            )
+        # No result was reported and the write is still serialized:
+        # the lock is held until the thread ends.
+        assert backend.active == 1 and runtime.index_lock.locked()
+        while backend.active:
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)
+        assert not runtime.index_lock.locked()
+
+    asyncio.run(go())
+
+
+def test_an_interrupted_attempt_waits_for_its_write():
+    runtime = budget.Runtime(records.Limits(concurrency=1))
+    meter = runtime.new_meter("t", {"attempts": {}, "single_calls": {}})
+    meter.register("T2.1", 24)
+    backend = BlockingIndexBackend(0.5)
+
+    async def go():
+        task = asyncio.create_task(
+            worker.run_attempt(
+                attempt_with("T2.1", 5), runtime, backend, query=fetching_query
+            )
+        )
+        while not backend.writes:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The interruption went on only once the write had ended.
+        assert backend.active == 0 and backend.writes == 1
+        assert not runtime.index_lock.locked()
+        assert runtime.semaphore._value == 1  # pylint: disable=protected-access
+
+    asyncio.run(go())
+
+
+def test_the_run_never_delivers_over_a_surviving_write(tmp_path):
+    # Through the compiled graph with the real worker and tools: every
+    # attempt times out inside its index write, is retried once, and
+    # the run delivers incomplete, never while a write is running and
+    # never with a write uncharged.
+    limits = records.Limits(concurrency=1, task_timeout_s=0.15)
+    runtime = budget.Runtime(limits, reports_dir=str(tmp_path / "reports"))
+    backend = BlockingIndexBackend(0.4)
+    compiled = graph_module.build_graph(
+        runtime,
+        backend=backend,
+        api=fakes.FakeRoles(),
+        worker_fn=functools.partial(worker.run_attempt, query=fetching_query),
+        checkpointer=MemorySaver(),
+    )
+
+    async def go():
+        config = persist.thread_config("write-1")
+        runtime.begin("write-1")
+        return await compiled.ainvoke(
+            graph_module.initial_state("q", limits), config
+        )
+
+    state = asyncio.run(go())
+    assert state["meta"].execution_status == "completed"
+    assert backend.active == 0, "delivered over a surviving write"
+    assert backend.peak == 1, "two index writes ran at once"
+    assert backend.writes >= 2
+    assert all(a.status == "failed" for a in state["attempts"].values())
+    assert budget.ledger(state).wall_clock_s >= backend.writes * 0.4

@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import threading
 
 import pytest
 
@@ -420,3 +421,48 @@ def test_fixture_digest_covers_the_title(tmp_path):
         str(tmp_path / "s2"),
     ).digest
     assert first != second
+
+
+def test_a_cancelled_index_write_keeps_the_lock_until_its_thread_ends():
+    # C2 round 1, finding 2: cancelling the handler released the index
+    # lock while the write's thread ran on, so a later write overlapped
+    # it. The lock now follows the thread, and the attempt can wait for
+    # what it started.
+    meter = budget.RunMeter(10)
+    meter.register("T2.1", 10)
+    collector = tools.Collector("T2.1", "T2")
+    backend = FakeBackend()
+    writing = threading.Event()
+    release = threading.Event()
+
+    def slow_index(version, canonical_url, chunks):
+        writing.set()
+        release.wait(5)
+        backend.indexed.append((version.id, canonical_url, len(chunks)))
+        return len(chunks)
+
+    backend.index = slow_index
+    lock = asyncio.Lock()
+    outstanding = tools.Outstanding()
+    _, _, tool_list = tools.build_tools(
+        collector, meter, backend, lock, outstanding
+    )
+    fetch = handlers(tool_list)["fetch_source"]
+
+    async def scenario():
+        task = asyncio.create_task(fetch({"url": "https://a.example/x"}))
+        loop = asyncio.get_running_loop()
+        assert await loop.run_in_executor(None, writing.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert lock.locked(), "the lock was released while the write ran"
+        assert outstanding.running == 1
+        assert not await outstanding.drain(0.1)
+        release.set()
+        assert await outstanding.drain(5)
+        assert outstanding.running == 0
+        assert not lock.locked()
+        assert backend.indexed == [("v1", "https://a.example/x?b=1", 2)]
+
+    run(scenario())

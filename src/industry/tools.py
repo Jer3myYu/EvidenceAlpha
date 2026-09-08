@@ -8,6 +8,13 @@ thread's ``RunMeter`` (admission before any work), and a ``Backend``
 never raise into the model's session: a refusal or a failure comes
 back as an observation the model can read.
 
+Blocking service calls run in threads, and cancelling the coroutine
+that awaits a thread does not stop the thread. Every such call is made
+through the attempt's ``Outstanding`` so the attempt can wait for what
+it started before it reports itself finished, and the index lock is
+released when the write's thread ends, not when a cancelled handler
+unwinds.
+
 Distances are reported as numbers; nothing is hidden and no relevance
 label is attached until a labelled per-language calibration exists
 (``CALIBRATION``, empty until the evaluation recorded in the Phase 10
@@ -58,6 +65,65 @@ def band(distance: float, query_language: str, doc_language: str) -> str:
         if distance <= limit:
             return label
     return "doubtful"
+
+
+class Outstanding:
+    """The attempt's blocking calls still running in threads.
+
+    A tool handler cancelled mid-call (the session's deadline, an
+    interruption, the SDK closing its servers) leaves its thread
+    running. ``run`` records the thread's future until it ends, so
+    ``drain`` can wait for the attempt's real work to stop; a lock taken
+    for a call is held until the thread ends, whatever happens to the
+    coroutine that awaited it.
+    """
+
+    def __init__(self) -> None:
+        self._futures: set[asyncio.Future] = set()
+
+    @property
+    def running(self) -> int:
+        """How many calls are still running."""
+        return sum(1 for future in self._futures if not future.done())
+
+    async def run(
+        self,
+        fn: Any,
+        *args: Any,
+        lock: asyncio.Lock | None = None,
+    ) -> Any:
+        """Run ``fn(*args)`` in a thread, owned by this attempt.
+
+        Cancellation while waiting for ``lock`` starts nothing;
+        cancellation while the thread runs propagates at once, leaving
+        the thread recorded here and the lock held until it ends.
+        """
+        if lock is not None:
+            await lock.acquire()
+        loop = asyncio.get_running_loop()
+        try:
+            future = loop.run_in_executor(None, fn, *args)
+        except BaseException:
+            if lock is not None:
+                lock.release()
+            raise
+        self._futures.add(future)
+
+        def ended(done: asyncio.Future) -> None:
+            self._futures.discard(done)
+            if lock is not None:
+                lock.release()
+
+        future.add_done_callback(ended)
+        return await asyncio.shield(future)
+
+    async def drain(self, timeout: float) -> bool:
+        """Wait for the running calls to end; ``False`` if any outlives it."""
+        running = [f for f in self._futures if not f.done()]
+        if not running:
+            return True
+        _, still = await asyncio.wait(running, timeout=timeout)
+        return not still
 
 
 class Backend(Protocol):
@@ -383,14 +449,17 @@ def build_tools(
     meter: budget.RunMeter,
     backend: Backend,
     index_lock: asyncio.Lock,
+    outstanding: Outstanding | None = None,
 ) -> tuple[Any, list[str], list[Any]]:
     """Build the attempt's MCP server; return it, the allowed names, tools.
 
     Every handler asks the meter for admission first and reports a
-    refusal as an observation. Blocking service calls run in threads;
-    index writes are serialized by ``index_lock``.
+    refusal as an observation. Blocking service calls run in threads
+    owned by ``outstanding`` (the attempt's, or a private one); index
+    writes are serialized by ``index_lock``, held until the write ends.
     """
     attempt_id = collector.attempt_id
+    outstanding = outstanding or Outstanding()
 
     def refused() -> bool:
         return not meter.admit(attempt_id)
@@ -410,7 +479,7 @@ def build_tools(
         query = str(args["query"])
         limit = int(args.get("max_results", 5))
         try:
-            hits = await asyncio.to_thread(backend.search_web, query, limit)
+            hits = await outstanding.run(backend.search_web, query, limit)
         except Exception as error:  # pylint: disable=broad-exception-caught
             return _text(f"search_web failed: {type(error).__name__}: {error}")
         collector.web_searches += 1
@@ -445,7 +514,7 @@ def build_tools(
         source_url = args.get("source_url") or None
         k = int(args.get("k", 5))
         try:
-            hits = await asyncio.to_thread(
+            hits = await outstanding.run(
                 backend.search_documents, query, k, source_url
             )
         except Exception as error:  # pylint: disable=broad-exception-caught
@@ -507,13 +576,12 @@ def build_tools(
         url = str(args["url"])
         source = collector.source_for(url, url, "web_page")
         try:
-            version, chunks, canonical = await asyncio.to_thread(
+            version, chunks, canonical = await outstanding.run(
                 backend.fetch, url, source.id
             )
-            async with index_lock:
-                count = await asyncio.to_thread(
-                    backend.index, version, canonical, chunks
-                )
+            count = await outstanding.run(
+                backend.index, version, canonical, chunks, lock=index_lock
+            )
         except snapshots.FetchError as error:
             return _text(f"fetch refused or failed: {error}")
         except Exception as error:  # pylint: disable=broad-exception-caught

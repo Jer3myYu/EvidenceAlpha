@@ -1,6 +1,7 @@
 """Checkpoint round trips, legacy threads, resume config, and backup."""
 
 import asyncio
+import functools
 import hashlib
 import json
 import pathlib
@@ -16,6 +17,7 @@ from langgraph.types import Send
 import industry_workflow
 import quantity_support as support
 import test_industry_graph as fakes
+import test_industry_worker as worker_tests
 from industry import budget
 from industry import graph as graph_module
 from industry import merge
@@ -24,6 +26,7 @@ from industry import roles
 from industry import snapshots
 from industry import state as state_module
 from industry import tools
+from industry import worker as worker_module
 from research import crew
 from research import persist
 from research import workflow
@@ -952,3 +955,59 @@ def test_an_interruption_during_a_live_call_stops_the_call(tmp_path, capsys):
     assert pending == ("scope",)
     assert "Interrupted." in capsys.readouterr().out
 
+
+def test_an_interruption_during_an_index_write_waits_for_the_write(
+    tmp_path,
+):
+    # C2 round 1, finding 2, through the CLI's own streaming function
+    # with the real worker and tools: interrupted while an attempt's
+    # index write runs, the run holds the attempt until the write has
+    # ended, and the thread resumes through SQLite with a fresh attempt.
+    backend = worker_tests.BlockingIndexBackend(0.5)
+
+    async def scenario():
+        path = str(tmp_path / "write.db")
+        thread = "write-1"
+        async with persist.open_checkpointer(path) as saver:
+            runtime = budget.Runtime(
+                records.Limits(concurrency=1),
+                reports_dir=str(tmp_path / "reports"),
+            )
+            compiled = graph_module.build_graph(
+                runtime,
+                backend=backend,
+                api=fakes.FakeRoles(),
+                worker_fn=functools.partial(
+                    worker_module.run_attempt,
+                    query=worker_tests.fetching_query,
+                ),
+                checkpointer=saver,
+            )
+            config = persist.thread_config(thread)
+            runtime.begin(thread)
+            payload = graph_module.initial_state("q", runtime.limits)
+            task = asyncio.create_task(
+                industry_workflow.stream(compiled, payload, config, runtime)
+            )
+            while not backend.writes:
+                await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert backend.active == 0, "interrupted over a running write"
+            assert backend.writes == 1
+            snapshot = await persist.load_industry_state(
+                compiled, thread, state_module.WORKFLOW_VERSION
+            )
+            assert tuple(snapshot.next) == ("run_task",)
+            runtime.begin(thread)
+            final = await compiled.ainvoke(
+                None, persist.resume_config(thread, snapshot), durability="sync"
+            )
+            return final
+
+    final = asyncio.run(scenario())
+    assert final["meta"].execution_status == "completed"
+    assert backend.peak == 1 and backend.active == 0
+    spent = budget.ledger(final)
+    assert spent.unknown_attempts == 1, "the interrupted attempt is charged"
