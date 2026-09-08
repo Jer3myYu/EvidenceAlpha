@@ -7,17 +7,21 @@ CrewAI crew with a fake LLM.
 """
 
 import asyncio
+import json
 import pathlib
 from typing import Any
 
 import crewai
 import pydantic
+import pytest
 import studio
 from langgraph.checkpoint.memory import MemorySaver
 
 import test_industry_graph as fakes
 from industry import budget
 from industry import graph as graph_module
+from industry import merge
+from industry import quantities
 from industry import records
 from industry import roles
 from industry import state as state_module
@@ -200,3 +204,62 @@ def test_role_context_matches_what_crewai_really_sends():
 
 def test_sse_frames_one_event_per_message():
     assert studio.sse({"type": "end"}) == 'data: {"type": "end"}\n\n'
+
+
+SCHEMA2 = (
+    pathlib.Path(__file__).parent / "fixtures" / "phase10_schema2_thread.db"
+)
+
+
+def test_a_thread_of_another_record_schema_replays_as_recorded(monkeypatch):
+    # No stored data becomes unreadable (plan revision 22 §4.28): a
+    # Phase 10 thread written under schema 2, whose RunMeta and records
+    # come back as raw mappings, is listed under its own workflow and
+    # schema and replayed as history -- without admission, arithmetic,
+    # citability or a rebuilt context window.
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("history is never re-interpreted")
+
+    monkeypatch.setattr(merge, "citable", forbidden)
+    monkeypatch.setattr(merge, "calculation_current", forbidden)
+    monkeypatch.setattr(quantities, "admit", forbidden)
+    monkeypatch.setattr(quantities, "verify_binding", forbidden)
+    monkeypatch.setattr(studio, "context_for", forbidden)
+
+    async def scenario():
+        async with persist.open_checkpointer(str(SCHEMA2)) as saver:
+            graph = graph_module.build_graph(
+                budget.Runtime(records.Limits()),
+                backend=object(),
+                api=fakes.FakeRoles(),
+                worker_fn=fakes.FakeWorker(),
+                checkpointer=saver,
+            )
+            snapshot = await persist.load_state(graph, "d201db8c")
+            assert persist.thread_version(snapshot) == (
+                state_module.WORKFLOW_VERSION
+            )
+            assert persist.recorded_meta(snapshot.values, "schema_version") == 2
+            assert isinstance(snapshot.values["meta"], dict)
+            with pytest.raises(persist.LegacyThreadError, match="schema 2"):
+                await persist.load_industry_state(
+                    graph, "d201db8c", state_module.WORKFLOW_VERSION
+                )
+            payload = await studio.replay_industry(
+                graph, "d201db8c", studio.recorded_limits(snapshot.values), 2
+            )
+            summary = studio.thread_summary("d201db8c", "t", snapshot.values)
+            return payload, summary
+
+    payload, summary = run(scenario())
+    assert payload["historical"] == 2 and payload["schema"] == 2
+    assert payload["version"] == state_module.WORKFLOW_VERSION
+    nodes = [e for e in payload["events"] if e["type"] == "node"]
+    assert nodes, "the recorded checkpoints become events"
+    for event in nodes:
+        assert event["context"]["who"].startswith("historical thread")
+        assert "record schema 2" in event["trace"][0]
+        json.dumps(event)  # everything is encoded, mappings included
+    assert summary["version"] == state_module.WORKFLOW_VERSION
+    assert summary["schema"] == 2 and summary["thread_id"] == "d201db8c"

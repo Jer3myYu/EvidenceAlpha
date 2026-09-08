@@ -195,18 +195,49 @@ def node_event(
     before: dict[str, Any],
     after: dict[str, Any],
     thread_id: str,
-    limits: records.Limits,
+    limits: Any,
+    historical: int | None = None,
 ) -> dict[str, Any]:
-    """Build the ``node`` event the page renders for one completed node."""
+    """Build the ``node`` event the page renders for one completed node.
+
+    A thread of another record schema (``historical`` names it) is
+    shown as recorded: its update and state encoded as they came back
+    (models or the raw mappings the serializer kept), no context window
+    rebuilt through the current roles, no ledger, no admission and no
+    citability -- history is displayed, never re-interpreted.
+    """
+    results = update.get("task_results") or []
+    first = results[0] if node == "run_task" and results else None
+    attempt_id = (
+        first.get("attempt_id")
+        if isinstance(first, dict)
+        else getattr(first, "attempt_id", None)
+    )
+    if historical is not None:
+        return {
+            "type": "node",
+            "node": node,
+            "attempt_id": attempt_id,
+            "update": encode(update),
+            "state": encode(after),
+            "trace": [
+                f"{node.upper()}: historical checkpoint (record schema "
+                f"{historical}), shown as recorded"
+            ],
+            "budget": {"limits": encode(limits)},
+            "context": {
+                "who": (
+                    f"historical thread (record schema {historical}): "
+                    "context window not reconstructed"
+                ),
+                "model": None,
+            },
+        }
     ledger = budget.ledger(after)
     return {
         "type": "node",
         "node": node,
-        "attempt_id": (
-            update["task_results"][0].attempt_id
-            if node == "run_task" and update.get("task_results")
-            else None
-        ),
+        "attempt_id": attempt_id,
         "update": encode(update),
         "state": encode(after),
         "trace": trace.render_update(node, update, after),
@@ -219,9 +250,16 @@ def node_event(
 
 
 async def replay_industry(
-    graph: CompiledStateGraph, thread_id: str, limits: records.Limits
+    graph: CompiledStateGraph,
+    thread_id: str,
+    limits: Any,
+    historical: int | None = None,
 ) -> dict[str, Any]:
-    """Rebuild a Phase 10 thread's events from its checkpoints."""
+    """Rebuild a Phase 10 thread's events from its checkpoints.
+
+    ``historical`` names the record schema of a thread this program
+    does not write; its events are shown as recorded (``node_event``).
+    """
     config = persist.thread_config(thread_id)
     history = [s async for s in graph.aget_state_history(config)]
     history.reverse()
@@ -241,6 +279,7 @@ async def replay_industry(
                         later.values,
                         thread_id,
                         limits,
+                        historical,
                     )
                 )
             continue
@@ -252,20 +291,61 @@ async def replay_industry(
                 later.values,
                 thread_id,
                 limits,
+                historical,
             )
         )
     last = history[-1] if history else None
     if last is not None and last.next:
         events.append({"type": "pending", "node": last.next[0]})
-    meta = last.values.get("meta") if last else None
+    values = last.values if last else {}
     return {
         "thread_id": thread_id,
-        "version": state_module.WORKFLOW_VERSION,
-        "question": last.values.get("question", "") if last else "",
+        "version": persist.recorded_meta(values, "workflow_version")
+        or state_module.WORKFLOW_VERSION,
+        "schema": persist.recorded_meta(values, "schema_version"),
+        "historical": historical,
+        "question": values.get("question", ""),
         "completed": bool(last) and not last.next,
-        "report_status": meta.report_status if meta else None,
-        "report_path": meta.report_path if meta else None,
+        "report_status": persist.recorded_meta(values, "report_status"),
+        "report_path": persist.recorded_meta(values, "report_path"),
         "events": events,
+    }
+
+
+def recorded_limits(values: dict[str, Any]) -> Any:
+    """The limits a thread ran under: a model when it still validates,
+    else the raw mapping the checkpoint kept."""
+    limits = persist.recorded_meta(values, "limits")
+    if isinstance(limits, dict):
+        try:
+            return records.Limits.model_validate(limits)
+        except ValueError:
+            return limits
+    return limits if limits is not None else records.Limits()
+
+
+def thread_summary(
+    thread_id: str, stamp: str, values: dict[str, Any]
+) -> dict[str, Any]:
+    """One row of the thread list, from a checkpoint's channel values.
+
+    A Phase 10 thread whose ``meta`` came back as a raw mapping is
+    still that workflow's thread: it is listed under its recorded
+    workflow and schema, never mistaken for a Phase 6-9 thread.
+    """
+    version = persist.recorded_meta(values, "workflow_version") or "legacy"
+    if version == "legacy":
+        completed = bool(values.get("final_answer"))
+    else:
+        status = persist.recorded_meta(values, "execution_status")
+        completed = status == "completed"
+    return {
+        "thread_id": thread_id,
+        "version": version,
+        "schema": persist.recorded_meta(values, "schema_version"),
+        "question": values.get("question", ""),
+        "completed": completed,
+        "updated": stamp,
     }
 
 
@@ -396,25 +476,12 @@ async def list_threads(request: requests.Request) -> responses.Response:
                 stamp,
                 saved.checkpoint.get("channel_values", {}),
             )
-    threads = []
-    for thread_id, (stamp, values) in sorted(
-        latest.items(), key=lambda item: item[1][0], reverse=True
-    ):
-        meta = values.get("meta")
-        version = getattr(meta, "workflow_version", None) or "legacy"
-        if version == "legacy":
-            completed = bool(values.get("final_answer"))
-        else:
-            completed = meta.execution_status == "completed"
-        threads.append(
-            {
-                "thread_id": thread_id,
-                "version": version,
-                "question": values.get("question", ""),
-                "completed": completed,
-                "updated": stamp,
-            }
+    threads = [
+        thread_summary(thread_id, stamp, values)
+        for thread_id, (stamp, values) in sorted(
+            latest.items(), key=lambda item: item[1][0], reverse=True
         )
+    ]
     return responses.JSONResponse(threads)
 
 
@@ -430,8 +497,13 @@ async def get_thread(request: requests.Request) -> responses.Response:
     if persist.thread_version(snapshot) is None:
         payload = await replay_legacy(checkpointer, thread_id)
     else:
+        schema = persist.recorded_meta(snapshot.values, "schema_version")
+        historical = None if schema == records.SCHEMA_VERSION else schema
         payload = await replay_industry(
-            graph, thread_id, snapshot.values["meta"].limits
+            graph,
+            thread_id,
+            recorded_limits(snapshot.values),
+            historical,
         )
     return responses.JSONResponse(payload)
 
