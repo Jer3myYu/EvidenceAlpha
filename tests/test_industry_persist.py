@@ -1,6 +1,8 @@
 """Checkpoint round trips, legacy threads, resume config, and backup."""
 
 import asyncio
+import hashlib
+import json
 import pathlib
 import sqlite3
 from typing import TypedDict
@@ -9,13 +11,16 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
+import industry_workflow
 import quantity_support as support
 import test_industry_graph as fakes
 from industry import budget
 from industry import graph as graph_module
 from industry import merge
 from industry import records
+from industry import snapshots
 from industry import state as state_module
+from industry import tools
 from research import persist
 from research import workflow
 
@@ -816,3 +821,48 @@ def test_every_node_boundary_resumes_through_sqlite(tmp_path):
             1 if interrupted or node == "run_task" else 0
         ), node
         assert spent.task_executions >= 3, node
+
+
+def test_a_resume_refuses_a_fixture_that_has_changed(tmp_path):
+    # A fixed-evidence thread records the digest of every page it was
+    # served; a resume must rebuild exactly that evidence or refuse. The
+    # digest itself was tested, the resume guard over it was not.
+    directory = tmp_path / "fixture"
+    directory.mkdir()
+    page = "<html><body>52 亿元</body></html>".encode("utf-8")
+    (directory / "a.html").write_bytes(page)
+    manifest = [
+        {
+            "url": "https://a.example/",
+            "blob": "a.html",
+            "content_type": "text/html",
+            "status": 200,
+            "sha256": hashlib.sha256(page).hexdigest(),
+        }
+    ]
+    (directory / "sources.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    def backend():
+        return tools.FixtureBackend(
+            str(directory),
+            snapshots.vector_store(str(tmp_path / "chroma")),
+            str(tmp_path / "sources"),
+        )
+
+    recorded = backend()
+    meta = sample_meta().model_copy(
+        update={
+            "fixture": str(directory),
+            "fixture_digest": recorded.digest,
+        }
+    )
+    assert industry_workflow.check_fixture(meta, backend()) is None
+
+    manifest[0]["title"] = "changed after the run"
+    (directory / "sources.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    problem = industry_workflow.check_fixture(meta, backend())
+    assert problem is not None and "has changed" in problem
