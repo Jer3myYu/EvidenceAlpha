@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 import quantity_support as support
+from industry import merge
 from industry import records
 from industry import state as state_module
 from research import persist
@@ -557,18 +558,24 @@ def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
         status="error",
         message="stale_input: C1 changed after the calculation",
     )
+    current = stopped.model_copy(
+        update={
+            "status": "ok",
+            "message": None,
+            "result": 52.0,
+            "unit": support.unit("%"),
+        }
+    )
+    # The claim is exactly the projection of the calculation as it
+    # stood when it was ok.
     claim = records.Claim(
         id="C3",
-        statement="share: 52.0 %",
         kind="derived",
-        evidence_ids=["E1"],
-        calculation_id="K1",
-        calculation_version=1,
-        quantity=support.derived(52.0, "%"),
-        review="supported",
         material=True,
         partition="q4",
+        **merge.derived_fields(current, {"C1": supported_input}),
     )
+    assert claim.review == "supported"
     evidence = {"E1": holder}
     problems = persist.validate_records(
         {
@@ -578,14 +585,6 @@ def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
         }
     )
     assert problems and "not current" in problems[0]
-    current = stopped.model_copy(
-        update={
-            "status": "ok",
-            "message": None,
-            "result": 52.0,
-            "unit": support.unit("%"),
-        }
-    )
     assert not persist.validate_records(
         {
             "evidence": evidence,
@@ -616,3 +615,39 @@ def test_a_checkpoint_citing_a_withdrawn_calculation_is_refused():
         {"evidence": changed, "claims": {"C1": supported_input}}
     )
     assert unbound and "binding not established" in unbound[0]
+
+
+def test_a_structural_problem_is_reported_before_the_semantic_checks():
+    # C1 round 8, finding 2: a parent that came back as a mapping was
+    # reported as such and then handed to the producer-chain check,
+    # which raised instead of the loader refusing.
+    holder = support.evidence("E1", "the input was 52亿元 of 100亿元.")
+    parent = records.Claim(
+        id="C1",
+        statement="an input",
+        kind="fact",
+        evidence_ids=["E1"],
+        quantity=support.admitted(52, "亿元", "52亿元", holder),
+        review="supported",
+    )
+    calculation = records.Calculation(
+        id="K1",
+        kind="share",
+        label="share",
+        inputs=[support.cinput(parent)],
+        formula="f",
+        result=52.0,
+        unit=support.unit("%"),
+        status="ok",
+    )
+    claims = {"C1": parent}
+    claims["C3"] = records.Claim(
+        id="C3", kind="derived", **merge.derived_fields(calculation, claims)
+    )
+    values = {
+        "evidence": {"E1": holder},
+        "claims": {**claims, "C1": parent.model_dump()},
+        "calculations": {"K1": calculation},
+    }
+    problems = persist.validate_records(values)
+    assert problems and "dict where Claim is required" in problems[0]

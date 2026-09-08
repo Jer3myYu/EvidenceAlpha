@@ -1339,11 +1339,14 @@ def calculation_current(
     if any(item.claim_id not in claims for item in record.inputs):
         return False
     # The claim must *be* the projection of its producer over the
-    # current parents: value exactly, unit structurally, period, scope,
-    # evidence, and -- while it carries approval -- the inherited
-    # restriction. A parent re-qualified without a version bump shows
-    # up here even when a cascade missed it.
+    # current parents: the generated statement, value exactly, unit
+    # structurally, period, scope, evidence, and -- while it carries
+    # approval -- the inherited restriction. A parent re-qualified
+    # without a version bump shows up here even when a cascade missed
+    # it; so does a statement that no longer says what was computed.
     projection = derived_fields(record, claims)
+    if claim.statement != projection["statement"]:
+        return False
     if claim.quantity != projection["quantity"]:
         return False
     if claim.evidence_ids != projection["evidence_ids"]:

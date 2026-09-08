@@ -1692,8 +1692,11 @@ def test_a_derived_claim_without_its_producer_is_never_citable():
     ).model_copy(update={"kind": "derived"})
     assert not merge.calculation_current(orphan, {"C1": orphan}, {})
     assert not merge.citable(orphan, {"C1": orphan}, {})
+    # The record itself no longer validates, and that structural
+    # refusal comes first (C1 round 8, finding 2): the loader never
+    # hands a degraded record to the semantic checks.
     problems = persist.validate_records({"claims": {"C1": orphan}})
-    assert problems and any("no calculations" in item for item in problems)
+    assert problems and "names its calculation" in problems[0]
     # A producer named but absent from the registry is refused too.
     named = orphan.model_copy(
         update={
@@ -2031,14 +2034,21 @@ def test_producer_units_are_compared_structurally():
     ):
         moved = producer.model_copy(update={"unit": support.unit(stated)})
         claims = dict(state["claims"])
+        # The claim is the producer's projection except for its unit.
         claims["C3"] = claims["C3"].model_copy(
-            update={"quantity": support.derived(52.0, claimed, period="2024")}
+            update={
+                **merge.derived_fields(moved, claims),
+                "quantity": support.derived(52.0, claimed, period="2024"),
+            }
         )
         assert not merge.calculation_current(
             claims["C3"], claims, {"K1": moved}
         )
         claims["C3"] = claims["C3"].model_copy(
-            update={"quantity": support.derived(52.0, stated, period="2024")}
+            update=merge.derived_fields(moved, claims)
+        )
+        assert claims["C3"].quantity == support.derived(
+            52.0, stated, period="2024"
         )
         assert merge.calculation_current(claims["C3"], claims, {"K1": moved})
 
@@ -2062,3 +2072,33 @@ def test_admission_does_bounded_work_per_draft():
         )
         assert isinstance(good, records.Quantity)
     assert time.perf_counter() - started < 3.0
+
+
+def test_a_derived_claims_statement_is_part_of_its_projection():
+    # C1 round 8, finding 1: the projection compare covered value,
+    # unit, period, scope, evidence and restriction but not the
+    # generated statement, so a derived claim could say 26% over a
+    # producer that computed 52% and stay citable and loadable.
+    state = derived_state()
+    claims, calculations = state["claims"], state["calculations"]
+    assert merge.citable(claims["C3"], claims, calculations)
+    restated = dict(claims)
+    restated["C3"] = claims["C3"].model_copy(
+        update={"statement": "Acme share is 26%."}
+    )
+    assert not merge.calculation_current(restated["C3"], restated, calculations)
+    assert not merge.citable(restated["C3"], restated, calculations)
+    section = records.Section(id="s", title="t", text="Acme share is 26% [C3].")
+    assert report.check_citations([section], restated, [], calculations)
+    problems = persist.validate_records(
+        {**state, "claims": restated, "calculations": calculations}
+    )
+    assert problems and "not current" in problems[0]
+    # A producer whose formula changed under its claim is stale too.
+    reformulated = {
+        "K1": calculations["K1"].model_copy(
+            update={"formula": "26.0 / 100.0 * 100"}
+        )
+    }
+    assert not merge.calculation_current(claims["C3"], claims, reformulated)
+    assert persist.validate_records({**state, "calculations": reformulated})

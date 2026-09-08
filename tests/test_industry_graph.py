@@ -1683,45 +1683,45 @@ def test_a_stale_derived_claim_is_not_offered_for_review():
         partition="q4",
         questions=[4],
     )
-    claims = {
-        "C1": measured,
-        "C3": records.Claim(
-            id="C3",
-            statement="share: 52.0 %",
-            kind="derived",
-            evidence_ids=["E1"],
-            calculation_id="K1",
-            calculation_version=1,
-            quantity=support.derived(52.0, "%"),
-            review="unreviewed",
-            material=True,
-            partition="q4",
-            questions=[4],
-        ),
-    }
-    stopped = records.Calculation(
+    current = records.Calculation(
         id="K1",
         kind="share",
         label="share",
         inputs=[support.cinput(measured)],
         formula="f",
-        status="error",
-        message="stale_input: C1 changed after the calculation",
+        result=52.0,
+        unit=support.unit("%"),
+        status="ok",
+    )
+    stopped = current.model_copy(
+        update={
+            "status": "error",
+            "message": "stale_input: C1 changed after the calculation",
+            "result": None,
+            "unit": None,
+        }
+    )
+    claims = {"C1": measured}
+    # The derived claim is the projection of the calculation as it
+    # stood, awaiting review.
+    claims["C3"] = records.Claim(
+        id="C3",
+        kind="derived",
+        material=True,
+        partition="q4",
+        questions=[4],
+        **{
+            **merge.derived_fields(current, claims),
+            "review": "unreviewed",
+            "review_reason": None,
+        },
     )
     state = {"claims": claims, "calculations": {"K1": stopped}}
     assert graph_module.pending_review(state, 10) == ["C1"]
     assert graph_module.review_remaining(state) == 1
-    # Once the calculation is current again, it queues normally.
     # Current again, and agreeing with the claim: it queues normally.
     state["claims"]["C1"] = claims["C1"].model_copy(
         update={"review": "supported", "review_reason": None}
     )
-    state["calculations"]["K1"] = stopped.model_copy(
-        update={
-            "status": "ok",
-            "message": None,
-            "result": 52.0,
-            "unit": support.unit("%"),
-        }
-    )
+    state["calculations"]["K1"] = current
     assert graph_module.pending_review(state, 10) == ["C3"]

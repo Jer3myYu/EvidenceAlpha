@@ -246,6 +246,10 @@ def validate_records(values: dict[str, Any]) -> list[str]:
                 check(f"{key}[{index}]", item, model)
         else:
             check(key, value, model)
+    if problems:
+        # A degraded record is reason enough to refuse; the semantic
+        # checks below read records, not mappings.
+        return problems
     problems.extend(_unbound_quantities(values))
     problems.extend(_withdrawn_but_citable(values))
     return problems
