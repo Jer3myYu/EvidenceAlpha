@@ -153,7 +153,7 @@ def _claim(cid, statement, **kw):
     )
 
 
-def _useful_state(body: str) -> dict:
+def useful_state(body: str) -> dict:
     """A state whose delivered body clears the usefulness floor."""
     industry_map = records.IndustryMap(
         segments=[
@@ -240,7 +240,7 @@ BODY = (
 )
 
 
-def _rows(overrides: dict | None = None) -> list[records.Coverage]:
+def rows(overrides: dict | None = None) -> list[records.Coverage]:
     """Eight coverage rows, ``covered`` unless overridden."""
     overrides = overrides or {}
     return [
@@ -249,7 +249,7 @@ def _rows(overrides: dict | None = None) -> list[records.Coverage]:
     ]
 
 
-def _certify(state: dict, consistent: bool = True, retainable=None) -> dict:
+def certify(state: dict, consistent: bool = True, retainable=None) -> dict:
     """Give the state a certificate over its current body."""
     subject = report.review_subject(state, state.get("coverage") or [])
     state["review_subject"] = subject
@@ -260,16 +260,16 @@ def _certify(state: dict, consistent: bool = True, retainable=None) -> dict:
     return state
 
 
-def _classify(state: dict, rows: list[records.Coverage] | None = None):
+def _classify(state: dict, coverage: list[records.Coverage] | None = None):
     plan = report.plan_delivery(state, "[removed]")
-    if rows is None:
-        rows = coverage_module.derive(state, None)
-    return plan, coverage_module.classify_delivery(state, rows, plan)
+    if coverage is None:
+        coverage = coverage_module.derive(state, None)
+    return plan, coverage_module.classify_delivery(state, coverage, plan)
 
 
 def test_a_verified_unchanged_body_is_level_a():
-    state = _certify(_useful_state(BODY))
-    plan, result = _classify(state, _rows())
+    state = certify(useful_state(BODY))
+    plan, result = _classify(state, rows())
     assert plan.certified and not plan.changed
     assert result.level == "verified"
     assert result.status == "complete"
@@ -278,7 +278,7 @@ def test_a_verified_unchanged_body_is_level_a():
 def test_a_verified_body_with_disclosed_limitations_is_level_a():
     # A minor, disclosed issue is a limitation, not a redaction: the
     # body is untouched, so the certificate still covers it.
-    state = _certify(_useful_state(BODY))
+    state = certify(useful_state(BODY))
     state["issues"] = {
         "I1": records.Issue(
             id="I1",
@@ -292,13 +292,13 @@ def test_a_verified_body_with_disclosed_limitations_is_level_a():
     }
     # Q6 short of covered: a disclosed coverage limitation, not a
     # redaction, so the certificate still covers the delivered words.
-    _, result = _classify(state, _rows({6: "partial"}))
+    _, result = _classify(state, rows({6: "partial"}))
     assert result.level == "verified"
     assert result.status == "complete_with_limitations"
 
 
 def test_skipped_final_verification_is_never_level_a():
-    state = _useful_state(BODY)  # no certificate at all
+    state = useful_state(BODY)  # no certificate at all
     plan, result = _classify(state)
     assert not plan.certified
     assert result.level != "verified"
@@ -310,7 +310,7 @@ def test_an_unverified_but_useful_body_is_level_b():
     # The latest draft has no review, but every unit repeats a claim
     # statement the verifier approved for standalone use, so the exact
     # wording is supported and the body is still worth delivering.
-    state = _useful_state(BODY)
+    state = useful_state(BODY)
     state["claims"] = {
         cid: claim.model_copy(update={"standalone": True})
         for cid, claim in state["claims"].items()
@@ -326,7 +326,7 @@ def test_unreviewed_wording_is_not_retained_on_citation_presence():
     # The exact-wording rule. This sentence carries a valid citation to
     # a supported claim and says something that claim does not say; the
     # deterministic citation check cannot tell, so nothing retains it.
-    state = _useful_state(BODY + "该公司2025年已实现量产并增长99%[C1]。")
+    state = useful_state(BODY + "该公司2025年已实现量产并增长99%[C1]。")
     state["claims"] = {
         cid: claim.model_copy(update={"standalone": True})
         for cid, claim in state["claims"].items()
@@ -337,7 +337,7 @@ def test_unreviewed_wording_is_not_retained_on_citation_presence():
 
 
 def test_a_substantive_redaction_without_re_review_is_level_b_at_best():
-    state = _certify(_useful_state(BODY + "未获支持的一句。"))
+    state = certify(useful_state(BODY + "未获支持的一句。"))
     state["issues"] = {
         "I1": records.Issue(
             id="I1",
@@ -358,7 +358,7 @@ def test_a_substantive_redaction_without_re_review_is_level_b_at_best():
 
 
 def test_a_body_below_the_usefulness_floor_is_level_c():
-    state = _certify(_useful_state("孤立的一句[C1]。"))
+    state = certify(useful_state("孤立的一句[C1]。"))
     _, result = _classify(state)
     assert result.level == "diagnostic_only"
     assert result.status == "incomplete"
@@ -373,7 +373,7 @@ def test_a_structural_redaction_failure_withholds_the_section():
     # removal escalates to the section, and with nothing left the
     # delivery falls to diagnostics.
     table = "| 公司 | 份额 |\n|---|---|\n| HOYA | 60% |\n"
-    state = _certify(_useful_state(table))
+    state = certify(useful_state(table))
     state["issues"] = {
         "I1": records.Issue(
             id="I1",
@@ -393,7 +393,7 @@ def test_a_structural_redaction_failure_withholds_the_section():
 
 
 def test_a_certificate_cannot_migrate_to_a_changed_body():
-    state = _certify(_useful_state(BODY))
+    state = certify(useful_state(BODY))
     assert report.certificate_applies(state)
     # The same draft version, one reworded sentence.
     state["sections"] = [
@@ -407,7 +407,7 @@ def test_a_certificate_cannot_migrate_to_a_changed_body():
 
 
 def test_a_certificate_cannot_survive_a_requalified_claim():
-    state = _certify(_useful_state(BODY))
+    state = certify(useful_state(BODY))
     assert report.certificate_applies(state)
     state["claims"]["C1"] = state["claims"]["C1"].model_copy(
         update={"review": "qualified", "review_reason": "仅限商用市场"}
@@ -416,7 +416,7 @@ def test_a_certificate_cannot_survive_a_requalified_claim():
 
 
 def test_the_delivered_report_states_the_level_above_the_body():
-    state = _useful_state(BODY)
+    state = useful_state(BODY)
     state["claims"] = {
         cid: claim.model_copy(update={"standalone": True})
         for cid, claim in state["claims"].items()
@@ -431,7 +431,7 @@ def test_the_delivered_report_states_the_level_above_the_body():
 
 
 def test_a_withheld_body_is_absent_from_the_delivered_report():
-    state = _certify(_useful_state("孤立的一句[C1]。"))
+    state = certify(useful_state("孤立的一句[C1]。"))
     plan, result = _classify(state)
     derived = coverage_module.derive(state, None)
     text = report.render(state, derived, result.status, result, plan)
@@ -440,9 +440,9 @@ def test_a_withheld_body_is_absent_from_the_delivered_report():
 
 
 def test_delivery_renders_the_reviewed_appendix_not_a_fresh_one():
-    state = _useful_state(BODY)
+    state = useful_state(BODY)
     state["coverage"] = [records.Coverage(question=4, status="partial")]
-    state = _certify(state)
+    state = certify(state)
     frozen = list(state["review_subject"].appendix)
     # The workflow moves on after the review: a new issue is opened.
     state["issues"] = {
@@ -471,7 +471,7 @@ def test_the_usefulness_floor_is_one_rule_with_pinned_boundaries():
     # Calibrated 2026-09-09 against headline run 4 and the fixed-evidence
     # fixtures. Each constant is pinned on its own boundary, so a later
     # change to any of them has to be deliberate.
-    state = _useful_state(BODY)
+    state = useful_state(BODY)
     body = [state["sections"][0]]
     assert coverage_module.meets_floor(state, body)[0]
 
@@ -505,7 +505,7 @@ def test_the_floor_needs_a_definition_or_a_boundary_but_not_both():
     # The calibration finding: requiring product *and* boundary, and a
     # participant role besides, withheld real reports of 18 and 19
     # supported claims answering four of five central questions.
-    state = _useful_state(BODY)
+    state = useful_state(BODY)
     body = [state["sections"][0]]
     for dropped in ("product", "boundary"):
         thinned = {
@@ -534,7 +534,7 @@ def test_the_floor_needs_a_definition_or_a_boundary_but_not_both():
 def test_a_registry_claim_the_body_never_cites_does_not_count():
     # The floor counts what the delivered body says, never the registry:
     # a finding nobody copied into the report teaches the reader nothing.
-    state = _useful_state("产品定义[C1]。")
+    state = useful_state("产品定义[C1]。")
     body = [state["sections"][0]]
     kept = coverage_module.delivered_claims(state, body)
     assert set(kept) == {"C1"}

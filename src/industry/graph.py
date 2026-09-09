@@ -308,6 +308,41 @@ def level_rank(level: str) -> int:
     return _LEVEL_RANK.get(level, 0)
 
 
+_STATUS_RANK = {
+    "complete": 2,
+    "complete_with_limitations": 1,
+    "incomplete": 0,
+}
+
+
+def candidate_rank(
+    result: records.DeliveryResult, plan: report.DeliveryPlan
+) -> tuple[int, int, int]:
+    """How good a delivery candidate is, for choosing between two.
+
+    Plan §4.41.4 ranks the level first and then prefers the body with
+    an applicable successful certificate. Level A spans two statuses,
+    so the status breaks what is left: a reviewed rewrite that covers
+    less must not replace an equally verified incumbent that covers
+    more.
+    """
+    certified = 1 if plan.certified and not plan.changed else 0
+    return (
+        level_rank(result.level),
+        certified,
+        _STATUS_RANK.get(result.status, 0),
+    )
+
+
+def stored_rank(candidate: records.DeliveryCandidate) -> tuple[int, int]:
+    """How good a retained candidate is, by its recorded classification.
+
+    Both sides of a retention decision were certified when they were
+    recorded, so only the level and the status separate them.
+    """
+    return (level_rank(candidate.level), _STATUS_RANK.get(candidate.status, 0))
+
+
 def issues_for_candidate(
     candidate: records.DeliveryCandidate,
     current: dict[str, records.Issue],
@@ -1814,9 +1849,7 @@ def build_graph(
             status=result.status,
         )
         held = state.get("candidate")
-        if held is not None and level_rank(held.level) >= level_rank(
-            fresh.level
-        ):
+        if held is not None and stored_rank(held) >= stored_rank(fresh):
             # The incumbent wins ties: a replacement has to be better,
             # not merely newer.
             return held
@@ -1856,13 +1889,16 @@ def build_graph(
             # never given a later draft's resolutions.
             kept_state = _candidate_state(state, incumbent)
             kept_plan, kept_delivery = _assess(kept_state)
-            if level_rank(kept_delivery.level) > level_rank(delivery.level):
+            if candidate_rank(kept_delivery, kept_plan) > candidate_rank(
+                delivery, plan
+            ):
                 chosen, plan, delivery = kept_state, kept_plan, kept_delivery
                 later = state.get("draft_version", 0)
                 reason = (
                     f"the body is reviewed draft {incumbent.draft_version}; "
                     f"the later draft {later} classified "
-                    f"{delivery_of_later.level}"
+                    f"{delivery_of_later.level} "
+                    f"({delivery_of_later.status})"
                 )
         derived = coverage_module.derive(chosen, chosen.get("assessment"))
         if reason:

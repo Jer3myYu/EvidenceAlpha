@@ -9,9 +9,12 @@ second one. Plan revision 35 §4.41 [D6].
 """
 
 import test_industry_graph as harness
+import test_industry_report as delivery
 from industry import budget
+from industry import coverage as coverage_module
 from industry import graph as graph_module
 from industry import records
+from industry import report
 from research import persist
 
 NOW = "2026-09-07T00:00:00+00:00"
@@ -185,3 +188,84 @@ def test_the_pair_survives_a_checkpoint_round_trip():
     back = persist.SERIALIZER.loads_typed(payload)
     assert back.reserved.held and back.reserved.pair_id == "write.1"
     assert back.status == "running"
+
+
+# --- choosing between the incumbent and the later body (§4.41.4) ------------
+
+
+def _plan_and_result(state, rows):
+    plan = report.plan_delivery(state, "[removed]")
+    return plan, coverage_module.classify_delivery(state, rows, plan)
+
+
+def _partial_rows():
+    """Five central questions partial, the rest uncovered."""
+    return [
+        records.Coverage(question=q, status=s)
+        for q, s in zip(
+            sorted(records.REQUIRED_QUESTIONS),
+            ["partial"] * 5 + ["uncovered"] * 3,
+        )
+    ]
+
+
+def test_a_reviewed_rewrite_that_covers_less_does_not_win_on_level_alone():
+    # Both bodies are Level A, so the level cannot separate them. The
+    # incumbent covers every question and the rewrite does not; ranking
+    # on the level alone delivered the thinner rewrite.
+    incumbent = delivery.certify(delivery.useful_state(delivery.BODY))
+    kept_plan, kept = _plan_and_result(incumbent, delivery.rows())
+    rewrite = delivery.certify(delivery.useful_state(delivery.BODY))
+    live_plan, live = _plan_and_result(
+        rewrite,
+        [
+            records.Coverage(question=q, status="partial")
+            for q in sorted(records.REQUIRED_QUESTIONS)
+        ],
+    )
+    assert kept.level == live.level == "verified"
+    assert kept.status == "complete"
+    assert live.status == "complete_with_limitations"
+    # The reproduction: ranking on the level alone is a tie, and a tie
+    # handed delivery to the later, thinner body.
+    assert graph_module.level_rank(kept.level) == graph_module.level_rank(
+        live.level
+    )
+    assert graph_module.candidate_rank(
+        kept, kept_plan
+    ) > graph_module.candidate_rank(live, live_plan)
+
+
+def test_an_applicable_certificate_breaks_a_tie_of_equal_levels():
+    # §4.41.4: on an equal level, prefer the body whose final review
+    # still applies to it.
+    certified = delivery.certify(delivery.useful_state(delivery.BODY))
+    kept_plan, kept = _plan_and_result(certified, _partial_rows())
+    uncertified = delivery.useful_state(delivery.BODY)
+    live_plan, live = _plan_and_result(uncertified, _partial_rows())
+    same = live.model_copy(update={"level": kept.level})
+    assert graph_module.candidate_rank(
+        kept, kept_plan
+    ) > graph_module.candidate_rank(same, live_plan)
+
+
+def test_a_worse_replacement_never_displaces_the_retained_candidate():
+    kept = records.DeliveryCandidate(
+        sections=[],
+        subject=records.ReviewSubject(digest="d", draft_version=1),
+        review=None,
+        draft_version=1,
+        issues={},
+        level="verified",
+        status="complete",
+    )
+    thinner = kept.model_copy(
+        update={"draft_version": 2, "status": "complete_with_limitations"}
+    )
+    better = kept.model_copy(
+        update={"draft_version": 2, "level": "verified", "status": "complete"}
+    )
+    assert graph_module.stored_rank(kept) > graph_module.stored_rank(thinner)
+    # An exact tie keeps the incumbent: a replacement must be better,
+    # not merely newer.
+    assert graph_module.stored_rank(kept) >= graph_module.stored_rank(better)
