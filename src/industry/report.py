@@ -52,25 +52,149 @@ class CitationProblem:
     text: str | None = None
 
 
+def _is_row(unit: str) -> bool:
+    """Whether a factual unit is a Markdown table row."""
+    return unit.strip().startswith("|")
+
+
+def _table_blocks(lines: list[str]) -> list[list[int]]:
+    """The line indexes of each run of consecutive table lines."""
+    blocks: list[list[int]] = []
+    current: list[int] = []
+    for index, line in enumerate(lines):
+        if _is_row(line):
+            current.append(index)
+        elif current:
+            blocks.append(current)
+            current = []
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _data_rows(lines: list[str], block: list[int]) -> set[int]:
+    """A block's data-row indexes: not its header, not its rule."""
+    rows: set[int] = set()
+    for position, index in enumerate(block):
+        line = lines[index].strip()
+        if _SEPARATOR_ROW.match(line):
+            continue
+        following = (
+            lines[block[position + 1]].strip()
+            if position + 1 < len(block)
+            else ""
+        )
+        if _SEPARATOR_ROW.match(following):
+            continue
+        rows.add(index)
+    return rows
+
+
+def unremovable_units(text: str, units: list[str]) -> list[str]:
+    """The units of ``units`` that ``text`` cannot safely give up.
+
+    The one authority on removability, so the delivery status and the
+    renderer can never disagree about what was removed. A prose unit
+    must actually occur -- carrying a text field is not the same as
+    still being in the draft, and an issue outliving the draft its text
+    came from used to pass this check and redact nothing. A table row
+    must occur as its own line and leave at least one data row behind:
+    a header and a rule over nothing is not a table, so that removal
+    fails closed instead.
+
+    Args:
+      text: The section text the units would be removed from.
+      units: The exact factual units named by the issues.
+
+    Returns:
+      The units that cannot be removed, in first-seen order.
+    """
+    lines = text.split("\n")
+    stripped = [line.strip() for line in lines]
+    unremovable: list[str] = []
+    matched: dict[str, set[int]] = {}
+    for unit in units:
+        if not unit:
+            continue
+        if not _is_row(unit):
+            if unit not in text:
+                unremovable.append(unit)
+            continue
+        found = {i for i, line in enumerate(stripped) if line == unit.strip()}
+        if found:
+            matched[unit] = found
+        else:
+            unremovable.append(unit)
+    for block in _table_blocks(lines):
+        data = _data_rows(lines, block)
+        requested = {
+            unit: hit
+            for unit, found in matched.items()
+            if (hit := data & found)
+        }
+        if not requested:
+            continue
+        going: set[int] = set().union(*requested.values())
+        if not data - going:
+            unremovable.extend(u for u in requested if u not in unremovable)
+    return unremovable
+
+
+def _drop_rows(text: str, rows: list[str], note: str) -> str:
+    """Delete whole table rows, leaving the note outside the table."""
+    wanted = {row.strip() for row in rows}
+    kept: list[str] = []
+    dropped = False
+    for line in text.split("\n"):
+        if _is_row(line):
+            if line.strip() in wanted:
+                dropped = True
+                continue
+        elif dropped:
+            kept.append(note)
+            dropped = False
+        kept.append(line)
+    if dropped:
+        kept.append(note)
+    return "\n".join(kept)
+
+
+def removable_issue_units(
+    issues: list[records.Issue], section_id: str
+) -> list[str]:
+    """The exact units the unresolved material issues of a section name."""
+    return [
+        issue.text
+        for issue in issues
+        if issue.status in records.UNRESOLVED_ISSUE_STATUSES
+        and issue.target == section_id
+        and issue.severity == "material"
+        and issue.category in ("unsupported", "contradiction")
+        and issue.text
+    ]
+
+
 def redact(
     text: str, issues: list[records.Issue], section_id: str, note: str
 ) -> str:
     """Remove every factual unit an open material issue names.
 
-    An unsupported or contradicted unit that the section still carries
-    is replaced by ``note`` (and stays listed under limitations), so no
-    open issue's text is ever delivered as fact.
+    An unsupported or contradicted unit the section still carries is
+    replaced by ``note`` (and stays listed under limitations), so no
+    open issue's text is ever delivered as fact. A table row is deleted
+    whole and the note follows the table, because a note standing
+    between a rule and the surviving rows destroys the table. A unit
+    ``unremovable_units`` refuses is left alone; the delivery status
+    fails closed on it instead of half-removing it.
     """
-    for issue in issues:
-        if (
-            issue.status in records.UNRESOLVED_ISSUE_STATUSES
-            and issue.target == section_id
-            and issue.severity == "material"
-            and issue.category in ("unsupported", "contradiction")
-            and issue.text
-            and issue.text in text
-        ):
-            text = text.replace(issue.text, note)
+    units = removable_issue_units(issues, section_id)
+    blocked = set(unremovable_units(text, units))
+    rows = [u for u in units if _is_row(u) and u not in blocked]
+    for unit in units:
+        if not _is_row(unit) and unit not in blocked:
+            text = text.replace(unit, note)
+    if rows:
+        text = _drop_rows(text, rows, note)
     return text
 
 
@@ -82,18 +206,25 @@ def unremovable_section_issues(
     A final-review issue names a section and a problem but not the exact
     unit; while one is open, or retired unanswered at the follow-up
     limit, the report cannot be delivered as complete with limitations,
-    because the offending text would stay.
+    because the offending text would stay. An issue whose exact unit is
+    no longer in the draft, or whose removal would empty a table, is
+    equally unremovable: carrying a text field never meant the text
+    would actually go.
     """
-    section_ids = {s.id for s in state.get("sections", [])}
-    return [
-        i
-        for i in state.get("issues", {}).values()
-        if i.status in records.UNRESOLVED_ISSUE_STATUSES
-        and i.severity == "material"
-        and i.category in ("unsupported", "contradiction")
-        and i.target in section_ids
-        and not i.text
-    ]
+    sections = {s.id: s for s in state.get("sections", [])}
+    out: list[records.Issue] = []
+    for issue in state.get("issues", {}).values():
+        if (
+            issue.status not in records.UNRESOLVED_ISSUE_STATUSES
+            or issue.severity != "material"
+            or issue.category not in ("unsupported", "contradiction")
+            or issue.target not in sections
+        ):
+            continue
+        text = sections[issue.target].text
+        if not issue.text or unremovable_units(text, [issue.text]):
+            out.append(issue)
+    return out
 
 
 def cited_ids(text: str) -> list[str]:

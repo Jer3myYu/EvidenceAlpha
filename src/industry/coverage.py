@@ -18,6 +18,7 @@ import dataclasses
 
 from industry import merge
 from industry import records
+from industry import report
 from industry import state as state_module
 
 _ORDER = {"uncovered": 0, "partial": 1, "covered": 2}
@@ -450,16 +451,12 @@ def report_status(
     ]
     if all(c.status == "covered" for c in coverage) and not issues:
         return "complete" if verified else "complete_with_limitations"
-    # An open unsupported/contradiction issue on a section whose exact
-    # unit is unknown cannot be redacted, so the text would be delivered
-    # as fact: fail closed.
-    section_ids = {s.id for s in state.get("sections", [])}
-    if any(
-        i.target in section_ids
-        and i.category in ("unsupported", "contradiction")
-        and not i.text
-        for i in issues
-    ):
+    # An open unsupported/contradiction issue the renderer cannot
+    # actually remove -- no exact unit, a unit no longer in the draft,
+    # or a row whose removal would empty its table -- would leave the
+    # text delivered as fact: fail closed. `report` is the one authority
+    # on removability, so status and renderer cannot disagree.
+    if report.unremovable_section_issues(state):
         return "incomplete"
     central_targets: set[str] = set()
     for number in records.CENTRAL_QUESTIONS:

@@ -999,7 +999,16 @@ def test_each_unsupported_unit_is_its_own_issue_and_all_are_redacted():
     assert text == "[removed][removed]结论 [C1]。"
     state = {
         "sections": [
-            records.Section(id="s1", title="t", text="x", claim_ids=[])
+            # The real draft text, not a placeholder: an issue whose unit
+            # is not in the draft is unremovable too, so a section
+            # standing in as "x" would make all three unremovable and
+            # hide what this case is about.
+            records.Section(
+                id="s1",
+                title="t",
+                text=f"{first_unit}{second_unit}结论 [C1]。",
+                claim_ids=[],
+            )
         ],
         "issues": issues,
     }
