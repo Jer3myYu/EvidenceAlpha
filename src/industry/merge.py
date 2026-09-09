@@ -14,6 +14,7 @@ its attempt count.
 """
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -321,16 +322,74 @@ def _map_refs(
 
 def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
     """Fold one successful result's sources, evidence, findings, map."""
+    evidence_map = _fold_acquisitions(registry, result)
+    for draft in result.findings:
+        _fold_finding(registry, result.attempt_id, draft, evidence_map)
+    if result.map is not None:
+        _fold_map(registry, result.attempt_id, result.map, evidence_map)
+
+
+RECOVERY_PREFIX = "acquisition_recovery:"
+
+
+def recovered_acquisitions(route_log: list[str]) -> dict[str, list[str]]:
+    """Evidence recovered from schema-failed attempts, by attempt id.
+
+    An admission audit and a planning index, nothing more: no
+    eligibility, accounting or review decision reads it.
+    """
+    found: dict[str, list[str]] = {}
+    for line in route_log:
+        if not line.startswith(RECOVERY_PREFIX):
+            continue
+        try:
+            payload = json.loads(line[len(RECOVERY_PREFIX) :])
+        except ValueError:
+            continue
+        attempt = payload.get("attempt_id")
+        ids = payload.get("evidence_ids")
+        if isinstance(attempt, str) and isinstance(ids, list):
+            found[attempt] = [e for e in ids if isinstance(e, str)]
+    return found
+
+
+def _fold_acquisitions(
+    registry: _Registry, result: records.TaskResult
+) -> dict[str, str]:
+    """Fold one result's sources, versions and evidence; map local ids.
+
+    Shared by a successful result and by the recovery of a schema-failed
+    one. An acquisition is provenance, not an assertion: nothing here
+    creates a claim, a finding, a relationship or a map item, and
+    registry membership never grants citation eligibility.
+    """
     source_map: dict[str, str] = {}
     for local in result.sources:
         source_map[local.id] = registry.source_id(local)
     version_map: dict[str, str] = {}
+    rejected: set[str] = set()
     for local in result.source_versions:
         source_id = source_map.get(local.source_id)
         if source_id is None:
             registry.log.append(
                 f"{result.attempt_id}: version {local.id} names unknown "
                 f"source {local.source_id}; dropped"
+            )
+            continue
+        held = registry.versions.get(local.id)
+        if held is not None and (
+            held.source_id != source_id
+            or held.content_hash != local.content_hash
+        ):
+            # A version id is content-derived, so a disagreement means
+            # the incoming record is not the one already registered.
+            # Reusing the registered version here would conceal that,
+            # so it goes, and so does every evidence item naming it.
+            rejected.add(local.id)
+            registry.log.append(
+                f"{result.attempt_id}: version {local.id} disagrees with "
+                "the registered one on its source or content; rejected "
+                "with the evidence naming it"
             )
             continue
         version_map[local.id] = registry.version_id(local, source_id)
@@ -344,6 +403,12 @@ def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
             )
             continue
         version_id = None
+        if local.source_version_id in rejected:
+            registry.log.append(
+                f"{result.attempt_id}: evidence {local.id} names rejected "
+                f"version {local.source_version_id}; dropped"
+            )
+            continue
         if local.source_version_id:
             # A version the result carried, or one the registry already
             # holds (a reference reused by a later task, or a passage
@@ -369,10 +434,7 @@ def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
         evidence_map[local.id] = registry.evidence_id(
             local, source_id, version_id
         )
-    for draft in result.findings:
-        _fold_finding(registry, result.attempt_id, draft, evidence_map)
-    if result.map is not None:
-        _fold_map(registry, result.attempt_id, result.map, evidence_map)
+    return evidence_map
 
 
 def _admit_quantity(
@@ -751,6 +813,23 @@ def merge_results(
         else:
             status = "failed"
             reason = result.error or "no usage observed"
+            if (result.error or "").startswith("schema"):
+                # The session's assertions are unusable, but the pages
+                # it fetched are provenance the run paid for. They enter
+                # as acquisitions only: no claim, no finding, no map
+                # item, and the task stays failed and un-requeued.
+                recovered = _fold_acquisitions(registry, result)
+                registry.log.append(
+                    RECOVERY_PREFIX
+                    + json.dumps(
+                        {
+                            "attempt_id": result.attempt_id,
+                            "evidence_ids": sorted(set(recovered.values())),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
             registry.log.append(
                 f"{result.attempt_id}: {result.status} ({reason}); "
                 f"{task.id} failed"

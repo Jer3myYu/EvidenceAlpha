@@ -792,7 +792,10 @@ def test_every_node_boundary_resumes_through_sqlite(tmp_path):
             config = persist.thread_config(thread)
             runtime.begin(thread)
             await compiled.ainvoke(
-                graph_module.initial_state("q", runtime.limits),
+                {
+                    **graph_module.initial_state("q", runtime.limits),
+                    "tasks": fakes.seed_map_task(),
+                },
                 config,
                 durability="sync",
                 interrupt_before=[node],
@@ -827,7 +830,7 @@ def test_every_node_boundary_resumes_through_sqlite(tmp_path):
         assert spent.unknown_attempts == (
             1 if interrupted or node == "run_task" else 0
         ), node
-        assert spent.task_executions >= 3, node
+        assert spent.task_executions >= 2, node
 
 
 def test_a_resume_refuses_a_fixture_that_has_changed(tmp_path):
@@ -936,7 +939,10 @@ def test_an_interruption_during_a_live_call_stops_the_call(tmp_path, capsys):
             thread = "live-1"
             config = persist.thread_config(thread)
             runtime.begin(thread)
-            payload = graph_module.initial_state("q", runtime.limits)
+            payload = {
+                **graph_module.initial_state("q", runtime.limits),
+                "tasks": fakes.seed_map_task(),
+            }
             task = asyncio.create_task(
                 industry_workflow.stream(compiled, payload, config, runtime)
             )
@@ -988,7 +994,10 @@ def test_an_interruption_during_an_index_write_waits_for_the_write(
             )
             config = persist.thread_config(thread)
             runtime.begin(thread)
-            payload = graph_module.initial_state("q", runtime.limits)
+            payload = {
+                **graph_module.initial_state("q", runtime.limits),
+                "tasks": fakes.seed_map_task(),
+            }
             task = asyncio.create_task(
                 industry_workflow.stream(compiled, payload, config, runtime)
             )

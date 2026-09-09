@@ -270,20 +270,24 @@ class FakeRoles:
     def __init__(self):
         self.calls: list[str] = []
         self.scope_failures = 0
+        # The first allocation admits one ordinary industry task, which
+        # owns the map; the handoff after its merge plans company work
+        # against the map it produced.
         self.plans = [
             roles.TaskPlan(
                 tasks=[
                     roles.TaskSpec(
                         key="a", role="industry", objective="upstream"
-                    ),
-                    roles.TaskSpec(
-                        key="b",
-                        role="company",
-                        objective="companies",
-                        depends_on=["a"],
-                    ),
+                    )
                 ]
-            )
+            ),
+            roles.TaskPlan(
+                tasks=[
+                    roles.TaskSpec(
+                        key="b", role="company", objective="companies"
+                    )
+                ]
+            ),
         ]
         self.review_verdict = "supported"
         self.draft_text = "掩模版市场规模 52亿元 [C1][C2]。"
@@ -394,6 +398,24 @@ OPEN_FLOOR = coverage.UsefulnessFloor(
 )
 
 
+def seed_map_task():
+    """One dispatchable map task, as the first allocation would create.
+
+    Tests about admission, cancellation and resume need a worker
+    session without first spending a planning call; production reaches
+    the same task through `prepare_tasks`.
+    """
+    return {
+        "T1": records.Task(
+            id="T1",
+            kind="map",
+            role="industry",
+            objective="map the value chain",
+            required_fields=list(graph_module.MAP_FIELDS),
+        )
+    }
+
+
 def make(tmp_path, limits=None, saver=None, floor=OPEN_FLOOR):
     runtime = budget.Runtime(
         limits or records.Limits(),
@@ -427,11 +449,10 @@ def test_happy_path_delivers_a_report(tmp_path):
     assert (tmp_path / "reports" / "t1.md").exists()
     text = (tmp_path / "reports" / "t1.md").read_text(encoding="utf-8")
     assert "# 光掩模产业调研" in text and "## 概览" in text and "[1]" in text
-    assert [t.status for t in state["tasks"].values()] == [
-        "done",
-        "done",
-        "done",
-    ]
+    # Two tasks, not three: the dedicated map session is gone and the
+    # first ordinary task owns the map.
+    assert [t.status for t in state["tasks"].values()] == ["done", "done"]
+    assert [t.kind for t in state["tasks"].values()] == ["map", "research"]
     assert {c.task_id: c.status for c in state["single_calls"].values()} == {
         "scope": "done",
         "prepare_tasks": "done",
@@ -445,10 +466,11 @@ def test_happy_path_delivers_a_report(tmp_path):
     assert state["map"].segments
     assert state["relationships"]["R1"].confirmed
     spent = budget.ledger(state)
-    assert spent.task_executions == 3
+    # Two executions, not three: the dedicated map session is gone.
+    assert spent.task_executions == 2
     calls = state["single_calls"].values()
     assert all(c.status == "done" for c in calls)
-    assert spent.turns == 3 * 3 + sum(c.observed.turns for c in calls)
+    assert spent.turns == 2 * 3 + sum(c.observed.turns for c in calls)
     assert api.calls[0] == "scope" and api.calls[1].startswith("plan:")
     # The fixture's material claims exceed one review batch; the loop
     # reviews them in consecutive calls before analysis.
@@ -458,7 +480,10 @@ def test_happy_path_delivers_a_report(tmp_path):
     )
     assert len(reviews) == -(-reviewable // graph_module.REVIEW_BATCH) >= 2
     assert graph_module.review_remaining(state) == 0
+    # The handoff after the map task merges is the one added Lead call:
+    # company selection now sees the map instead of guessing before it.
     assert [c for c in api.calls[2:] if c != "review"] == [
+        "plan:the first re",
         "analyze",
         "assess",
         "write:full",
@@ -466,7 +491,7 @@ def test_happy_path_delivers_a_report(tmp_path):
     ]
     assessments = [c for c in state["single_calls"] if c.startswith("assess")]
     assert len(assessments) <= 1 + runtime.limits.follow_up_rounds
-    assert worker.order == ["T1.1", "T2.1", "T3.1"], "waves follow dependencies"
+    assert worker.order == ["T1.1", "T2.1"], "the map owner runs first"
     assert all(isinstance(w, records.WorkerInput) for w in worker.calls)
     assert worker.calls[1].brief.industry == "光掩模产业调研"
 
@@ -482,6 +507,14 @@ def test_worker_crash_keeps_siblings_and_resumes_with_a_new_attempt(tmp_path):
             ]
         )
     ]
+    # The first allocation admits the map owner; the siblings this case
+    # is about are planned by the handoff after it merges.
+    api.plans.insert(
+        0,
+        roles.TaskPlan(
+            tasks=[roles.TaskSpec(key="m", role="industry", objective="map")]
+        ),
+    )
     worker.crash_once.add("T3.1")
     config = persist.thread_config("t2")
     runtime.begin("t2")
@@ -688,6 +721,14 @@ def test_resume_updates_apply_admission_and_reserve_only_what_fits():
 def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
     runtime, api, worker, compiled = make(tmp_path)
     api.plans = [
+        # The first allocation admits the map owner; forward
+        # dependencies and duplicate keys are a planning concern of the
+        # handoff, where slots are not capped to one.
+        roles.TaskPlan(
+            tasks=[
+                roles.TaskSpec(key="m", role="industry", objective="the map")
+            ]
+        ),
         roles.TaskPlan(
             tasks=[
                 roles.TaskSpec(
@@ -699,7 +740,7 @@ def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
                 roles.TaskSpec(key="a", role="industry", objective="upstream"),
                 roles.TaskSpec(key="a", role="industry", objective="duplicate"),
             ]
-        )
+        ),
     ]
     config = persist.thread_config("t9")
     runtime.begin("t9")
@@ -709,6 +750,7 @@ def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
         "T3"
     ]
     assert tasks["T3"].objective == "upstream" and "T4" not in tasks
+    assert tasks["T1"].kind == "map"
     assert any("duplicate key" in line for line in state["route_log"])
     assert worker.order.index("T3.1") < worker.order.index("T2.1")
 

@@ -63,10 +63,13 @@ def test_live_run_streams_attempt_events_and_nodes(tmp_path):
     assert kinds[0] == "thread" and kinds[-1] == "end"
     nodes = [e for e in events if e["type"] == "node"]
     names = [e["node"] for e in nodes]
-    assert names[:4] == ["reserve_scope", "scope", "dispatch", "run_task"]
+    # The first dispatch starts no worker: the map owner is created by
+    # the first planning allocation, not by the graph itself.
+    assert names[:4] == ["reserve_scope", "scope", "dispatch", "merge"]
+    assert "run_task" in names
     assert names[-1] == "deliver"
     attempts = [e for e in nodes if e["node"] == "run_task"]
-    assert [e["attempt_id"] for e in attempts] == ["T1.1", "T2.1", "T3.1"]
+    assert [e["attempt_id"] for e in attempts] == ["T1.1", "T2.1"]
     for event in nodes:
         assert "budget" in event and "limits" in event["budget"]
         assert isinstance(event["trace"], list)
@@ -83,7 +86,7 @@ def test_live_run_streams_attempt_events_and_nodes(tmp_path):
     assert dispatch["context"]["who"] == studio.DETERMINISTIC
     deliver = nodes[-1]
     assert deliver["update"]["meta"]["report_status"] == "complete"
-    assert deliver["budget"]["task_executions"] == 3
+    assert deliver["budget"]["task_executions"] == 2
 
 
 async def collect(stream):

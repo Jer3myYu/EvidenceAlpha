@@ -337,7 +337,11 @@ def test_a_hung_sibling_blocks_the_queued_session_and_the_resume(tmp_path):
         runtime.begin(thread)
         with pytest.raises(RuntimeError):
             await compiled.ainvoke(
-                graph_module.initial_state("q", limits), config
+                {
+                    **graph_module.initial_state("q", limits),
+                    "tasks": fakes.seed_map_task(),
+                },
+                config,
             )
         assert backend.active == 2, "the scenario needs two surviving writes"
         # Only T1 and the two admitted siblings ever started a session;
@@ -403,7 +407,10 @@ def test_a_same_runtime_resume_over_a_surviving_write_is_refused(tmp_path):
             )
             config = persist.thread_config(thread)
             runtime.begin(thread)
-            payload = graph_module.initial_state("q", limits)
+            payload = {
+                **graph_module.initial_state("q", limits),
+                "tasks": fakes.seed_map_task(),
+            }
             task = asyncio.create_task(
                 industry_workflow.stream(compiled, payload, config, runtime)
             )
@@ -646,7 +653,10 @@ def test_two_model_sessions_never_run_at_once_at_concurrency_one(
             )
             config = persist.thread_config(thread)
             runtime.begin(thread)
-            payload = graph_module.initial_state("q", runtime.limits)
+            payload = {
+                **graph_module.initial_state("q", runtime.limits),
+                "tasks": fakes.seed_map_task(),
+            }
             task = asyncio.create_task(
                 industry_workflow.stream(compiled, payload, config, runtime)
             )
@@ -804,7 +814,10 @@ def test_a_same_runtime_resume_over_a_surviving_subprocess_is_refused(
             )
             config = persist.thread_config(thread)
             runtime.begin(thread)
-            payload = graph_module.initial_state("q", limits)
+            payload = {
+                **graph_module.initial_state("q", limits),
+                "tasks": fakes.seed_map_task(),
+            }
             task = asyncio.create_task(
                 industry_workflow.stream(compiled, payload, config, runtime)
             )

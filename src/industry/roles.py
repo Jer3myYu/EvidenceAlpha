@@ -25,7 +25,7 @@ from industry import report
 from industry import state as state_module
 from research import crew
 
-PROMPT_VERSION = "10.2"
+PROMPT_VERSION = "10.3"
 MODEL = "claude-sonnet-5"
 # Thinking configuration per role (``None``: the model's default). Set
 # from live measurements: see ``tmp/9-7-26/live/review-probe``.

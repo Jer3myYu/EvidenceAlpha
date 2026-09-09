@@ -285,6 +285,19 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
         f"Allowance: at most {work.max_turns} tool-using exchanges and "
         f"{work.allowance.tool_calls} tool calls; the tools refuse beyond "
         "that. Return the structured output when done.",
+        "",
+        # Headline runs 4 and 5 both lost their map task to malformed
+        # tool arguments -- XML-style tags mixed into the JSON, and
+        # unescaped ASCII quotes inside `gaps` -- rejected before the
+        # schema was ever checked, five submissions inside one session.
+        "The structured output is a single JSON object and nothing "
+        "else. Do not wrap it in XML-style tags, do not add an outer "
+        '"output" key, and escape every ASCII double quote inside a '
+        'string as \\". Prefer the full-width quotes 「」 or “” inside '
+        "Chinese prose. Its shape is:",
+        '{"summary": "...", "findings": [], "map": {"segments": [], '
+        '"links": [], "participants": [], "boundary_note": "", '
+        '"gaps": []}, "gaps": []}',
     ]
     return "\n".join(lines)
 

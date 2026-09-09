@@ -660,8 +660,60 @@ def write_instructions(state: state_module.IndustryState) -> str:
     return "Write the full report."
 
 
+def initial_allocation(state: state_module.IndustryState) -> bool:
+    """Whether this is the first allocation, which owns the map.
+
+    One helper, so Studio's reconstruction of a planning call agrees
+    with what execution actually asked for.
+    """
+    return state.get("phase", "mapping") == "mapping" and not state.get("tasks")
+
+
+MAP_FIELDS = (
+    "segments with stage and description",
+    "links with what flows",
+    "participants with role, supplies/buys, region, listed",
+    "boundary note",
+)
+
+
+def _own_the_map(
+    state: state_module.IndustryState,
+    tasks: dict[str, records.Task],
+    limits: records.Limits,
+) -> tuple[dict[str, records.Task], str | None]:
+    """Give the first admitted task the map's responsibilities.
+
+    ``Task.kind`` is the ownership mechanism: it already selects the
+    map instructions and already requires a map output, so no separate
+    flag is added.
+    """
+    fresh = [tid for tid in tasks if tid not in state.get("tasks", {})]
+    if not fresh:
+        return tasks, None
+    owner = tasks[fresh[0]]
+    tasks = dict(tasks)
+    tasks[owner.id] = owner.model_copy(
+        update={
+            "kind": "map",
+            "required_fields": list(owner.required_fields)
+            + [f for f in MAP_FIELDS if f not in owner.required_fields],
+            "acceptance": (
+                f"{owner.acceptance} Every segment, link and participant "
+                "cites a passage from a fetched source; at most "
+                f"{limits.map_segments} segments, {limits.map_links} links "
+                f"and {limits.map_participants_per_stage} participants per "
+                "stage are retained."
+            ).strip(),
+        }
+    )
+    return tasks, owner.id
+
+
 def planning_purpose(state: state_module.IndustryState) -> str:
     """What prepare_tasks plans for in the state's phase."""
+    if initial_allocation(state):
+        return PURPOSES["mapping"]
     return PURPOSES.get(state.get("phase", "mapping"), PURPOSES["remediation"])
 
 
@@ -670,7 +722,15 @@ def planning_slots(
 ) -> int:
     """How many tasks prepare_tasks may create now."""
     keep_slot = state.get("review_rounds", 0) == 0
-    return budget.dispatchable(state, limits, keep_slot)
+    slots = budget.dispatchable(state, limits, keep_slot)
+    if initial_allocation(state):
+        # The first allocation admits one ordinary industry task, which
+        # owns the map. The dedicated map session it replaces spent 54
+        # turns and 26.70 minutes across headline runs 4 and 5 for no
+        # admitted finding, while the ordinary tasks produced the map
+        # anyway.
+        return min(1, slots)
+    return slots
 
 
 def issue_stage(issues: list[records.Issue]) -> str | None:
@@ -734,31 +794,6 @@ def build_worker_input(
         max_turns=state["meta"].limits.max_turns,
         model=roles.ROLE_MODELS[task.role],
         prompt_version=roles.PROMPT_VERSION,
-    )
-
-
-def _map_task(brief: records.Brief) -> records.Task:
-    return records.Task(
-        id="T1",
-        kind="map",
-        role="industry",
-        objective=(
-            f"Map the {brief.industry} value chain: upstream, midstream, "
-            "downstream, and adjacent segments; what flows between them; "
-            "representative participants per segment (global leaders and "
-            "Chinese participants) with what each supplies or buys."
-        ),
-        scope=brief.geography,
-        required_fields=[
-            "segments with stage and description",
-            "links with what flows",
-            "participants with role, supplies/buys, region, listed",
-            "boundary note",
-        ],
-        acceptance=(
-            "Every segment, link, and participant cites a passage from a "
-            "fetched source; at least two participants per stage."
-        ),
     )
 
 
@@ -1009,7 +1044,11 @@ def build_graph(
             {
                 "meta": meta,
                 "brief": brief,
-                "tasks": {"T1": _map_task(brief)},
+                # Nothing seeds tasks in production -- the first
+                # allocation creates the one that owns the map -- but a
+                # pre-seeded registry is preserved, so a test can start
+                # from a dispatchable task without a planning call.
+                "tasks": dict(state.get("tasks") or {}),
                 "phase": "mapping",
                 "cycle": 0,
                 "follow_up_rounds": 0,
@@ -1017,7 +1056,7 @@ def build_graph(
         )
         update.setdefault("route_log", []).append(
             f"scope: industry {brief.industry!r}, language {brief.language}, "
-            f"mode {brief.mode}; map task T1 created"
+            f"mode {brief.mode}"
         )
         return update
 
@@ -1137,6 +1176,7 @@ def build_graph(
         state: state_module.IndustryState,
     ) -> dict[str, Any]:
         phase = state.get("phase", "mapping")
+        first = initial_allocation(state)
         purpose = planning_purpose(state)
         slots = planning_slots(state, limits)
         update: dict[str, Any] = {"route_log": []}
@@ -1161,13 +1201,27 @@ def build_graph(
                 tasks, issues, log = _tasks_from_plan(
                     state, plan, slots, kind, limits
                 )
+                if first:
+                    tasks, owned = _own_the_map(state, tasks, limits)
+                    if owned:
+                        log.append(
+                            f"prepare_tasks: {owned} owns the industry map"
+                        )
                 update.update({"tasks": tasks, "issues": issues})
                 update["route_log"].extend(log)
                 if plan.rationale:
                     update["route_log"].append(
                         f"prepare_tasks: {plan.rationale[:200]}"
                     )
-        if phase == "mapping":
+        if first:
+            # Stay in mapping only while an owner is outstanding: the
+            # next allocation is the handoff that plans company work
+            # against the merged map.
+            admitted = any(
+                task.kind == "map" for task in update.get("tasks", {}).values()
+            )
+            update["phase"] = "mapping" if admitted else "researching"
+        elif phase == "mapping":
             update["phase"] = "researching"
         return update
 
