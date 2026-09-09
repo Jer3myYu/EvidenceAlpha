@@ -432,9 +432,15 @@ class UsefulnessFloor:
     mandatory_questions: tuple[int, ...] = (1, 2)
     central_required: int = 3
     min_supported_claims: int = 6
-    require_product: bool = True
-    require_boundary: bool = True
-    require_participant: bool = True
+    # At least one of these confirmed topics must survive in the body: a
+    # reader who cannot tell what the industry is, or where its edges
+    # are, has not been taught anything. Calibrated 2026-09-09 against
+    # headline run 4 and the fixed-evidence fixtures -- requiring both
+    # topics, and a participant's supply/buy role besides, withheld
+    # reports carrying 18 and 19 supported claims that answered four of
+    # the five central questions, while Q3 already counts the
+    # participant requirement toward `central_required`.
+    definition_topics: tuple[str, ...] = ("product", "boundary")
 
 
 FLOOR = UsefulnessFloor()
@@ -515,31 +521,11 @@ def meets_floor(
             "claims survive in the body",
         )
     topics = {t for claim in kept.values() for t in claim.reviewed_topics}
-    if floor.require_product and "product" not in topics:
-        return False, "no surviving product definition"
-    if floor.require_boundary and "boundary" not in topics:
-        return False, "no surviving industry boundary"
-    if floor.require_participant and not _participant_role(state, kept):
-        return False, "no surviving participant supply/buy role"
+    if floor.definition_topics and not set(floor.definition_topics) & topics:
+        return False, "no surviving product definition or industry boundary"
     return (
         True,
         f"{len(kept)} supported claims, {len(answered)} central questions",
-    )
-
-
-def _participant_role(
-    state: state_module.IndustryState, kept: dict[str, records.Claim]
-) -> bool:
-    """Whether a surviving claim names a participant's supply or buy."""
-    industry_map = state.get("map")
-    if industry_map is None:
-        return False
-    flows = {
-        p.id: bool(p.supplies or p.buys) for p in industry_map.participants
-    }
-    return any(
-        claim.map_ref and flows.get(claim.map_ref, False)
-        for claim in kept.values()
     )
 
 

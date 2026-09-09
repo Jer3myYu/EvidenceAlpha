@@ -390,9 +390,7 @@ OPEN_FLOOR = coverage.UsefulnessFloor(
     mandatory_questions=(),
     central_required=0,
     min_supported_claims=0,
-    require_product=False,
-    require_boundary=False,
-    require_participant=False,
+    definition_topics=(),
 )
 
 

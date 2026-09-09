@@ -41,8 +41,12 @@ import pydantic
 # ``industry.quantities``; a schema-5 quantity carries a free-text unit
 # and no binding, and its supported flag is not proof under this
 # schema, so no schema-5 thread is migrated. Extraction v3 packs prose
-# at certified boundaries and carries table layouts on evidence.
-SCHEMA_VERSION = 6
+# at certified boundaries and carries table layouts on evidence. Schema
+# 7 adds the delivery contract: a claim's standalone approval, a frozen
+# ``ReviewSubject`` and the ``DeliveryResult``. A schema-6 thread has no
+# certificate and must never be given one, so it is not resumable
+# either; it replays read-only like every earlier schema.
+SCHEMA_VERSION = 7
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]

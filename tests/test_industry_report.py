@@ -8,6 +8,8 @@ unit is actually gone, and a table survives a row removal or the removal
 fails closed.
 """
 
+import dataclasses
+
 from industry import coverage as coverage_module
 from industry import records
 from industry import report
@@ -463,3 +465,77 @@ def test_delivery_renders_the_reviewed_appendix_not_a_fresh_one():
     # What moved since is reported separately, never written into them.
     assert "Q8 uncovered" not in "\n".join(frozen)
     assert "Q8 uncovered" in text
+
+
+def test_the_usefulness_floor_is_one_rule_with_pinned_boundaries():
+    # Calibrated 2026-09-09 against headline run 4 and the fixed-evidence
+    # fixtures. Each constant is pinned on its own boundary, so a later
+    # change to any of them has to be deliberate.
+    state = _useful_state(BODY)
+    body = [state["sections"][0]]
+    assert coverage_module.meets_floor(state, body)[0]
+
+    # eight supported claims survive in the body: eight passes, nine does not
+    floor = coverage_module.FLOOR
+    assert coverage_module.meets_floor(
+        state, body, dataclasses.replace(floor, min_supported_claims=8)
+    )[0]
+    ok, why = coverage_module.meets_floor(
+        state, body, dataclasses.replace(floor, min_supported_claims=9)
+    )
+    assert not ok and "9 supported claims" in why
+
+    # three central questions have surviving content: four does not
+    assert coverage_module.meets_floor(
+        state, body, dataclasses.replace(floor, central_required=3)
+    )[0]
+    ok, why = coverage_module.meets_floor(
+        state, body, dataclasses.replace(floor, central_required=4)
+    )
+    assert not ok and "central" in why
+
+    # a mandatory question with nothing behind it fails closed
+    ok, why = coverage_module.meets_floor(
+        state, body, dataclasses.replace(floor, mandatory_questions=(1, 2, 7))
+    )
+    assert not ok and "Q7 uncovered" in why
+
+
+def test_the_floor_needs_a_definition_or_a_boundary_but_not_both():
+    # The calibration finding: requiring product *and* boundary, and a
+    # participant role besides, withheld real reports of 18 and 19
+    # supported claims answering four of five central questions.
+    state = _useful_state(BODY)
+    body = [state["sections"][0]]
+    for dropped in ("product", "boundary"):
+        thinned = {
+            cid: (
+                claim.model_copy(update={"reviewed_topics": []})
+                if dropped in claim.reviewed_topics
+                else claim
+            )
+            for cid, claim in state["claims"].items()
+        }
+        assert coverage_module.meets_floor({**state, "claims": thinned}, body)[
+            0
+        ]
+    without = {
+        cid: (
+            claim.model_copy(update={"reviewed_topics": []})
+            if {"product", "boundary"} & set(claim.reviewed_topics)
+            else claim
+        )
+        for cid, claim in state["claims"].items()
+    }
+    ok, why = coverage_module.meets_floor({**state, "claims": without}, body)
+    assert not ok and "product definition or industry boundary" in why
+
+
+def test_a_registry_claim_the_body_never_cites_does_not_count():
+    # The floor counts what the delivered body says, never the registry:
+    # a finding nobody copied into the report teaches the reader nothing.
+    state = _useful_state("产品定义[C1]。")
+    body = [state["sections"][0]]
+    kept = coverage_module.delivered_claims(state, body)
+    assert set(kept) == {"C1"}
+    assert not coverage_module.meets_floor(state, body)[0]
