@@ -21,6 +21,7 @@ from industry import merge
 from industry import report
 from industry import records
 from industry import roles
+from industry import schedule
 from research import crew
 from research import persist
 
@@ -1233,7 +1234,7 @@ def test_unsupported_section_text_is_redacted_or_the_report_is_incomplete():
 
 
 def test_calc_requests_and_acquisitions_are_bounded_per_call(tmp_path):
-    limits = records.Limits(calc_requests_per_call=1, acquisitions_per_review=1)
+    limits = records.Limits(calc_requests_per_call=1, acquisition_executions=1)
     runtime, api, _, compiled = make(tmp_path, limits=limits)
     original_review = api.review_claims
 
@@ -1254,16 +1255,18 @@ def test_calc_requests_and_acquisitions_are_bounded_per_call(tmp_path):
     acquisitions = [
         t for t in state["tasks"].values() if t.kind == "acquisition"
     ]
-    reviews = sum(1 for c in api.calls if c == "review")
-    assert 0 < len(acquisitions) <= reviews
-    assert any(
-        "acquisition requests, the first 1 taken" in l
-        for l in state["route_log"]
-    )
+    # Plan revision 38 §4.45.4: every request is recorded, the ceiling
+    # bounds what becomes a task, and the rest are deferred with a
+    # reason rather than truncated away.
+    assert len(acquisitions) == 1
+    assert len(state["repairs"]) > 1
+    deferred = [r for r in state["repairs"].values() if r.status == "deferred"]
+    assert deferred and all(r.reason for r in deferred)
+    assert all(t.target is not None for t in acquisitions)
 
 
 def test_acquisition_attempts_are_capped_for_the_run(tmp_path):
-    limits = records.Limits(acquisitions_per_review=3, acquisition_executions=1)
+    limits = records.Limits(acquisition_executions=1)
     runtime, api, _, compiled = make(tmp_path, limits=limits)
     original_review = api.review_claims
 
@@ -1285,10 +1288,13 @@ def test_acquisition_attempts_are_capped_for_the_run(tmp_path):
         t for t in state["tasks"].values() if t.kind == "acquisition"
     ]
     executed = [t for t in acquisition_tasks if t.attempts > 0]
-    skipped = [t for t in acquisition_tasks if t.status == "skipped"]
-    assert len(executed) == 1 and skipped
-    assert all(
-        "acquisition attempts is the cap" in t.skip_reason for t in skipped
+    assert len(executed) == 1
+    # The ceiling now binds at creation, so the run never plans work it
+    # will refuse; the requests it could not fund are on the record.
+    assert len(acquisition_tasks) == 1
+    assert any(
+        r.status == "deferred" and "ceiling" in r.reason
+        for r in state["repairs"].values()
     )
 
 
@@ -2229,3 +2235,184 @@ def test_a_retention_approval_naming_no_body_section_is_recorded(tmp_path):
     # The valid id still stands; the invalid one is never guessed into
     # a section, and retention is granted only to what was frozen.
     assert report.retainable_sections(state) == {"intro"}
+
+
+# --- targeted evidence repair (plan revision 38 §4.45) ---------------------
+
+
+def repair_state(pending=3, claims=None):
+    """A state after one review, with `pending` repairs requested."""
+    claims = claims or {
+        f"C{n}": records.Claim(
+            id=f"C{n}",
+            statement=f"claim {n}",
+            kind="fact",
+            review="qualified",
+            review_reason="search snippet only",
+            evidence_ids=["E1"],
+            material=True,
+        )
+        for n in range(1, pending + 1)
+    }
+    return {
+        "claims": claims,
+        "relationships": {},
+        "calculations": {},
+        "issues": {},
+        "coverage": [],
+        "tasks": {},
+        "attempts": {},
+        "single_calls": {},
+        "repairs": {},
+        "evidence": {"E1": None},
+        "meta": records.RunMeta(
+            workflow_version="industry-v1",
+            prompt_version="10.3",
+            models={},
+            limits=records.Limits(),
+            started_at="2026-09-09T00:00:00+00:00",
+        ),
+    }
+
+
+def requests_for(state):
+    return [
+        records.AcquisitionRequest(
+            objective=f"original for {cid}", claim_id=cid
+        )
+        for cid in state["claims"]
+    ]
+
+
+def test_every_repair_request_is_recorded_and_the_ceiling_bounds_the_tasks():
+    # 23 requests, a ceiling of 4: four tasks, nineteen deferrals, no
+    # silent truncation (plan revision 38 §4.45.4).
+    state = repair_state(pending=23)
+    limits = records.Limits(acquisition_executions=4)
+    repairs, log = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    assert len(repairs) == 23 and log
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, limits
+    )
+    admitted = [r for r in repairs.values() if r.status == "admitted"]
+    deferred = [r for r in repairs.values() if r.status == "deferred"]
+    assert len(admitted) == 4 and len(deferred) == 19
+    assert len(tasks) == 4
+    assert all("ceiling" in r.reason for r in deferred)
+    task = tasks[admitted[0].task_id]
+    assert task.kind == "acquisition" and task.target is not None
+    assert task.target.claim_version == 1
+    assert task.target.qualification == "search snippet only"
+
+
+def test_a_repair_is_refused_when_its_own_review_would_not_fit():
+    # The repair costs an attempt *and* the review its attachment makes
+    # necessary; `review_batches` counts only claims that already need
+    # one, so admitting on the attempt alone withdraws a citable claim
+    # with no way to restore it.
+    state = repair_state(pending=1)
+    limits = records.Limits()
+    repairs, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    roomy = {**state, "repairs": repairs}
+    _, tasks, _ = graph_module.schedule_repairs(roomy, limits)
+    assert len(tasks) == 1
+    # Now spend the run to the point where the attempt alone still fits
+    # (`dispatchable` returns 1) but the review its attachment forces
+    # does not.
+    spent = 2400
+    tight = {
+        **roomy,
+        "attempts": {
+            "T1.1": records.Attempt(
+                id="T1.1",
+                task_id="T1",
+                reserved=records.Reservation(
+                    turns=2, tool_calls=2, seconds=spent
+                ),
+                started_at="2026-09-09T00:00:00+00:00",
+                status="done",
+                observed=records.Usage(duration_s=spent),
+            )
+        },
+        "tasks": {
+            "T1": records.Task(
+                id="T1",
+                kind="research",
+                role="industry",
+                objective="o",
+                status="done",
+            )
+        },
+    }
+    assert budget.dispatchable(tight, limits, False) == 1
+    repaired, tasks, _ = graph_module.schedule_repairs(tight, limits)
+    assert not [t for t in tasks.values() if t.kind == "acquisition"]
+    assert all(r.status == "deferred" for r in repaired.values())
+    assert any("reserve" in r.reason for r in repaired.values())
+
+
+def test_a_repair_whose_target_moved_is_not_dispatched():
+    # `dispatch` refuses it: the claim it was sent to repair has been
+    # versioned since, so the question is no longer the live one.
+    task = records.Task(
+        id="T5",
+        kind="acquisition",
+        role="verifier",
+        objective="o",
+        target=records.RepairTarget(
+            claim_id="C1", claim_version=1, statement="claim 1"
+        ),
+    )
+    claims = repair_state(pending=1)["claims"]
+    assert not graph_module.stale_repair(task, claims)
+    moved = {"C1": claims["C1"].model_copy(update={"version": 2})}
+    assert graph_module.stale_repair(task, moved)
+    assert graph_module.stale_repair(task, {})
+    ordinary = records.Task(
+        id="T6", kind="research", role="industry", objective="o"
+    )
+    assert not graph_module.stale_repair(ordinary, moved)
+
+
+def test_an_acquisition_without_a_target_is_not_a_task():
+    tasks = {
+        "T1": records.Task(
+            id="T1", kind="acquisition", role="verifier", objective="o"
+        )
+    }
+    validated = schedule.validate(tasks)
+    assert validated["T1"].status == "skipped"
+    assert "names no target" in (validated["T1"].skip_reason or "")
+
+
+def test_a_repair_is_done_only_when_evidence_was_attached():
+    state = repair_state(pending=1)
+    request = records.RepairRequest(
+        id="RQ1", claim_id="C1", status="admitted", task_id="T5"
+    )
+    state["repairs"] = {"RQ1": request}
+    state["tasks"] = {
+        "T5": records.Task(
+            id="T5",
+            kind="acquisition",
+            role="verifier",
+            objective="o",
+            status="done",
+        )
+    }
+    # The task ran and attached nothing.
+    settled = graph_module.settle_repairs(state, {"claims": state["claims"]})
+    assert settled["RQ1"].status == "dropped"
+    assert "without attaching evidence" in settled["RQ1"].reason
+    # The same task, with the target versioned by an attachment.
+    after = {
+        "claims": {
+            "C1": state["claims"]["C1"].model_copy(update={"version": 2})
+        }
+    }
+    settled = graph_module.settle_repairs(state, after)
+    assert settled["RQ1"].status == "done"

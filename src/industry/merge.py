@@ -271,6 +271,168 @@ class _Registry:
         self.claims[new_id] = claim.model_copy(update={"id": new_id})
         return new_id
 
+    def attach_evidence(
+        self,
+        result: records.TaskResult,
+        evidence_map: dict[str, str],
+    ) -> None:
+        """Strengthen the records this repair session was sent to repair.
+
+        Plan revision 38 §4.45.3. Every attachment naming one claim is
+        applied together, against the claim as it stands at the start of
+        this result, so two attachments to one target cannot invalidate
+        each other. Each failure is a logged disposition, never a
+        silent drop, and the evidence itself stays registered as
+        provenance whatever happens here.
+
+        Args:
+          result: The attempt's result, carrying its attachments.
+          evidence_map: The attempt-local to canonical evidence map
+            ``_fold_acquisitions`` returned for *this* result.
+        """
+        groups: dict[str, list[records.EvidenceAttachment]] = {}
+        for attachment in result.attachments:
+            groups.setdefault(attachment.target_claim_id, []).append(attachment)
+        for claim_id, group in groups.items():
+            self._attach_group(result.attempt_id, claim_id, group, evidence_map)
+
+    def _attach_group(
+        self,
+        attempt_id: str,
+        claim_id: str,
+        group: list[records.EvidenceAttachment],
+        evidence_map: dict[str, str],
+    ) -> None:
+        """Apply one target's attachments, or refuse them all."""
+        claim = self.claims.get(claim_id)
+        if claim is None:
+            self.log.append(
+                f"{attempt_id}: attachment names unknown claim {claim_id}; "
+                "its evidence is kept as provenance only"
+            )
+            return
+        stale = [a for a in group if a.target_claim_version != claim.version]
+        if stale:
+            self.log.append(
+                f"{attempt_id}: attachment targets {claim_id}@"
+                f"{stale[0].target_claim_version} but the claim is at "
+                f"version {claim.version}; refused with its evidence kept"
+            )
+            return
+        if claim.calculation_id is not None:
+            # A derived claim's evidence is the projection of its
+            # calculation; attaching here would break
+            # ``calculation_current``. The repair belongs to its inputs.
+            self.log.append(
+                f"{attempt_id}: {claim_id} is derived; evidence is attached "
+                "to the claims a calculation consumes, never to its result"
+            )
+            return
+        fresh: list[str] = []
+        for attachment in group:
+            for canonical in self._attached_ids(
+                attempt_id, attachment, evidence_map
+            ):
+                if canonical not in claim.evidence_ids and (
+                    canonical not in fresh
+                ):
+                    fresh.append(canonical)
+            self._attach_relationship(
+                attempt_id, claim, attachment, evidence_map
+            )
+        if not fresh:
+            self.log.append(
+                f"{attempt_id}: {claim_id} already holds every attached "
+                "item; nothing to strengthen"
+            )
+            return
+        self.claims[claim_id] = claim.model_copy(
+            update={
+                "evidence_ids": claim.evidence_ids + fresh,
+                "version": claim.version + 1,
+                "supersedes": f"{claim_id}@{claim.version}",
+                "review": "unreviewed",
+                "review_reason": None,
+                "reviewed_topics": [],
+            }
+        )
+        self.changed.add(claim_id)
+        gained = ", ".join(fresh)
+        self.log.append(
+            f"{attempt_id}: {claim_id} gained {gained}; version "
+            f"{claim.version + 1}, review reset for judgement on the "
+            "repaired evidence"
+        )
+
+    def _attached_ids(
+        self,
+        attempt_id: str,
+        attachment: records.EvidenceAttachment,
+        evidence_map: dict[str, str],
+    ) -> list[str]:
+        """Canonical ids for one attachment, through this attempt alone.
+
+        A local label is never resolved against the registry: ``E1`` in
+        an attempt is not the registry's ``E1``, and an item this
+        attempt did not get admitted (a rejected source version, say)
+        must attach nothing.
+        """
+        resolved: list[str] = []
+        for ref in attachment.evidence_ids:
+            canonical = evidence_map.get(_label(ref))
+            if canonical is None:
+                self.log.append(
+                    f"{attempt_id}: attachment names evidence {ref} this "
+                    "attempt did not admit; dropped"
+                )
+                continue
+            resolved.append(canonical)
+        return resolved
+
+    def _attach_relationship(
+        self,
+        attempt_id: str,
+        claim: records.Claim,
+        attachment: records.EvidenceAttachment,
+        evidence_map: dict[str, str],
+    ) -> None:
+        """Union the acquired evidence into a named relationship.
+
+        Confirmation is never granted here -- only ``apply_review``
+        confirms -- but a relation that gains evidence must be judged
+        again on it.
+        """
+        rid = attachment.relationship_id
+        if rid is None:
+            return
+        relationship = self.relationships.get(rid)
+        if relationship is None or relationship.claim_id != claim.id:
+            self.log.append(
+                f"{attempt_id}: attachment names relationship {rid}, which "
+                f"does not belong to {claim.id}; dropped"
+            )
+            return
+        fresh = [
+            canonical
+            for canonical in self._attached_ids(
+                attempt_id, attachment, evidence_map
+            )
+            if canonical not in relationship.evidence_ids
+        ]
+        if not fresh:
+            return
+        self.relationships[rid] = relationship.model_copy(
+            update={
+                "evidence_ids": relationship.evidence_ids + fresh,
+                "review": "unreviewed",
+            }
+        )
+        gained = ", ".join(fresh)
+        self.log.append(
+            f"{attempt_id}: relationship {rid} gained {gained}; "
+            "it is judged again"
+        )
+
     def add_relationship(
         self,
         draft: records.RelationshipDraft,
@@ -288,8 +450,28 @@ class _Registry:
                 normalize_text(existing.from_entity),
                 normalize_text(existing.to_entity),
                 existing.relation,
-            ) == key:
-                return existing.id
+            ) != key:
+                continue
+            # The relation already exists, but the evidence offered for
+            # it may be stronger than what it holds. Discarding it left
+            # a relation proposed on a co-mention unable ever to acquire
+            # the passage that would confirm it (plan revision 38
+            # §4.45.3). Confirmation is untouched: only a verdict grants
+            # it, and only the existing rules take it away.
+            fresh = [e for e in evidence_ids if e not in existing.evidence_ids]
+            if fresh:
+                self.relationships[existing.id] = existing.model_copy(
+                    update={
+                        "evidence_ids": existing.evidence_ids + fresh,
+                        "review": "unreviewed",
+                    }
+                )
+                gained = ", ".join(fresh)
+                self.log.append(
+                    f"relationship {existing.id} gained evidence "
+                    f"{gained}; it is judged again"
+                )
+            return existing.id
         new_id = next_id("R", self.relationships)
         self.relationships[new_id] = records.Relationship(
             id=new_id,
@@ -320,9 +502,28 @@ def _map_refs(
     return canonical, unknown
 
 
-def _fold_result(registry: _Registry, result: records.TaskResult) -> None:
-    """Fold one successful result's sources, evidence, findings, map."""
+def _fold_result(
+    registry: _Registry, result: records.TaskResult, task: records.Task
+) -> None:
+    """Fold one successful result: evidence, attachments, then assertions.
+
+    A repair session is evidence-only (plan revision 38 §4.45.3): it
+    brings original context for an assertion that already exists, and
+    its findings and map are dropped at this one boundary. Without that
+    rule the duplicate claim targeted repair exists to prevent comes
+    back through the ordinary finding path -- including when the
+    attachment itself was refused.
+    """
     evidence_map = _fold_acquisitions(registry, result)
+    registry.attach_evidence(result, evidence_map)
+    if task.kind == "acquisition":
+        if result.findings or result.map is not None:
+            drafted = "a map" if result.map is not None else "no map"
+            registry.log.append(
+                f"{result.attempt_id}: a repair session asserts nothing; "
+                f"{len(result.findings)} finding(s) and {drafted} dropped"
+            )
+        return
     for draft in result.findings:
         _fold_finding(registry, result.attempt_id, draft, evidence_map)
     if result.map is not None:
@@ -795,7 +996,7 @@ def merge_results(
         task = tasks[result.task_id]
         if result.status == "done":
             status: records.TaskStatus = "done"
-            _fold_result(registry, result)
+            _fold_result(registry, result, task)
         elif (
             not (result.error or "").startswith("schema")
             and task.attempts < limits.task_attempts
@@ -1560,6 +1761,24 @@ def producer_chain_intact(
         if not producer_chain_intact(parent, claims, calculations, deeper):
             return False
     return True
+
+
+def claim_needs_attention(
+    claim: records.Claim,
+    relationships: dict[str, records.Relationship],
+) -> bool:
+    """Whether a review batch holding this claim could still settle it.
+
+    The claim itself needs a verdict, or a relationship of its owns one
+    -- a relationship that gained acquired evidence is judged again
+    without its claim having changed (plan revision 38 §4.45.3). One
+    predicate, so the review node, its router and the budget's reserve
+    can never disagree about what is left to do.
+    """
+    return claim.needs_review() or any(
+        relation.claim_id == claim.id and relation.review == "unreviewed"
+        for relation in relationships.values()
+    )
 
 
 def citable(

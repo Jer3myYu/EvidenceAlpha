@@ -53,7 +53,14 @@ import pydantic
 # Schema 9 adds the reservation pair and the retained delivery
 # candidate: a schema-8 thread can hold a body whose review was never
 # affordable, and carries no candidate to fall back to.
-SCHEMA_VERSION = 9
+# 10: an acquisition task names the record it repairs
+# (``Task.target``), its result carries typed attachments, and every
+# repair request is kept with its disposition (``state["repairs"]``). A
+# schema-9 thread's acquisitions created unrelated duplicate claims
+# instead of strengthening their targets; nothing infers a target,
+# attachment or disposition for it, so it replays read-only and is
+# refused for resume like every earlier schema.
+SCHEMA_VERSION = 10
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -582,6 +589,46 @@ class IndustryMap(Record):
     version: int = 0
 
 
+class RepairTarget(Record):
+    """The exact record an acquisition task was sent to repair.
+
+    Plan revision 38 §4.45.2. A worker reads no state, so the target
+    carries what the session must be told: the claim's id and the
+    version it was read at, its statement and any qualification, the
+    evidence it already rests on, and the gap to close. The version is
+    what makes a result that outlived its target fail closed.
+    """
+
+    claim_id: str
+    claim_version: int
+    statement: str
+    qualification: str | None = None
+    evidence_ids: list[str] = pydantic.Field(default_factory=list)
+    relationship_id: str | None = None
+    gap: str = ""
+
+
+class AttachmentDraft(Record):
+    """Evidence a repair session offers for its task's target.
+
+    It names attempt-local evidence labels and nothing else: the target
+    is stamped from the task in Python, never taken from the model.
+    """
+
+    evidence_refs: list[str] = pydantic.Field(default_factory=list)
+    note: str = ""
+
+
+class EvidenceAttachment(Record):
+    """Evidence to attach to an existing claim, and maybe a relation."""
+
+    target_claim_id: str
+    target_claim_version: int
+    evidence_ids: list[str] = pydantic.Field(default_factory=list)
+    relationship_id: str | None = None
+    note: str = ""
+
+
 class Task(Record):
     """A bounded unit of research work with dependencies and acceptance."""
 
@@ -598,6 +645,9 @@ class Task(Record):
     attempts: int = 0
     issue_id: str | None = None
     skip_reason: str | None = None
+    # Set on an acquisition task, and required there: what this session
+    # repairs (plan revision 38 §4.45.2).
+    target: RepairTarget | None = None
 
 
 class Usage(Record):
@@ -746,6 +796,7 @@ class TaskResult(Record):
     source_versions: list[SourceVersion] = pydantic.Field(default_factory=list)
     evidence: list[Evidence] = pydantic.Field(default_factory=list)
     findings: list[FindingDraft] = pydantic.Field(default_factory=list)
+    attachments: list[EvidenceAttachment] = pydantic.Field(default_factory=list)
     map: MapDraft | None = None
     gaps: list[str] = pydantic.Field(default_factory=list)
     usage: Usage = pydantic.Field(default_factory=Usage)
@@ -980,7 +1031,32 @@ class AcquisitionRequest(Record):
 
     objective: str
     claim_id: str | None = None
+    relationship_id: str | None = None
     url: str | None = None
+
+
+RepairStatus = Literal["pending", "admitted", "deferred", "done", "dropped"]
+
+
+class RepairRequest(Record):
+    """One recorded request to repair a claim's evidence.
+
+    Plan revision 38 §4.45.4. Every request the verifier makes is kept:
+    what could not be funded is ``deferred`` with its reason and
+    reconsidered next round, never dropped in silence. ``done`` means an
+    attachment was applied, not that a session ran.
+    """
+
+    id: str
+    claim_id: str
+    relationship_id: str | None = None
+    objective: str = ""
+    url: str | None = None
+    issue_id: str | None = None
+    review_round: int = 0
+    status: RepairStatus = "pending"
+    reason: str = ""
+    task_id: str | None = None
 
 
 class ClaimReview(Record):
@@ -1153,8 +1229,9 @@ class Limits(Record):
     # acquisition attempts a run may execute in all; each is a task
     # execution, so the verifier cannot spend the research budget
     # (headline run 3 spent 7 of 12 executions on acquisitions).
-    acquisitions_per_review: int = pydantic.Field(default=2, ge=0)
-    acquisition_executions: int = pydantic.Field(default=2, ge=0)
+    # The one run-level repair ceiling (plan revision 38 §4.45.2): a
+    # ceiling, never a promise -- the budget decides how many run.
+    acquisition_executions: int = pydantic.Field(default=4, ge=0)
     # Pipeline reservations: what research dispatch and each single
     # call keep for the stages that must follow (review batches of the
     # material claims already collected, then analyze and assess).
@@ -1271,6 +1348,10 @@ PERSISTED: tuple[type[Record], ...] = (
     LinkDraft,
     ParticipantDraft,
     MapDraft,
+    RepairTarget,
+    AttachmentDraft,
+    EvidenceAttachment,
+    RepairRequest,
     TaskResult,
     Brief,
     ReviewSubject,

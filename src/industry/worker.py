@@ -198,8 +198,24 @@ class TaskOutput(records.Record):
 
     summary: str
     findings: list[records.FindingDraft] = pydantic.Field(default_factory=list)
+    # A repair session's offer of original context for the claim its
+    # task names (plan revision 38 §4.45.2).
+    attachments: list[records.AttachmentDraft] = pydantic.Field(
+        default_factory=list
+    )
     map: records.MapDraft | None = None
     gaps: list[str] = pydantic.Field(default_factory=list)
+
+
+REPAIR_INSTRUCTIONS = """\
+This is an evidence repair session. One existing claim already says
+something; your job is to find the original context that settles it,
+not to write new claims. Open the source the claim rests on, or the
+original the snippet came from, and extract the exact passage or table
+that states the claim -- or shows it to be wrong. Return every passage
+you retrieved as evidence, and list the evidence labels that bear on
+the claim under `attachments`. Findings and a map are ignored in this
+session: nothing you assert here becomes a claim."""
 
 
 def system_prompt(work: records.WorkerInput) -> str:
@@ -207,6 +223,8 @@ def system_prompt(work: records.WorkerInput) -> str:
     parts = [SYSTEM_COMMON, ROLE_FOCUS[work.task.role]]
     if work.task.kind == "map":
         parts.append(MAP_INSTRUCTIONS)
+    if work.task.kind == "acquisition":
+        parts.append(REPAIR_INSTRUCTIONS)
     return "\n\n".join(parts)
 
 
@@ -246,6 +264,23 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
         lines.append(f"Completion criteria: {task.acceptance}")
     if work.open_issue:
         lines.append(f"Issue this task addresses: {work.open_issue}")
+    target = task.target
+    if target is not None:
+        lines.append("")
+        lines.append(
+            f"Claim to repair: {target.claim_id} (version "
+            f"{target.claim_version}) -- {target.statement}"
+        )
+        if target.qualification:
+            lines.append(f"Its current qualification: {target.qualification}")
+        if target.gap:
+            lines.append(f"What is missing: {target.gap}")
+        if target.relationship_id:
+            lines.append(
+                f"It also carries relationship {target.relationship_id}, "
+                "which needs a passage naming both parties and the "
+                "direction of the relation."
+            )
     if work.references:
         lines.append("")
         lines.append("Evidence already collected (cite by label if used):")
@@ -295,7 +330,8 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
         '"output" key, and escape every ASCII double quote inside a '
         'string as \\". Prefer the full-width quotes 「」 or “” inside '
         "Chinese prose. Its shape is:",
-        '{"summary": "...", "findings": [], "map": {"segments": [], '
+        '{"summary": "...", "findings": [], "attachments": [], '
+        '"map": {"segments": [], '
         '"links": [], "participants": [], "boundary_note": "", '
         '"gaps": []}, "gaps": []}',
     ]
@@ -380,6 +416,32 @@ def _usage(
     return usage
 
 
+def _attachments(
+    task: records.Task, output: TaskOutput | None
+) -> list[records.EvidenceAttachment]:
+    """The attempt's attachments, targeted by Python.
+
+    The session contributes evidence labels and a note; the claim, the
+    version and the relationship come from the task it was given, so a
+    model cannot redirect a repair at another record (plan revision 38
+    §4.45.2).
+    """
+    target = task.target
+    if output is None or target is None:
+        return []
+    return [
+        records.EvidenceAttachment(
+            target_claim_id=target.claim_id,
+            target_claim_version=target.claim_version,
+            evidence_ids=list(draft.evidence_refs),
+            relationship_id=target.relationship_id,
+            note=draft.note,
+        )
+        for draft in output.attachments
+        if draft.evidence_refs
+    ]
+
+
 def _result(
     work: records.WorkerInput,
     collector: tools.Collector,
@@ -396,6 +458,7 @@ def _result(
         source_versions=list(collector.versions.values()),
         evidence=list(collector.evidence),
         findings=output.findings if output else [],
+        attachments=_attachments(work.task, output),
         map=output.map if output else None,
         gaps=output.gaps if output else [],
         usage=usage,

@@ -2124,3 +2124,279 @@ def test_a_derived_claims_statement_is_part_of_its_projection():
     }
     assert not merge.calculation_current(claims["C3"], claims, reformulated)
     assert persist.validate_records({**state, "calculations": reformulated})
+
+
+# --- targeted evidence repair (plan revision 38 §4.45) ---------------------
+
+
+def repaired_state():
+    """A merged registry whose C1 rests on a search snippet alone."""
+    state = base_state()
+    snippet = records.TaskResult(
+        attempt_id="T2.1",
+        task_id="T2",
+        status="done",
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[],
+        evidence=[
+            evidence(
+                "E1",
+                "S1",
+                "Acme supplies Beta with blanks.",
+                None,
+                kind="snippet",
+                locator="search",
+            )
+        ],
+        findings=[
+            records.FindingDraft(
+                statement="Acme supplies Beta with blanks",
+                evidence_refs=["E1"],
+                entity="Acme",
+                material=True,
+                relationships=[
+                    records.RelationshipDraft(
+                        from_entity="Acme",
+                        to_entity="Beta",
+                        relation="supplies",
+                        evidence_refs=["E1"],
+                    )
+                ],
+                questions=[3],
+            )
+        ],
+        usage=records.Usage(turns=2, tool_calls=2, duration_s=10),
+    )
+    update = merge.merge_results(state, [snippet], LIMITS)
+    merged = {**state, **update}
+    merged["tasks"] = dict(merged["tasks"])
+    merged["attempts"] = dict(merged["attempts"])
+    return merged
+
+
+def repair_task(target, tid="T3"):
+    return records.Task(
+        id=tid,
+        kind="acquisition",
+        role="verifier",
+        objective="get the original",
+        status="running",
+        attempts=1,
+        target=target,
+    )
+
+
+def repair_result(
+    refs=("E1",), relationship_id=None, target_version=1, findings=None
+):
+    return records.TaskResult(
+        attempt_id="T3.1",
+        task_id="T3",
+        status="done",
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("vb", "S1", "hash-b")],
+        evidence=[
+            evidence("E1", "S1", "Acme supplies Beta with mask blanks.", "vb")
+        ],
+        findings=list(findings or []),
+        attachments=[
+            records.EvidenceAttachment(
+                target_claim_id="C1",
+                target_claim_version=target_version,
+                evidence_ids=list(refs),
+                relationship_id=relationship_id,
+            )
+        ],
+        usage=records.Usage(turns=2, tool_calls=2, duration_s=20),
+    )
+
+
+def fold_repair(state, result, target=None):
+    target = target or records.RepairTarget(
+        claim_id="C1", claim_version=1, statement="Acme supplies Beta"
+    )
+    state["tasks"]["T3"] = repair_task(target)
+    state["attempts"]["T3.1"] = attempt("T3.1", "T3")
+    return merge.merge_results(state, [result], LIMITS)
+
+
+def test_a_repair_strengthens_its_target_instead_of_duplicating_it():
+    # The defect that made every acquisition useless: the passage came
+    # back as a *new* claim keyed on (statement, evidence_ids), and the
+    # claim it was fetched for kept its snippet.
+    state = repaired_state()
+    before = state["claims"]["C1"]
+    assert [state["evidence"][e].kind for e in before.evidence_ids] == [
+        "snippet"
+    ]
+    update = fold_repair(state, repair_result())
+    claim = update["claims"]["C1"]
+    assert list(update["claims"]) == ["C1"]  # no duplicate
+    assert len(claim.evidence_ids) == 2
+    assert update["evidence"][claim.evidence_ids[1]].kind == "passage"
+    assert claim.version == before.version + 1
+    assert claim.review == "unreviewed" and claim.supersedes == "C1@1"
+
+
+def test_a_repair_session_asserts_nothing():
+    # It may only bring context for what already exists; a finding it
+    # returns would re-create the duplicate through the ordinary path.
+    state = repaired_state()
+    extra = records.FindingDraft(
+        statement="Acme supplies Beta with blanks",
+        evidence_refs=["E1"],
+        material=True,
+    )
+    update = fold_repair(state, repair_result(findings=[extra]))
+    assert list(update["claims"]) == ["C1"]
+    assert any("asserts nothing" in line for line in update["route_log"])
+
+
+def test_two_attachments_to_one_claim_both_land():
+    # Applied one at a time, the second would fail the stale check the
+    # first created and its evidence would never reach the claim.
+    state = repaired_state()
+    result = repair_result()
+    result = result.model_copy(
+        update={
+            "evidence": result.evidence
+            + [
+                evidence(
+                    "E2", "S1", "Beta buys 40% of its blanks from Acme.", "vb"
+                )
+            ],
+            "attachments": result.attachments
+            + [
+                records.EvidenceAttachment(
+                    target_claim_id="C1",
+                    target_claim_version=1,
+                    evidence_ids=["E2"],
+                )
+            ],
+        }
+    )
+    update = fold_repair(state, result)
+    claim = update["claims"]["C1"]
+    assert len(claim.evidence_ids) == 3 and claim.version == 2
+
+
+def test_a_repair_that_outlived_its_target_is_refused():
+    state = repaired_state()
+    update = fold_repair(state, repair_result(target_version=7))
+    claim = update["claims"]["C1"]
+    assert claim.version == 1 and claim.review == "unreviewed"
+    assert len(claim.evidence_ids) == 1
+    # The evidence itself is still registered: the run paid for it.
+    assert len(update["evidence"]) == 2
+    assert any(
+        "refused with its evidence kept" in l for l in update["route_log"]
+    )
+
+
+def test_a_repeated_attachment_changes_nothing():
+    state = repaired_state()
+    first = fold_repair(state, repair_result())
+    merged = {**state, **first}
+    merged["tasks"] = dict(merged["tasks"])
+    merged["attempts"] = dict(merged["attempts"])
+    merged["merged"] = []
+    again = repair_result(target_version=2).model_copy(
+        update={"attempt_id": "T3.2"}
+    )
+    merged["attempts"]["T3.2"] = attempt("T3.2", "T3")
+    update = merge.merge_results(merged, [again], LIMITS)
+    claim = update["claims"]["C1"]
+    assert claim.version == 2 and len(claim.evidence_ids) == 2
+    assert any("already holds every attached" in l for l in update["route_log"])
+
+
+def test_an_attachment_to_a_derived_claim_is_refused():
+    state = repaired_state()
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"kind": "derived", "calculation_id": "K1"}
+    )
+    update = fold_repair(state, repair_result())
+    assert update["claims"]["C1"].version == 1
+    assert any("is derived" in line for line in update["route_log"])
+
+
+def test_attachment_evidence_never_resolves_against_the_registry():
+    # `E1` in an attempt is not the registry's `E1`. An item this
+    # attempt did not get admitted must attach nothing.
+    state = repaired_state()
+    update = fold_repair(state, repair_result(refs=("E9",)))
+    assert update["claims"]["C1"].version == 1
+    assert any("did not admit" in line for line in update["route_log"])
+
+
+def test_a_relationship_keeps_the_evidence_offered_for_it():
+    state = repaired_state()
+    before = state["relationships"]["R1"]
+    assert before.evidence_ids == ["E1"] and not before.confirmed
+    update = fold_repair(state, repair_result(relationship_id="R1"))
+    after = update["relationships"]["R1"]
+    assert len(after.evidence_ids) == 2
+    assert after.confirmed is False and after.review == "unreviewed"
+
+
+def test_a_relationship_of_another_claim_is_not_touched():
+    state = repaired_state()
+    state["relationships"]["R1"] = state["relationships"]["R1"].model_copy(
+        update={"claim_id": "C9"}
+    )
+    update = fold_repair(state, repair_result(relationship_id="R1"))
+    assert update["relationships"]["R1"].evidence_ids == ["E1"]
+    assert any("does not belong to" in line for line in update["route_log"])
+
+
+def test_an_existing_relationship_no_longer_discards_new_evidence():
+    # `add_relationship` returned the existing id and dropped what it
+    # was handed, so a relation proposed on a co-mention could never
+    # acquire the passage that would confirm it.
+    state = repaired_state()
+    second = records.TaskResult(
+        attempt_id="T2.2",
+        task_id="T2",
+        status="done",
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("vb", "S1", "hash-b")],
+        evidence=[
+            evidence(
+                "E1", "S1", "Acme ships mask blanks to Beta monthly.", "vb"
+            )
+        ],
+        findings=[
+            records.FindingDraft(
+                statement="Acme ships blanks to Beta monthly",
+                evidence_refs=["E1"],
+                material=True,
+                relationships=[
+                    records.RelationshipDraft(
+                        from_entity="Acme",
+                        to_entity="Beta",
+                        relation="supplies",
+                        evidence_refs=["E1"],
+                    )
+                ],
+                questions=[3],
+            )
+        ],
+        usage=records.Usage(turns=1, tool_calls=1, duration_s=5),
+    )
+    state["attempts"]["T2.2"] = attempt("T2.2", "T2")
+    update = merge.merge_results(state, [second], LIMITS)
+    relationship = update["relationships"]["R1"]
+    assert len(relationship.evidence_ids) == 2
+    assert relationship.review == "unreviewed"
+
+
+def test_a_relationship_that_gained_evidence_is_reviewed_again():
+    # Its claim did not change, so nothing else would put it back in
+    # front of the verifier.
+    state = repaired_state()
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"review": "supported"}
+    )
+    relationships = state["relationships"]
+    assert not merge.claim_needs_attention(state["claims"]["C1"], {})
+    assert merge.claim_needs_attention(state["claims"]["C1"], relationships)

@@ -42,6 +42,9 @@ class IndustryState(TypedDict, total=False):
     brief: records.Brief
     map: records.IndustryMap
     tasks: dict[str, records.Task]
+    # Every evidence repair the verifier asked for, with what became of
+    # it (plan revision 38 §4.45.4).
+    repairs: dict[str, records.RepairRequest]
     attempts: dict[str, records.Attempt]
     single_calls: dict[str, records.Attempt]
     phase: str

@@ -39,6 +39,11 @@ def validate(tasks: dict[str, records.Task]) -> dict[str, records.Task]:
         if unknown:
             missing = ", ".join(unknown)
             updated[task.id] = _skip(task, f"unknown dependency: {missing}")
+            continue
+        if task.kind == "acquisition" and task.target is None:
+            # Plan revision 38 §4.45.2: prose is never the only link
+            # between a repair and the record it repairs.
+            updated[task.id] = _skip(task, "an acquisition names no target")
     for task_id in _cyclic(updated):
         task = updated[task_id]
         if task.status == "pending":

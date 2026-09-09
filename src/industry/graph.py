@@ -566,13 +566,302 @@ def reviewable(
     """
     claims = state.get("claims", {})
     calculations = state.get("calculations", {})
+    relationships = state.get("relationships", {})
     return [
         c
         for c in claims.values()
-        if c.needs_review()
+        if merge.claim_needs_attention(c, relationships)
         and c.material
         and merge.producer_chain_intact(c, claims, calculations)
     ]
+
+
+def repair_key(request: records.RepairRequest) -> tuple[str, str, str]:
+    """What makes two repair requests the same request."""
+    return (
+        request.claim_id,
+        request.relationship_id or "",
+        merge.normalize_text(request.objective),
+    )
+
+
+def record_repairs(
+    state: state_module.IndustryState,
+    requests: list[records.AcquisitionRequest],
+    claims: dict[str, records.Claim],
+    review_round: int,
+) -> tuple[dict[str, records.RepairRequest], list[str]]:
+    """Keep every acquisition request the verifier made.
+
+    Plan revision 38 §4.45.4: nothing is truncated here. A request that
+    repeats one already open is folded into it; one naming a claim the
+    registry does not hold is recorded as ``dropped`` with its reason,
+    so an operator sees what was asked and what became of it.
+    """
+    repairs = dict(state.get("repairs", {}))
+    known = {repair_key(r): rid for rid, r in repairs.items()}
+    log: list[str] = []
+    for request in requests:
+        if not request.claim_id:
+            continue
+        new = records.RepairRequest(
+            id=merge.next_id("RQ", repairs),
+            claim_id=request.claim_id,
+            relationship_id=request.relationship_id,
+            objective=request.objective,
+            url=request.url,
+            review_round=review_round,
+        )
+        key = repair_key(new)
+        if key in known:
+            continue
+        if request.claim_id not in claims:
+            new = new.model_copy(
+                update={
+                    "status": "dropped",
+                    "reason": "the claim is not in the registry",
+                }
+            )
+        repairs[new.id] = new
+        known[key] = new.id
+    if requests:
+        waiting = sum(1 for r in repairs.values() if r.status == "pending")
+        log.append(
+            f"review: {len(requests)} repair request(s) recorded; "
+            f"{waiting} pending"
+        )
+    return repairs, log
+
+
+def _repair_priority(
+    state: state_module.IndustryState, request: records.RepairRequest
+) -> tuple[int, int]:
+    """Lower sorts first: issue, then central question, then figure."""
+    claim = state.get("claims", {})[request.claim_id]
+    issues = state.get("issues", {}).values()
+    if any(
+        i.status in records.UNRESOLVED_ISSUE_STATUSES
+        and i.severity == "material"
+        and i.category in ("unsupported", "contradiction")
+        and i.target == claim.id
+        for i in issues
+    ):
+        rank = 0
+    elif any(
+        row.question in records.CENTRAL_QUESTIONS
+        and row.status != "covered"
+        and claim.id in row.claim_ids
+        for row in state.get("coverage", [])
+    ):
+        rank = 1
+    elif (
+        claim.quantity is not None
+        or claim.milestone is not None
+        or request.relationship_id is not None
+    ):
+        rank = 2
+    else:
+        rank = 3
+    return rank, merge.schedule.task_number(claim.id)
+
+
+def _projected_review_state(
+    state: state_module.IndustryState, targets: set[str]
+) -> state_module.IndustryState:
+    """The state as it will be once these targets have been repaired.
+
+    An attachment resets its target's review, and that review has to be
+    affordable or the repair leaves the claim withdrawn and unusable --
+    the defect the design review of §4.45 found, because
+    ``budget.review_batches`` counts only what already needs review.
+    """
+    claims = dict(state.get("claims", {}))
+    for cid in targets:
+        claim = claims.get(cid)
+        if claim is not None and not claim.needs_review():
+            claims[cid] = claim.model_copy(
+                update={"review": "unreviewed", "review_reason": None}
+            )
+    return {**state, "claims": claims}
+
+
+def schedule_repairs(
+    state: state_module.IndustryState,
+    limits: records.Limits,
+) -> tuple[
+    dict[str, records.RepairRequest], dict[str, records.Task], list[str]
+]:
+    """Admit the repairs that can run; defer the rest with a reason.
+
+    Plan revision 38 §4.45.4. Eligible requests are ranked, and each
+    admission must pay for both halves of a repair: the attempt itself
+    and the review its attachment makes necessary. Capacity is debited
+    inside this call, so several requests cannot each pass the same
+    one-slot test. Nothing is discarded: what is not admitted is
+    ``deferred`` with its reason and considered again next round.
+    """
+    repairs = dict(state.get("repairs", {}))
+    tasks = dict(state.get("tasks", {}))
+    claims = state.get("claims", {})
+    log: list[str] = []
+    open_targets = {
+        r.claim_id for r in repairs.values() if r.status == "admitted"
+    }
+    attempts = state.get("attempts", {})
+    spent = sum(
+        1
+        for a in attempts.values()
+        if tasks.get(a.task_id) is not None
+        and tasks[a.task_id].kind == "acquisition"
+    )
+    waiting = sum(
+        1
+        for task in tasks.values()
+        if task.kind == "acquisition" and task.status == "pending"
+    )
+    room = limits.acquisition_executions - spent - waiting
+    considered = sorted(
+        (
+            r
+            for r in repairs.values()
+            if r.status in ("pending", "deferred")
+            and r.claim_id in claims
+            and claims[r.claim_id].material
+            and claims[r.claim_id].calculation_id is None
+            and r.claim_id not in open_targets
+        ),
+        key=lambda r: _repair_priority(state, r),
+    )
+    for request in considered:
+        if room <= 0:
+            repairs[request.id] = request.model_copy(
+                update={
+                    "status": "deferred",
+                    "reason": (
+                        f"{limits.acquisition_executions} repairs is the "
+                        "run's ceiling"
+                    ),
+                }
+            )
+            continue
+        projected = _projected_review_state(
+            state, open_targets | {request.claim_id}
+        )
+        if budget.dispatchable(projected, limits, False) <= 0:
+            repairs[request.id] = request.model_copy(
+                update={
+                    "status": "deferred",
+                    "reason": (
+                        "the repair and the review it needs do not both fit "
+                        "in what is left outside the reserve"
+                    ),
+                }
+            )
+            continue
+        claim = claims[request.claim_id]
+        task_id = merge.next_id("T", tasks)
+        tasks[task_id] = records.Task(
+            id=task_id,
+            kind="acquisition",
+            role="verifier",
+            objective=request.objective
+            + (f" URL: {request.url}" if request.url else ""),
+            references=list(claim.evidence_ids),
+            issue_id=request.issue_id,
+            target=records.RepairTarget(
+                claim_id=claim.id,
+                claim_version=claim.version,
+                statement=claim.statement,
+                qualification=claim.review_reason,
+                evidence_ids=list(claim.evidence_ids),
+                relationship_id=request.relationship_id,
+                gap=request.objective,
+            ),
+            acceptance=(
+                "The original passage supporting or contradicting the "
+                "claim is retrieved and returned as an attachment."
+            ),
+        )
+        repairs[request.id] = request.model_copy(
+            update={"status": "admitted", "reason": "", "task_id": task_id}
+        )
+        open_targets.add(claim.id)
+        room -= 1
+        log.append(
+            f"repair {request.id}: {task_id} admitted for {claim.id}@"
+            f"{claim.version}"
+        )
+    deferred = sum(1 for r in repairs.values() if r.status == "deferred")
+    if deferred:
+        log.append(f"repairs: {deferred} deferred, kept for the next round")
+    return repairs, tasks, log
+
+
+def stale_repair(task: records.Task, claims: dict[str, records.Claim]) -> bool:
+    """Whether a repair task's target has moved since it was planned.
+
+    The question a repair was sent to answer is the claim as it stood
+    then; once the claim is versioned, the session would be answering a
+    question nobody is asking (plan revision 38 §4.45.4).
+    """
+    target = task.target
+    if target is None:
+        return False
+    held = claims.get(target.claim_id)
+    return held is None or held.version != target.claim_version
+
+
+def settle_repairs(
+    state: state_module.IndustryState, update: dict[str, Any]
+) -> dict[str, records.RepairRequest]:
+    """Record what became of every admitted repair after a merge.
+
+    Plan revision 38 §4.45.4: ``done`` means evidence was actually
+    attached to the target -- a claim that gained a version, or a
+    relationship that gained evidence -- never that a session ran.
+    """
+    repairs = dict(update.get("repairs", state.get("repairs", {})))
+    before_claims = state.get("claims", {})
+    after_claims = update.get("claims", before_claims)
+    before_relations = state.get("relationships", {})
+    after_relations = update.get("relationships", before_relations)
+    tasks = update.get("tasks", state.get("tasks", {}))
+    for rid, request in repairs.items():
+        if request.status != "admitted" or request.task_id is None:
+            continue
+        task = tasks.get(request.task_id)
+        if task is None or task.status in ("pending", "running"):
+            continue
+        old = before_claims.get(request.claim_id)
+        new_claim = after_claims.get(request.claim_id)
+        attached = (
+            old is not None
+            and new_claim is not None
+            and new_claim.version > old.version
+        )
+        if not attached and request.relationship_id:
+            was = before_relations.get(request.relationship_id)
+            now = after_relations.get(request.relationship_id)
+            attached = (
+                was is not None
+                and now is not None
+                and len(now.evidence_ids) > len(was.evidence_ids)
+            )
+        if attached:
+            repairs[rid] = request.model_copy(
+                update={"status": "done", "reason": "evidence attached"}
+            )
+        else:
+            repairs[rid] = request.model_copy(
+                update={
+                    "status": "dropped",
+                    "reason": (
+                        f"the repair task {task.status} without attaching "
+                        "evidence"
+                    ),
+                }
+            )
+    return repairs
 
 
 def pending_review(
@@ -1112,8 +1401,11 @@ def build_graph(
             if state["tasks"][a.task_id].kind == "acquisition"
         )
         admitted = []
+        claims = state.get("claims", {})
         for task in ready:
             if task.kind == "acquisition":
+                # The ceiling is enforced where attempts start, because
+                # a re-queued attempt never passes task creation again.
                 if acquisitions >= limits.acquisition_executions:
                     tasks[task.id] = task.model_copy(
                         update={
@@ -1121,6 +1413,17 @@ def build_graph(
                             "skip_reason": (
                                 f"{limits.acquisition_executions} acquisition "
                                 "attempts is the cap"
+                            ),
+                        }
+                    )
+                    continue
+                if stale_repair(task, claims):
+                    tasks[task.id] = task.model_copy(
+                        update={
+                            "status": "skipped",
+                            "skip_reason": (
+                                f"{task.target.claim_id} changed since the "
+                                "repair was planned"
                             ),
                         }
                     )
@@ -1196,6 +1499,7 @@ def build_graph(
                     update={"evidence_added": True}
                 )
         update["issues"] = issues
+        update["repairs"] = settle_repairs(state, update)
         runtime.drop(_thread_id())
         return update
 
@@ -1557,32 +1861,37 @@ def build_graph(
                 "acquire",
                 text,
             )
-        created = 0
-        wanted = outcome.acquisitions
-        if len(wanted) > limits.acquisitions_per_review:
-            update["route_log"].append(
-                f"review: {len(wanted)} acquisition requests, the first "
-                f"{limits.acquisitions_per_review} taken"
-            )
-            wanted = wanted[: limits.acquisitions_per_review]
-        for request in wanted:
-            task_id = merge.next_id("T", tasks)
-            references = []
-            if request.claim_id in claims:
-                references = list(claims[request.claim_id].evidence_ids)
-            tasks[task_id] = records.Task(
-                id=task_id,
-                kind="acquisition",
-                role="verifier",
-                objective=request.objective
-                + (f" URL: {request.url}" if request.url else ""),
-                references=references,
-                acceptance=(
-                    "The original passage supporting or contradicting the "
-                    "claim is retrieved and cited."
-                ),
-            )
-            created += 1
+        # Every request is recorded, then scheduling decides what can
+        # actually run and defers the rest with a reason (plan revision
+        # 38 §4.45.4). Nothing is truncated and nothing is dropped in
+        # silence.
+        reviewed_claims = applied["claims"]
+        repairs, repair_log = record_repairs(
+            state,
+            outcome.acquisitions,
+            reviewed_claims,
+            update["review_rounds"],
+        )
+        update["route_log"].extend(repair_log)
+        repairs, tasks, scheduled_log = schedule_repairs(
+            {
+                **state,
+                "repairs": repairs,
+                "tasks": tasks,
+                "claims": reviewed_claims,
+                "relationships": applied["relationships"],
+                "issues": issues,
+            },
+            limits,
+        )
+        update["route_log"].extend(scheduled_log)
+        created = sum(
+            1
+            for task in tasks.values()
+            if task.kind == "acquisition"
+            and task.id not in state.get("tasks", {})
+        )
+        update["repairs"] = repairs
         update["tasks"] = tasks
         update["issues"] = issues
         if created:
@@ -1590,7 +1899,7 @@ def build_graph(
         remaining = review_remaining({**state, **update})
         update["route_log"].append(
             f"review: {len(outcome.claims)} verdicts, {len(newly_bad)} "
-            f"unsupported/contradicted, {created} acquisition tasks, "
+            f"unsupported/contradicted, {created} repair task(s), "
             f"{remaining} claims still unreviewed"
         )
         return update

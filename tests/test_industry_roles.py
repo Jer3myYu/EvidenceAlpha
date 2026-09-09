@@ -361,3 +361,13 @@ def test_the_final_verifier_sees_the_draft_delivery_publishes():
         if line.strip():
             assert line in delivered
             assert line in text
+
+
+def test_the_report_scope_line_is_rendered_and_never_written():
+    # Plan revision 38 §4.45.5. The Editor used to be told to state
+    # scope and cutoff, `report.render` also rendered them, and the
+    # final verifier flagged the Editor's copy as an uncited assertion
+    # (issue I26 in the after arm) -- which under §4.44.2 now removes
+    # the whole section that carries it.
+    assert "State scope and information cutoff" not in roles.EDITOR_PROMPT
+    assert "rendered for" in roles.EDITOR_PROMPT

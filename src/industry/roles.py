@@ -224,7 +224,8 @@ consistent dimensions, and omit adjacent-industry trivia. Every
 factual sentence cites the claim it rests on as [C#]; write nothing
 factual that no claim supports, and never cite a claim marked
 unsupported or contradicted as fact. Keep unresolved conflicts as
-conflicts. State scope and information cutoff. No buy or sell
+conflicts. The report's scope and information cutoff are rendered for
+you: never write them yourself. No buy or sell
 instructions and no price targets. Prefer fewer, well-supported
 findings to exhaustive unsupported precision.
 """
@@ -948,7 +949,9 @@ def review_description(
             "from its excerpts. List contradictions between excerpts "
             "as sentences naming the claim ids. Request acquisition only "
             "for material claims resting on snippets or contradictions "
-            "needing the original, with the URL when an excerpt names one.",
+            "needing the original, with the URL when an excerpt names one; "
+            "name the claim_id it repairs, and the relationship_id too "
+            "when what is missing is a passage naming both parties.",
         ]
     )
 

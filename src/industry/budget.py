@@ -25,6 +25,7 @@ import threading
 from typing import Any
 
 from industry import admission as admission_module
+from industry import merge
 from industry import records
 from industry import state as state_module
 
@@ -159,10 +160,11 @@ def review_batches(
     state: state_module.IndustryState, limits: records.Limits
 ) -> int:
     """How many review batches the unreviewed material claims need."""
+    relationships = state.get("relationships", {})
     unreviewed = sum(
         1
         for c in state.get("claims", {}).values()
-        if c.needs_review() and c.material
+        if c.material and merge.claim_needs_attention(c, relationships)
     )
     return -(-unreviewed // limits.review_batch)
 
