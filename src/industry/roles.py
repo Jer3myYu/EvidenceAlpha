@@ -21,6 +21,7 @@ from industry import merge
 from industry import calc as calc_module
 from industry import quantities
 from industry import records
+from industry import report
 from industry import state as state_module
 from research import crew
 
@@ -1035,7 +1036,10 @@ def final_review_description(state: state_module.IndustryState) -> str:
             ),
             render_findings(state, reviewed_only=True),
             render_sections(state.get("sections", [])),
-            "Check the exact draft: every factual sentence must be "
+            "\n".join(report.appendices(state, state.get("coverage", []))),
+            "Check the exact draft: the sections above plus the "
+            "limitations and coverage blocks are what delivery "
+            "publishes; every factual sentence must be "
             "supported by the claims it cites (category unsupported when "
             "a sentence asserts more than its claims, or cites none, or "
             "cites a qualified claim without its qualification= "

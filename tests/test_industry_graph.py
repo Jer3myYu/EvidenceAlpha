@@ -2054,3 +2054,61 @@ def test_a_single_call_that_never_succeeds_is_stopped_by_the_ledger(tmp_path):
     spent = budget.ledger(state)
     assert spent.turns <= limits.model_calls
     assert spent.wall_clock_s <= limits.wall_clock_s
+
+
+def test_a_decimal_does_not_end_a_factual_unit():
+    # Headline live run 4 (thread b9632d7d, 2026-09-08): every ASCII "."
+    # was a sentence terminator, so "20.6%" cut one cited sentence into
+    # fragments that had lost the citation standing at its end. 31 of
+    # the 53 open material issues that run were such fragments.
+    cited = (
+        "全球掩模基板市场高度寡头垄断——豪雅份额超过60%，信越化学份额20.6%，"
+        "AGC份额16.1%（较上年10.3%提升5.8个百分点）[C1]。"
+    )
+    share = (
+        "2020年全球平板显示掩模版市场占有率20.13%，位居全球第二"
+        "（仅次于Photronics 22.31%）[C1]。"
+    )
+    revenue = "Photronics FY2024营收约8.669亿美元（FY2023约8.921亿美元）[C1]。"
+    for text in (cited, share, revenue):
+        assert report.factual_units(text) == [text]
+
+
+def test_a_cited_sentence_of_several_decimals_raises_no_citation_issue():
+    # The same run's false "uncited sentence with a number" issues: the
+    # sentence carries its [C1] once, at the end, where the fragments
+    # could not see it.
+    claims = {
+        "C1": records.Claim(
+            id="C1", statement="s", kind="fact", review="supported"
+        )
+    }
+    section = records.Section(
+        id="economics",
+        title="经济性",
+        text=(
+            "全球掩模基板市场高度寡头垄断——豪雅份额超过60%，"
+            "信越化学份额20.6%，AGC份额16.1%"
+            "（较上年10.3%提升5.8个百分点）[C1]。\n"
+            "Photronics FY2024营收约8.669亿美元[C1]。\n"
+        ),
+        claim_ids=["C1"],
+    )
+    assert not report.check_citations([section], claims, [])
+
+
+def test_ordinary_sentence_boundaries_still_end_a_factual_unit():
+    # The decimal rule must not swallow real boundaries: a period ends a
+    # sentence everywhere except between two digits.
+    assert report.factual_units("份额60%。产能翻倍。") == [
+        "份额60%。",
+        "产能翻倍。",
+    ]
+    assert report.factual_units("Revenue was 8.6. It fell in 2025.") == [
+        "Revenue was 8.6.",
+        "It fell in 2025.",
+    ]
+    assert report.factual_units("Growth stalled. 2024 was flat.") == [
+        "Growth stalled.",
+        "2024 was flat.",
+    ]

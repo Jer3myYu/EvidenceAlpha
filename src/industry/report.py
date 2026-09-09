@@ -22,7 +22,7 @@ from industry import state as state_module
 REPORTS_DIR = "data/reports"
 _CITATION = re.compile(r"\[(C\d+)(?:\s*,\s*(C\d+))*\]")
 _CITATION_IDS = re.compile(r"C\d+")
-_SENTENCE = re.compile(r"[^。！？.!?\n]+[。！？.!?]?")
+_TERMINATORS = "。！？!?."
 _DIGITS = re.compile(r"\d")
 _CLAIM_ID = re.compile(r"\bC\d+\b")
 _STATUS_TEXT = {
@@ -169,6 +169,37 @@ _SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
 _LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 
 
+def _ends_unit(text: str, index: int) -> bool:
+    """Whether the character at ``index`` terminates a factual unit.
+
+    Every terminator ends one, with a single exception: an ASCII period
+    between two digits is a decimal point. Cutting there would split a
+    figure and leave the fragments without the citation standing at the
+    sentence's real end.
+    """
+    char = text[index]
+    if char not in _TERMINATORS:
+        return False
+    if char != ".":
+        return True
+    before = text[index - 1] if index else ""
+    after = text[index + 1] if index + 1 < len(text) else ""
+    return not (before.isdigit() and after.isdigit())
+
+
+def _sentences(line: str) -> list[str]:
+    """One line split into sentences, decimal figures kept whole."""
+    units: list[str] = []
+    start = 0
+    for index in range(len(line)):
+        if _ends_unit(line, index):
+            units.append(line[start : index + 1])
+            start = index + 1
+    if start < len(line):
+        units.append(line[start:])
+    return units
+
+
 def factual_units(text: str) -> list[str]:
     """The units a citation check judges: sentences, table rows, items.
 
@@ -193,7 +224,7 @@ def factual_units(text: str) -> list[str]:
             units.append(line)
             continue
         line = _LIST_MARK.sub("", line)
-        units.extend(s.strip() for s in _SENTENCE.findall(line) if s.strip())
+        units.extend(s.strip() for s in _sentences(line) if s.strip())
     return units
 
 
@@ -278,6 +309,52 @@ def _cite(match: re.Match, claims, evidence, order) -> str:
     return "[" + ", ".join(str(n) for n in numbers) + "]"
 
 
+def appendices(
+    state: state_module.IndustryState,
+    coverage: list[records.Coverage],
+) -> list[str]:
+    """The substantive blocks delivery appends after the sections.
+
+    One definition of the draft being verified. The limitations (every
+    unresolved issue) and the question coverage carry meaning the reader
+    acts on, and a draft points at them by name, so the final verifier
+    is given exactly these lines too -- it saw the sections alone until
+    2026-09-08 and reported the limitations section missing from a
+    report that has one. Delivery-only metadata stays out: the title,
+    the status line and the numbered source list are mechanical, and the
+    verifier reads ``[C#]`` claim ids rather than source numbers.
+
+    Args:
+      state: The run state; ``brief`` fixes the language, ``issues`` the
+        limitations.
+      coverage: The coverage rows delivery publishes.
+
+    Returns:
+      The Markdown lines, in delivery's order.
+    """
+    zh = state["brief"].language == "zh"
+    unresolved = [
+        i
+        for i in state.get("issues", {}).values()
+        if i.status in records.UNRESOLVED_ISSUE_STATUSES
+    ]
+    lines: list[str] = []
+    if unresolved:
+        lines += ["## " + ("局限性" if zh else "Limitations"), ""]
+        for issue in unresolved:
+            lines.append(
+                f"- [{issue.severity}] {issue.category} on {issue.target}: "
+                f"{issue.description}"
+                + (f" ({issue.resolution})" if issue.resolution else "")
+            )
+        lines.append("")
+    lines += ["## " + ("问题覆盖" if zh else "Coverage"), ""]
+    for item in coverage:
+        lines.append(f"- Q{item.question}: {item.status}")
+    lines.append("")
+    return lines
+
+
 def render(
     state: state_module.IndustryState,
     coverage: list[records.Coverage],
@@ -312,19 +389,7 @@ def render(
         text = redact(section.text, unresolved, section.id, removed_note)
         text = _CITATION.sub(lambda m: _cite(m, claims, evidence, order), text)
         parts += [f"## {section.title}", "", text, ""]
-    if unresolved:
-        parts += ["## " + ("局限性" if zh else "Limitations"), ""]
-        for issue in unresolved:
-            parts.append(
-                f"- [{issue.severity}] {issue.category} on {issue.target}: "
-                f"{issue.description}"
-                + (f" ({issue.resolution})" if issue.resolution else "")
-            )
-        parts.append("")
-    parts += ["## " + ("问题覆盖" if zh else "Coverage"), ""]
-    for item in coverage:
-        parts.append(f"- Q{item.question}: {item.status}")
-    parts.append("")
+    parts += appendices(state, coverage)
     parts += ["## " + ("来源" if zh else "Sources"), ""]
     parts += source_lines or ["(none cited)"]
     parts.append("")

@@ -2,6 +2,7 @@
 
 import quantity_support as support
 from industry import records
+from industry import report
 from industry import roles
 
 NOW = "2026-09-07T00:00:00+00:00"
@@ -316,3 +317,47 @@ def test_an_empty_reviewed_selection_renders_no_claims():
     assert roles.reviewed_claim_ids(state) == []
     assert roles.render_claims(state, [], False, 10_000) == "Claims: none."
     assert "C1" in roles.render_claims(state, None, False, 10_000)
+
+
+def test_the_final_verifier_sees_the_draft_delivery_publishes():
+    # Headline live run 4 (thread b9632d7d, 2026-09-08): the verifier was
+    # shown render_sections() alone, while delivery appended the
+    # limitations and the question coverage. It reported the limitations
+    # section missing from a report that has one, three times, as
+    # material issues.
+    state = sample_state()
+    state["sections"] = [
+        records.Section(
+            id="scope",
+            title="范围",
+            text="具体缺口见文末“局限性”。",
+            claim_ids=[],
+        )
+    ]
+    state["issues"] = {
+        "I1": records.Issue(
+            id="I1",
+            key="missing_evidence:Q4",
+            category="missing_evidence",
+            severity="material",
+            target="Q4",
+            requested_action="research",
+            description="Q4 uncovered: 需求驱动的议价机制",
+        )
+    }
+    coverage = [
+        records.Coverage(question=4, status="uncovered"),
+        records.Coverage(question=5, status="partial"),
+    ]
+    state["coverage"] = coverage
+    text = roles.final_review_description(state)
+    assert "局限性" in text
+    assert "Q4 uncovered: 需求驱动的议价机制" in text
+    assert "问题覆盖" in text
+    assert "Q4: uncovered" in text and "Q5: partial" in text
+    # One authoritative definition: the very lines delivery publishes.
+    delivered = report.render(state, coverage, "incomplete")
+    for line in report.appendices(state, coverage):
+        if line.strip():
+            assert line in delivered
+            assert line in text
