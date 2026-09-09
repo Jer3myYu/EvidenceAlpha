@@ -1781,6 +1781,22 @@ def build_graph(
                     + (outcome.summary or "no summary"),
                     draft_version=version,
                 )
+            # A retention approval that names no frozen body section
+            # grants nothing -- `retainable_sections` drops it, and a
+            # title is never guessed into an id. It used to do so in
+            # silence (plan revision 37 §4.44.3).
+            rejected = [
+                value
+                for value in outcome.retainable
+                if value not in subject.sections
+            ]
+            if rejected:
+                update["route_log"].append(
+                    f"retainable_rejected: draft {version}, subject "
+                    f"{subject.digest[:12]}: "
+                    + ", ".join(repr(value) for value in rejected)
+                    + " name no body section; no retention granted"
+                )
             update["final_review"] = outcome
             update["final_review_version"] = version
             update["review_subject"] = subject

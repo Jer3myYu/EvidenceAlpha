@@ -40,10 +40,18 @@ class _View:
     calculations: dict[str, records.Calculation] = dataclasses.field(
         default_factory=dict
     )
+    # The claims citability is *validated* against, when that is a
+    # wider set than the ones earning credit: a delivered body cites a
+    # derived claim without citing its producers, and
+    # ``merge.producer_chain_intact`` walks them (plan revision 37
+    # §4.44.1). Empty means the credit set validates itself.
+    support: dict[str, records.Claim] = dataclasses.field(default_factory=dict)
 
     def reviewed(self, claim: records.Claim) -> bool:
         """Whether the claim counts at all (``merge.citable``)."""
-        return merge.citable(claim, self.claims, self.calculations)
+        return merge.citable(
+            claim, self.support or self.claims, self.calculations
+        )
 
     def context_backed(self, claim: records.Claim) -> bool:
         """Supported, with original context whose version is verifiable."""
@@ -354,6 +362,7 @@ def _clamp(
 def derive(
     state: state_module.IndustryState,
     proposal: records.LeadAssessment | None,
+    support: dict[str, records.Claim] | None = None,
 ) -> list[records.Coverage]:
     """Derive the coverage of every required question.
 
@@ -362,12 +371,16 @@ def derive(
       proposal: The Lead's assessment, if one was made; its status per
         question is stored as ``lead_status`` and can only lower the
         derived status, never raise it.
+      support: The claims citability is validated against, when the
+        claims earning credit are a subset of the registry (delivery
+        coverage). ``None`` validates the credit set against itself.
 
     Returns:
       One ``Coverage`` per required question, in question order.
     """
     view = _View(
         claims=state.get("claims", {}),
+        support=support or {},
         evidence=state.get("evidence", {}),
         versions=state.get("source_versions", {}),
         findings=list(state.get("findings", {}).values()),
@@ -423,10 +436,14 @@ def derive(
 class UsefulnessFloor:
     """The Level-B bar: one rule, in one place, tuned in one object.
 
-    Plan revision 33 §4.39.3. The constants are a starting point, not a
+    Plan revision 33 §4.39.3, amended by revision 37 §4.44.1: the rules
+    read two sets. Coverage, and the definition anchor, come from the
+    body's citable claims ``C(D)``; ``min_supported_claims`` counts the
+    supported ones ``P(D)``. The constants are a starting point, not a
     validated threshold; they are calibrated on fixtures before being
     fixed, which is why they live here rather than spread through the
-    delivery code.
+    delivery code. None of them moved when the counting rule was
+    corrected.
     """
 
     mandatory_questions: tuple[int, ...] = (1, 2)
@@ -449,10 +466,18 @@ FLOOR = UsefulnessFloor()
 def delivered_claims(
     state: state_module.IndustryState, sections: list[records.Section]
 ) -> dict[str, records.Claim]:
-    """The supported claims the delivered body actually cites.
+    """The citable claims the delivered body actually cites -- ``C(D)``.
 
     Computed from what survives in the body, never from the registry: a
     finding nobody copied into the report teaches the reader nothing.
+    Citable, not supported: a qualified claim carrying its
+    qualification is what the body may legitimately rest on
+    (``merge.citable``), and it earns coverage credit here exactly as
+    it does everywhere else in this module. What it never earns is the
+    strength minimum, which ``meets_floor`` counts separately (plan
+    revision 37 §4.44.1). Citability is validated against the whole
+    registry, because a derived claim's producers need not be cited
+    themselves.
     """
     claims = state.get("claims", {})
     live = state.get("calculations", {})
@@ -462,9 +487,16 @@ def delivered_claims(
     return {
         cid: claims[cid]
         for cid in cited
-        if cid in claims
-        and claims[cid].review == "supported"
-        and merge.citable(claims[cid], claims, live)
+        if cid in claims and merge.citable(claims[cid], claims, live)
+    }
+
+
+def delivered_strength(
+    kept: dict[str, records.Claim],
+) -> dict[str, records.Claim]:
+    """The members of ``C(D)`` currently ``supported`` -- ``P(D)``."""
+    return {
+        cid: claim for cid, claim in kept.items() if claim.review == "supported"
     }
 
 
@@ -473,7 +505,11 @@ def delivery_coverage(
 ) -> list[records.Coverage]:
     """Coverage of what the delivered body says, not of the registry."""
     kept = delivered_claims(state, sections)
-    return derive({**state, "claims": kept}, state.get("assessment"))
+    return derive(
+        {**state, "claims": kept},
+        state.get("assessment"),
+        support=state.get("claims", {}),
+    )
 
 
 def meets_floor(
@@ -493,7 +529,11 @@ def meets_floor(
     """
     if not sections:
         return False, "no substantive body survived"
+    # Two sets, never one: coverage and the definition anchor come from
+    # what the body may citably rest on, the minimum count from what is
+    # currently supported (plan revision 37 §4.44.1).
     kept = delivered_claims(state, sections)
+    strong = delivered_strength(kept)
     rows = {c.question: c for c in delivery_coverage(state, sections)}
     missing = [
         q
@@ -514,10 +554,10 @@ def meets_floor(
             f"{len(answered)} of {floor.central_required} central "
             "questions have surviving content",
         )
-    if len(kept) < floor.min_supported_claims:
+    if len(strong) < floor.min_supported_claims:
         return (
             False,
-            f"{len(kept)} of {floor.min_supported_claims} supported "
+            f"{len(strong)} of {floor.min_supported_claims} supported "
             "claims survive in the body",
         )
     topics = {t for claim in kept.values() for t in claim.reviewed_topics}
@@ -525,7 +565,8 @@ def meets_floor(
         return False, "no surviving product definition or industry boundary"
     return (
         True,
-        f"{len(kept)} supported claims, {len(answered)} central questions",
+        f"{len(kept)} citable claims ({len(strong)} supported), "
+        f"{len(answered)} central questions",
     )
 
 

@@ -199,6 +199,41 @@ def redact(
     return text
 
 
+def blocking_issues(
+    issues: list[records.Issue], section: records.Section
+) -> list[records.Issue]:
+    """The section's material issues that name nothing removable.
+
+    The one authority behind both the delivery plan and the status, so
+    they can never disagree about whether an issue's text would
+    actually go (plan revision 37 §4.44.2). An issue blocks when it
+    carries no text at all -- every model-authored final-review issue
+    does, because ``records.SectionIssue`` has no text field -- or when
+    its exact unit is no longer in the draft, or when removing it
+    together with the section's other units would empty a table. A
+    blocking issue removes the whole section: the text is never
+    guessed, and the section is never silently kept.
+
+    Args:
+      issues: Every issue in the run.
+      section: The section the delivery plan is judging.
+
+    Returns:
+      The blocking issues, in registry order.
+    """
+    named = [
+        issue
+        for issue in issues
+        if issue.status in records.UNRESOLVED_ISSUE_STATUSES
+        and issue.severity == "material"
+        and issue.category in ("unsupported", "contradiction")
+        and issue.target == section.id
+    ]
+    units = [issue.text for issue in named if issue.text]
+    stuck = set(unremovable_units(section.text, units))
+    return [issue for issue in named if not issue.text or issue.text in stuck]
+
+
 def unremovable_section_issues(
     state: state_module.IndustryState,
 ) -> list[records.Issue]:
@@ -212,19 +247,10 @@ def unremovable_section_issues(
     equally unremovable: carrying a text field never meant the text
     would actually go.
     """
-    sections = {s.id: s for s in state.get("sections", [])}
     out: list[records.Issue] = []
-    for issue in state.get("issues", {}).values():
-        if (
-            issue.status not in records.UNRESOLVED_ISSUE_STATUSES
-            or issue.severity != "material"
-            or issue.category not in ("unsupported", "contradiction")
-            or issue.target not in sections
-        ):
-            continue
-        text = sections[issue.target].text
-        if not issue.text or unremovable_units(text, [issue.text]):
-            out.append(issue)
+    issues = list(state.get("issues", {}).values())
+    for section in state.get("sections", []):
+        out.extend(blocking_issues(issues, section))
     return out
 
 
@@ -704,10 +730,10 @@ def plan_delivery(state: state_module.IndustryState, note: str) -> DeliveryPlan:
     when the review named that section retainable and it has not
     changed since. An ineligible section keeps only the units that
     repeat an approved claim statement verbatim. A required removal that
-    cannot be applied safely -- stale text, or a row that would empty
-    its table -- escalates to removing the section, never to a partial
-    edit. A surviving unit whose citations no longer resolve goes with
-    its section.
+    cannot be applied safely -- no text at all, stale text, or a row
+    that would empty its table -- escalates to removing the section,
+    never to a partial edit (plan revision 37 §4.44.2). A surviving
+    unit whose citations no longer resolve goes with its section.
 
     Args:
       state: The run state at delivery.
@@ -752,12 +778,18 @@ def plan_delivery(state: state_module.IndustryState, note: str) -> DeliveryPlan:
                 removed.append(section.id)
                 reasons.append(f"{section.id}: removed, no reviewed wording")
             continue
-        units = removable_issue_units(issues, section.id)
-        if unremovable_units(section.text, units):
+        blocked = blocking_issues(issues, section)
+        if blocked:
+            # A material issue that names no unit this section can give
+            # up takes the section with it (plan revision 37 §4.44.2).
+            # Every model-authored final-review issue is one of these,
+            # so before this rule a known unsupported sentence stayed
+            # in the body with nothing to remove it.
             removed.append(section.id)
+            named = ", ".join(issue.id for issue in blocked)
             reasons.append(
                 f"{section.id}: removed, a required removal could not be "
-                "applied safely"
+                f"applied safely ({named})"
             )
             changed = True
             continue

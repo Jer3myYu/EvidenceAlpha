@@ -10,7 +10,10 @@ fails closed.
 
 import dataclasses
 
+import quantity_support as support
+
 from industry import coverage as coverage_module
+from industry import merge
 from industry import records
 from industry import report
 from industry import roles
@@ -42,6 +45,7 @@ def _issue(text: str | None) -> records.Issue:
 def _state(section: records.Section, issue: records.Issue) -> dict:
     return {
         "brief": roles.default_brief("光掩模产业调研"),
+        "draft_version": 1,
         "sections": [section],
         "claims": {
             "C1": records.Claim(
@@ -539,3 +543,275 @@ def test_a_registry_claim_the_body_never_cites_does_not_count():
     kept = coverage_module.delivered_claims(state, body)
     assert set(kept) == {"C1"}
     assert not coverage_module.meets_floor(state, body)[0]
+
+
+# --- plan revision 37 §4.44: strength and coverage are two floors ----------
+
+
+def _qualify(state: dict, *ids: str, reason: str = "片段无原文佐证") -> dict:
+    """Requalify claims the way the Verifier's snippet rule does."""
+    for cid in ids:
+        state["claims"][cid] = state["claims"][cid].model_copy(
+            update={"review": "qualified", "review_reason": reason}
+        )
+    return state
+
+
+def arm_state(supported_facts: int = 6) -> dict:
+    """A body shaped like the recorded fixture arms.
+
+    The after arm (thread `a1ce9159`) delivered 45 cited claims, all of
+    them citable: 12 `supported` and 33 `qualified`, 16 of its 19 map
+    claims among the latter, because a claim resting on a search
+    snippet without original context is `qualified` by definition. Here
+    the map claims carry the industry explanation and are qualified,
+    while a handful of plain facts stay supported.
+    """
+    state = useful_state(BODY)
+    text = state["sections"][0].text
+    for n in range(9, 9 + supported_facts):
+        cid = f"C{n}"
+        state["claims"][cid] = _claim(
+            cid,
+            f"事实{n}",
+            topics=["demand_driver"],
+            reviewed_topics=["demand_driver"],
+        )
+        text += f"事实{n}[{cid}]。"
+    state["sections"] = [
+        records.Section(
+            id="intro",
+            title="概述",
+            text=text,
+            claim_ids=report.cited_claims(text),
+        )
+    ]
+    return _qualify(state, "C3", "C4", "C5", "C6", "C7")
+
+
+def test_coverage_counts_citable_claims_and_strength_counts_supported():
+    # The blocker of 2026-09-09: `delivered_claims` kept only supported
+    # claims, so the floor judged a body by a third of the evidence it
+    # legitimately rests on. Coverage is `C(D)`, the minimum is `P(D)`.
+    state = arm_state()
+    body = state["sections"]
+    kept = coverage_module.delivered_claims(state, body)
+    assert len(kept) == 14
+    assert set(coverage_module.delivered_strength(kept)) == {
+        "C1",
+        "C2",
+        "C8",
+        "C9",
+        "C10",
+        "C11",
+        "C12",
+        "C13",
+        "C14",
+    }
+    row = {
+        c.question: c for c in coverage_module.delivery_coverage(state, body)
+    }
+    # The qualified map claims carry Q1 and Q2, exactly as they do in
+    # `derive` over the registry everywhere else in the system.
+    assert row[1].status != "uncovered"
+    assert row[2].status != "uncovered"
+    assert "C6" in row[2].claim_ids
+    ok, why = coverage_module.meets_floor(state, body)
+    assert ok and "14 citable claims (9 supported)" in why
+
+
+def test_qualified_claims_never_satisfy_the_supported_minimum():
+    # Five supported claims and any number of qualified ones is still
+    # five: the strength floor is `P(D)` alone.
+    state = arm_state(supported_facts=2)
+    body = state["sections"]
+    kept = coverage_module.delivered_claims(state, body)
+    strong = coverage_module.delivered_strength(kept)
+    assert len(kept) == 10 and len(strong) == 5
+    row = {
+        c.question: c.status
+        for c in coverage_module.delivery_coverage(state, body)
+    }
+    assert row[1] != "uncovered" and row[2] != "uncovered"
+    ok, why = coverage_module.meets_floor(state, body)
+    assert not ok and "5 of 6 supported claims" in why
+
+
+def test_a_qualification_off_the_record_earns_no_coverage_and_no_topic():
+    # `Claim.is_reviewed`: a qualified claim whose reason is missing
+    # cannot carry its restriction to the reader, so it is not citable
+    # -- and a claim that may not be cited may not be counted either.
+    state = arm_state()
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"review": "qualified", "review_reason": None}
+    )
+    body = state["sections"]
+    kept = coverage_module.delivered_claims(state, body)
+    assert "C1" not in kept
+    state["claims"]["C2"] = state["claims"]["C2"].model_copy(
+        update={"review": "qualified", "review_reason": None}
+    )
+    ok, why = coverage_module.meets_floor(state, body)
+    assert not ok and "product definition or industry boundary" in why
+
+
+def test_a_qualified_definition_anchor_satisfies_the_third_rule():
+    # Rule 3 asks for a verifier-confirmed topic, not a supported one.
+    state = arm_state()
+    state = _qualify(state, "C1", "C2")
+    body = state["sections"]
+    ok, why = coverage_module.meets_floor(state, body)
+    assert ok and "citable claims" in why
+
+
+def test_the_before_arm_shape_still_withholds_with_qualified_counted():
+    # The before arm (thread `ef342cca`) fails Q2 on its own content:
+    # counting its 22 qualified claims changes nothing, because no
+    # surviving claim establishes a value-chain link at all. Counting
+    # citable claims is not a blanket pass.
+    state = arm_state()
+    text = state["sections"][0].text.replace("上游连接中游[C6]。", "")
+    state["sections"] = [
+        records.Section(
+            id="intro",
+            title="概述",
+            text=text,
+            claim_ids=report.cited_claims(text),
+        )
+    ]
+    body = state["sections"]
+    row = {
+        c.question: c.status
+        for c in coverage_module.delivery_coverage(state, body)
+    }
+    assert row[2] == "uncovered"
+    ok, why = coverage_module.meets_floor(state, body)
+    assert not ok and "Q2 uncovered" in why
+    state = certify(state, consistent=False)
+    _, result = _classify(state)
+    assert result.level == "diagnostic_only" and not result.sections
+
+
+def test_the_after_arm_shape_is_level_b_only_once_its_issue_is_handled():
+    # Both halves of revision 37 in one place. With no unresolved
+    # material issue the body is a useful partial report; with I23 --
+    # open, material, `unsupported`, naming no removable unit -- the
+    # section goes, and with it the body.
+    state = certify(arm_state(), consistent=False)
+    _, result = _classify(state)
+    assert result.level == "partial" and result.sections == ["intro"]
+    state["issues"] = {
+        "I23": records.Issue(
+            id="I23",
+            key="unsupported:intro:china",
+            category="unsupported",
+            severity="material",
+            target="intro",
+            requested_action="remove",
+            description="[intro] 中国厂商尚无量产迹象[C6]，但该主张并未如此陈述",
+        )
+    }
+    plan, result = _classify(state)
+    assert plan.removed == ["intro"] and not plan.sections
+    assert "I23" in " ".join(plan.reasons)
+    assert result.level == "diagnostic_only" and not result.sections
+
+
+def test_a_material_issue_naming_no_removable_unit_removes_its_section():
+    # Every model-authored final-review issue carries no text
+    # (`SectionIssue` has none), so exact-unit removal could never
+    # target it and the offending sentence stayed in the body.
+    section = _section("豪雅份额超过60%[C1]。")
+    state = _state(section, _issue(None))
+    assert [i.id for i in report.blocking_issues([_issue(None)], section)] == [
+        "I1"
+    ]
+    plan = report.plan_delivery(certify(state), "[removed]")
+    assert plan.removed == ["economics"] and not plan.sections
+    assert plan.changed
+
+
+def test_one_authority_answers_whether_an_issue_can_be_removed():
+    # `unremovable_section_issues` (the status) and `plan_delivery`
+    # (the body) read the same rule, so they cannot disagree.
+    for text in (None, "一句在草稿里根本不存在的话。"):
+        section = _section("豪雅份额超过60%[C1]。")
+        state = _state(section, _issue(text))
+        blocked = report.unremovable_section_issues(state)
+        plan = report.plan_delivery(certify(state), "[removed]")
+        assert [i.id for i in blocked] == ["I1"]
+        assert plan.removed == ["economics"]
+
+
+def test_a_row_removal_that_would_empty_a_table_takes_the_section():
+    # Fail closed, and never render half a table: the note would
+    # otherwise stand between the rule and nothing.
+    one_row = "| 公司 | 份额 |\n|---|---|\n| DNP | 5% [C1] |\n"
+    section = _section(one_row)
+    state = _state(section, _issue("| DNP | 5% [C1] |"))
+    plan = report.plan_delivery(certify(state), "[removed]")
+    assert plan.removed == ["economics"] and not plan.sections
+
+
+def test_citability_is_validated_wider_than_credit_is_counted():
+    # A delivered body cites a derived claim without citing the claims
+    # it was computed from; `producer_chain_intact` walks those, so the
+    # credit set must not be the registry the check reads.
+    state = useful_state(BODY)
+    quantity = support.bound(52, "亿元", "E1", "52亿元", period="2024")
+    parent = records.Claim(
+        id="C21",
+        statement="Acme 2024 revenue was 52亿元",
+        kind="fact",
+        review="supported",
+        evidence_ids=["E1"],
+        quantity=quantity,
+        material=True,
+    )
+    state["claims"]["C21"] = parent
+    calculation = records.Calculation(
+        id="K1",
+        kind="share",
+        label="share",
+        inputs=[support.cinput(parent)],
+        formula="f",
+        result=52.0,
+        unit=support.unit("%"),
+        status="ok",
+    )
+    state["calculations"] = {"K1": calculation}
+    fields = merge.derived_fields(calculation, {"C21": parent})
+    state["claims"]["C20"] = records.Claim(
+        id="C20",
+        kind="derived",
+        material=True,
+        topics=["product"],
+        reviewed_topics=["product"],
+        **fields,
+    )
+    text = BODY + "推导结论[C20]。"
+    state["sections"] = [
+        records.Section(
+            id="intro",
+            title="概述",
+            text=text,
+            claim_ids=report.cited_claims(text),
+        )
+    ]
+    body = state["sections"]
+    kept = coverage_module.delivered_claims(state, body)
+    assert "C20" in kept and "C21" not in kept
+    row = {
+        c.question: c for c in coverage_module.delivery_coverage(state, body)
+    }
+    assert "C20" in row[1].claim_ids
+    # Validating against the credit set alone loses it: the producer is
+    # not there to be found.
+    narrow = {
+        c.question: c
+        for c in coverage_module.derive({**state, "claims": kept}, None)
+    }
+    assert "C20" not in narrow[1].claim_ids
+    # A withdrawn producer still withdraws the result.
+    state["claims"]["C21"] = parent.model_copy(update={"review": "unsupported"})
+    assert "C20" not in coverage_module.delivered_claims(state, body)

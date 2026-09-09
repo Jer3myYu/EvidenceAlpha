@@ -2192,3 +2192,40 @@ def test_ordinary_sentence_boundaries_still_end_a_factual_unit():
         "Growth stalled.",
         "2024 was flat.",
     ]
+
+
+def test_a_retention_approval_naming_no_body_section_is_recorded(tmp_path):
+    # Plan revision 37 §4.44.3. The after arm's Verifier returned
+    # `retainable: ['问题覆盖']` -- a Chinese title, and an appendix
+    # one, where the role asks for section ids. It granted nothing, as
+    # it should, and said nothing about it, which left an operator no
+    # way to see that a retention basis had been thrown away.
+    runtime, api, _, compiled = make(tmp_path)
+
+    async def final_review(state, max_turns, deadline):
+        del state, max_turns, deadline
+        api.calls.append("final")
+        return (
+            records.DraftReview(
+                issues=[],
+                consistent=True,
+                retainable=["问题覆盖", "intro"],
+            ),
+            USAGE,
+        )
+
+    api.final_review = final_review
+    config = persist.thread_config("t-retainable")
+    runtime.begin("t-retainable")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    rejected = [
+        line
+        for line in state["route_log"]
+        if line.startswith("retainable_rejected:")
+    ]
+    assert len(rejected) == 1
+    assert "'问题覆盖'" in rejected[0] and "intro" not in rejected[0]
+    assert "draft 1" in rejected[0]
+    # The valid id still stands; the invalid one is never guessed into
+    # a section, and retention is granted only to what was frozen.
+    assert report.retainable_sections(state) == {"intro"}
