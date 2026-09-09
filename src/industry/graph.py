@@ -675,6 +675,7 @@ def _repair_priority(
 def _projected_review_state(
     state: state_module.IndustryState,
     targets: set[str],
+    limits: records.Limits,
     attempts: int = 0,
 ) -> state_module.IndustryState:
     """The state as it will be once these targets have been repaired.
@@ -701,7 +702,7 @@ def _projected_review_state(
             planned[f"repair-projection.{number}"] = records.Attempt(
                 id=f"repair-projection.{number}",
                 task_id="repair-projection",
-                reserved=budget.reservation_for(state["meta"].limits),
+                reserved=budget.reservation_for(limits),
                 started_at=records.now_iso(),
             )
         projected["attempts"] = planned
@@ -724,11 +725,10 @@ def repair_affordable(
     may touch the write/final-review reserve, which
     ``budget.admit_single_call`` keeps for the reserved nodes alone.
     """
-    if budget.dispatchable(
-        _projected_review_state(state, targets), limits, False
-    ) <= (attempts - 1):
+    projected = _projected_review_state(state, targets, limits)
+    if budget.dispatchable(projected, limits, False) <= attempts - 1:
         return False
-    after = _projected_review_state(state, targets, attempts=attempts)
+    after = _projected_review_state(state, targets, limits, attempts=attempts)
     return budget.admit_single_call(after, limits, "review") > 0
 
 
