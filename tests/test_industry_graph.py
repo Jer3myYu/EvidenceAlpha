@@ -2284,27 +2284,40 @@ def requests_for(state):
     ]
 
 
-def test_every_repair_request_is_recorded_and_the_ceiling_bounds_the_tasks():
-    # 23 requests, a ceiling of 4: four tasks, nineteen deferrals, no
-    # silent truncation (plan revision 38 §4.45.4).
+def test_every_repair_request_is_recorded_and_two_bounds_hold():
+    # 23 requests and nothing truncated (plan revision 38 §4.45.4).
+    # Two bounds decide what becomes a task: the run's repair ceiling,
+    # and what the budget can actually fund -- an untouched ledger at
+    # default limits funds three full attempts, not four.
     state = repair_state(pending=23)
-    limits = records.Limits(acquisition_executions=4)
     repairs, log = graph_module.record_repairs(
         state, requests_for(state), state["claims"], 1
     )
     assert len(repairs) == 23 and log
-    repairs, tasks, _ = graph_module.schedule_repairs(
-        {**state, "repairs": repairs}, limits
+
+    ceiling = records.Limits(acquisition_executions=2)
+    bounded, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, ceiling
     )
-    admitted = [r for r in repairs.values() if r.status == "admitted"]
-    deferred = [r for r in repairs.values() if r.status == "deferred"]
-    assert len(admitted) == 4 and len(deferred) == 19
-    assert len(tasks) == 4
+    admitted = [r for r in bounded.values() if r.status == "admitted"]
+    deferred = [r for r in bounded.values() if r.status == "deferred"]
+    assert len(admitted) == 2 and len(deferred) == 21 and len(tasks) == 2
     assert all("ceiling" in r.reason for r in deferred)
     task = tasks[admitted[0].task_id]
     assert task.kind == "acquisition" and task.target is not None
     assert task.target.claim_version == 1
     assert task.target.qualification == "search snippet only"
+
+    roomy = records.Limits(acquisition_executions=10)
+    slots = budget.dispatchable(state, roomy, False)
+    funded, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, roomy
+    )
+    admitted = [r for r in funded.values() if r.status == "admitted"]
+    assert len(admitted) == slots == len(tasks)
+    assert all(
+        "reserve" in r.reason for r in funded.values() if r.status == "deferred"
+    )
 
 
 def test_a_repair_is_refused_when_its_own_review_would_not_fit():
@@ -2408,11 +2421,211 @@ def test_a_repair_is_done_only_when_evidence_was_attached():
     settled = graph_module.settle_repairs(state, {"claims": state["claims"]})
     assert settled["RQ1"].status == "dropped"
     assert "without attaching evidence" in settled["RQ1"].reason
-    # The same task, with the target versioned by an attachment.
+    # The same task, with this attempt's attachment on the record. Only
+    # the owning task's attempts count: another request for the same
+    # target must not be credited with an attachment it did not make.
     after = {
         "claims": {
             "C1": state["claims"]["C1"].model_copy(update={"version": 2})
-        }
+        },
+        "route_log": [
+            merge.ATTACHED_PREFIX + '{"attempt_id": "T5.1", "claim_id": "C1", '
+            '"evidence_ids": ["E2"]}'
+        ],
     }
     settled = graph_module.settle_repairs(state, after)
     assert settled["RQ1"].status == "done"
+    other = records.RepairRequest(
+        id="RQ2", claim_id="C1", status="admitted", task_id="T7"
+    )
+    state["repairs"] = {"RQ1": request, "RQ2": other}
+    state["tasks"]["T7"] = records.Task(
+        id="T7",
+        kind="acquisition",
+        role="verifier",
+        objective="o",
+        status="done",
+    )
+    settled = graph_module.settle_repairs(state, after)
+    assert settled["RQ1"].status == "done"
+    assert settled["RQ2"].status == "dropped"
+
+
+def test_repairs_cannot_all_pass_the_same_one_slot_test():
+    # A created task holds no reservation until it starts, so capacity
+    # has to be debited inside the scheduling call. Found by the
+    # saved-ledger replay: with `dispatchable` at 1, two repairs were
+    # admitted against the after arm's real round-5 checkpoint.
+    state = repair_state(pending=4)
+    limits = records.Limits()
+    spent = 2000
+    state["tasks"] = {
+        "T1": records.Task(
+            id="T1",
+            kind="research",
+            role="industry",
+            objective="o",
+            status="done",
+        )
+    }
+    state["attempts"] = {
+        "T1.1": records.Attempt(
+            id="T1.1",
+            task_id="T1",
+            reserved=records.Reservation(turns=2, tool_calls=2, seconds=spent),
+            started_at="2026-09-09T00:00:00+00:00",
+            status="done",
+            observed=records.Usage(duration_s=spent),
+        )
+    }
+    slots = budget.dispatchable(state, limits, False)
+    assert slots == 1
+    repairs, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, limits
+    )
+    created = [t for t in tasks.values() if t.kind == "acquisition"]
+    assert len(created) == slots
+    assert len([r for r in repairs.values() if r.status == "deferred"]) == 3
+
+
+def charged(state, seconds):
+    """The state with one finished attempt that spent `seconds`."""
+    return {
+        **state,
+        "tasks": {
+            "T1": records.Task(
+                id="T1",
+                kind="research",
+                role="industry",
+                objective="o",
+                status="done",
+            )
+        },
+        "attempts": {
+            "T1.1": records.Attempt(
+                id="T1.1",
+                task_id="T1",
+                reserved=records.Reservation(
+                    turns=2, tool_calls=2, seconds=seconds
+                ),
+                started_at="2026-09-09T00:00:00+00:00",
+                status="done",
+                observed=records.Usage(duration_s=seconds),
+            )
+        },
+    }
+
+
+def test_a_repair_is_admitted_only_when_its_review_can_still_run():
+    # Post-implementation review of §4.45, finding 1. The projection
+    # priced the review the attachment forces at one review batch
+    # (240s), while admitting a review call really reserves
+    # `single_call_timeout_s` (480s) plus its downstream stages. A
+    # repair could therefore be admitted, withdraw a citable claim, and
+    # leave no affordable way to restore it.
+    limits = records.Limits()
+    base = repair_state(pending=1)
+    admitted_anywhere = False
+    for spent in (500, 1000, 1500, 2000, 2500, 3000):
+        state = charged(base, spent)
+        repairs, _ = graph_module.record_repairs(
+            state, requests_for(state), state["claims"], 1
+        )
+        repairs, tasks, _ = graph_module.schedule_repairs(
+            {**state, "repairs": repairs}, limits
+        )
+        for request in repairs.values():
+            if request.status != "admitted":
+                continue
+            admitted_anywhere = True
+            # The repair has been paid for; its review must still fit.
+            after = {
+                **state,
+                "claims": {
+                    request.claim_id: state["claims"][
+                        request.claim_id
+                    ].model_copy(
+                        update={"review": "unreviewed", "review_reason": None}
+                    )
+                },
+                "attempts": {
+                    **state["attempts"],
+                    "T9.1": records.Attempt(
+                        id="T9.1",
+                        task_id=request.task_id,
+                        reserved=budget.reservation_for(limits),
+                        started_at="2026-09-09T00:00:00+00:00",
+                        status="done",
+                        observed=records.Usage(
+                            duration_s=limits.task_timeout_s
+                        ),
+                    ),
+                },
+            }
+            assert budget.admit_single_call(after, limits, "review") > 0
+        assert len([t for t in tasks.values() if t.kind == "acquisition"]) <= 1
+    assert admitted_anywhere  # the rule bounds repairs, it does not ban them
+
+
+def test_a_closed_request_does_not_suppress_a_later_one():
+    # A review may legitimately ask again once an attempt attached
+    # nothing; deduplicating terminal requests silenced the repeat.
+    state = repair_state(pending=1)
+    first, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    assert len(first) == 1
+    again, _ = graph_module.record_repairs(
+        {**state, "repairs": first}, requests_for(state), state["claims"], 2
+    )
+    assert len(again) == 1  # still open: not asked twice
+    closed = {
+        rid: r.model_copy(update={"status": "dropped", "reason": "nothing"})
+        for rid, r in first.items()
+    }
+    third, _ = graph_module.record_repairs(
+        {**state, "repairs": closed}, requests_for(state), state["claims"], 3
+    )
+    assert len(third) == 2
+    assert any(
+        r.status == "pending" and r.review_round == 3 for r in third.values()
+    )
+
+
+def test_two_requests_for_one_target_do_not_both_run():
+    state = repair_state(pending=1)
+    twice = [
+        records.AcquisitionRequest(objective="original for C1", claim_id="C1"),
+        records.AcquisitionRequest(
+            objective="the filing itself", claim_id="C1"
+        ),
+    ]
+    repairs, _ = graph_module.record_repairs(state, twice, state["claims"], 1)
+    assert len(repairs) == 2
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, records.Limits()
+    )
+    assert len([t for t in tasks.values() if t.kind == "acquisition"]) == 1
+    assert any(
+        r.status == "deferred" and "already targets" in r.reason
+        for r in repairs.values()
+    )
+
+
+def test_a_request_whose_target_stopped_being_repairable_is_closed():
+    state = repair_state(pending=1)
+    repairs, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"material": False}
+    )
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, records.Limits()
+    )
+    assert not [t for t in tasks.values() if t.kind == "acquisition"]
+    request = next(iter(repairs.values()))
+    assert request.status == "dropped" and request.reason

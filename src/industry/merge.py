@@ -359,6 +359,18 @@ class _Registry:
         self.changed.add(claim_id)
         gained = ", ".join(fresh)
         self.log.append(
+            ATTACHED_PREFIX
+            + json.dumps(
+                {
+                    "attempt_id": attempt_id,
+                    "claim_id": claim_id,
+                    "evidence_ids": fresh,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        self.log.append(
             f"{attempt_id}: {claim_id} gained {gained}; version "
             f"{claim.version + 1}, review reset for judgement on the "
             "repaired evidence"
@@ -531,6 +543,30 @@ def _fold_result(
 
 
 RECOVERY_PREFIX = "acquisition_recovery:"
+ATTACHED_PREFIX = "attachment_applied:"
+
+
+def applied_attachments(route_log: list[str]) -> dict[str, set[str]]:
+    """The claims each attempt actually strengthened, by attempt id.
+
+    A settlement audit, nothing more: ``done`` on a repair request must
+    mean *this* attempt attached evidence, not that some attempt in the
+    same merge happened to move the target (post-implementation review
+    of §4.45, finding 2).
+    """
+    found: dict[str, set[str]] = {}
+    for line in route_log:
+        if not line.startswith(ATTACHED_PREFIX):
+            continue
+        try:
+            payload = json.loads(line[len(ATTACHED_PREFIX) :])
+        except ValueError:
+            continue
+        attempt = payload.get("attempt_id")
+        claim_id = payload.get("claim_id")
+        if isinstance(attempt, str) and isinstance(claim_id, str):
+            found.setdefault(attempt, set()).add(claim_id)
+    return found
 
 
 def recovered_acquisitions(route_log: list[str]) -> dict[str, list[str]]:
