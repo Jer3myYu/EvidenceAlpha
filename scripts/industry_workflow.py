@@ -32,6 +32,12 @@ from industry import trace
 from research import persist
 from research import web
 
+_LEVEL_TEXT = {
+    "verified": "verified report",
+    "partial": "PARTIAL REPORT, NOT FULLY VERIFIED",
+    "diagnostic_only": "DIAGNOSTICS ONLY, BODY WITHHELD",
+}
+
 
 def parse_args() -> argparse.Namespace:
     """A question, ``--resume``, or ``--backup``; optional limit overrides."""
@@ -241,7 +247,21 @@ async def main() -> None:
         show("TRACE", "")
         state = await stream(graph, payload, config, runtime)
     meta = state["meta"]
-    show("REPORT", f"{meta.report_status}: {meta.report_path}")
+    delivery = state.get("delivery")
+    if delivery is not None:
+        # The classification and its reason stand before the path: the
+        # status word alone cannot tell a useful partial report from a
+        # withheld one -- both are `incomplete`.
+        lines = [f"{_LEVEL_TEXT[delivery.level]} ({delivery.status})"]
+        lines.append(delivery.reason + ".")
+        if delivery.removed:
+            lines.append("not included: " + ", ".join(delivery.removed))
+        if delivery.floor:
+            lines.append(delivery.floor + ".")
+        lines.append(str(meta.report_path))
+        show("REPORT", "\n".join(lines))
+    else:
+        show("REPORT", f"{meta.report_status}: {meta.report_path}")
     show(
         "COVERAGE",
         "\n".join(

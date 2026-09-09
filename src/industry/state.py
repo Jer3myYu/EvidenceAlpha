@@ -59,6 +59,10 @@ class IndustryState(TypedDict, total=False):
     sections: list[records.Section]
     review: records.ClaimReview | None
     final_review: records.DraftReview | None
+    # The frozen document that review judged, and the basis for
+    # every retention decision at delivery.
+    review_subject: records.ReviewSubject | None
+    delivery: records.DeliveryResult | None
     assessment: records.LeadAssessment | None
     cycle: int
     follow_up_rounds: int

@@ -22,6 +22,7 @@ import asyncio
 import dataclasses
 import math
 import threading
+from typing import Any
 
 from industry import admission as admission_module
 from industry import records
@@ -324,15 +325,20 @@ class Runtime:
         It is never reset by ``begin``: what outlived one invocation is
         still live in the next.
       index_lock: Serializes writes to the vector index.
+      floor: The Level-B usefulness bar delivery classifies against.
+        One rule in one place, so it can be tuned -- and calibrated on
+        fixtures -- without touching the delivery code.
     """
 
     def __init__(
         self,
         limits: records.Limits | None = None,
         reports_dir: str = "data/reports",
+        floor: Any = None,
     ) -> None:
         self.limits = limits or records.Limits()
         self.reports_dir = reports_dir
+        self.floor = floor
         self.admission = admission_module.Admission(self.limits.concurrency)
         self.index_lock = asyncio.Lock()
         self._meters: dict[str, RunMeter] = {}

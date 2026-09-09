@@ -309,7 +309,31 @@ async def replay_industry(
         "completed": bool(last) and not last.next,
         "report_status": persist.recorded_meta(values, "report_status"),
         "report_path": persist.recorded_meta(values, "report_path"),
+        "delivery": _delivery(values),
         "events": events,
+    }
+
+
+def _delivery(values: dict[str, Any]) -> dict[str, Any] | None:
+    """The run's delivery classification, for the header and the card.
+
+    A completed execution is not by itself a quality signal: a partial,
+    unverified report and a withheld one are both ``incomplete``, so the
+    level travels with the status to every surface.
+    """
+    delivery = values.get("delivery")
+    if delivery is None:
+        return None
+    if isinstance(delivery, records.DeliveryResult):
+        delivery = delivery.model_dump()
+    if not isinstance(delivery, dict):
+        return None
+    return {
+        "level": delivery.get("level"),
+        "status": delivery.get("status"),
+        "reason": delivery.get("reason", ""),
+        "removed": delivery.get("removed", []),
+        "floor": delivery.get("floor", ""),
     }
 
 

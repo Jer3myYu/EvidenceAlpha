@@ -1513,8 +1513,16 @@ def build_graph(
     async def final_review(
         state: state_module.IndustryState,
     ) -> dict[str, Any]:
+        # Freeze the subject before the call, so the appendix the
+        # verifier reads is the one delivery renders. This node reopens
+        # issues and re-derives coverage below, and `deliver` derives it
+        # again, which used to let the delivered limitations differ from
+        # the reviewed ones with no new draft and no version change.
+        subject = report.review_subject(state, state.get("coverage") or [])
+        reviewed = {**state, "review_subject": subject}
+
         async def call(max_turns: int, deadline: float):
-            return await api.final_review(state, max_turns, deadline)
+            return await api.final_review(reviewed, max_turns, deadline)
 
         outcome, update = await call_with_reservation(
             state, "final_review", call
@@ -1578,6 +1586,7 @@ def build_graph(
                 )
             update["final_review"] = outcome
             update["final_review_version"] = version
+            update["review_subject"] = subject
         derived = coverage_module.derive(state, state.get("assessment"))
         update["coverage"] = derived
         resolved = resolve_issues(
@@ -1611,15 +1620,19 @@ def build_graph(
         # delivery, resumably, until the survivor has ended.
         runtime.admission.check()
         derived = coverage_module.derive(state, state.get("assessment"))
-        review = state.get("final_review")
-        verified = (
-            review is not None
-            and review.consistent
-            and state.get("final_review_version")
-            == state.get("draft_version", 0)
+        # The gate decides the body before anything renders, and the
+        # classification decides what the body may be called. A
+        # certificate bound to `draft_version` alone never established
+        # that the delivered words were the reviewed ones.
+        plan = report.plan_delivery(state, report.removal_note(state))
+        delivery = coverage_module.classify_delivery(
+            state, derived, plan, runtime.floor or coverage_module.FLOOR
         )
-        status = coverage_module.report_status(derived, state, verified)
-        text = report.render(state, derived, status)
+        delivery = delivery.model_copy(
+            update={"drift": report.appendix_drift(state, derived)}
+        )
+        status = delivery.status
+        text = report.render(state, derived, status, delivery, plan)
         path = report.write_report(_thread_id(), text, runtime.reports_dir)
         meta = state["meta"].model_copy(
             update={
@@ -1631,7 +1644,11 @@ def build_graph(
         return {
             "coverage": derived,
             "meta": meta,
-            "route_log": [f"deliver: {status}; report {path}"],
+            "delivery": delivery,
+            "route_log": [
+                f"deliver: {delivery.level} ({status}); {delivery.reason}; "
+                f"report {path}"
+            ],
         }
 
     graph = StateGraph(state_module.IndustryState)

@@ -454,6 +454,11 @@ class Claim(Record):
     questions: list[int] = pydantic.Field(default_factory=list)
     topics: list[Topic] = pydantic.Field(default_factory=list)
     reviewed_topics: list[Topic] = pydantic.Field(default_factory=list)
+    # Whether the verifier approved this claim's statement for verbatim
+    # standalone delivery. Level B retains a block only on an exact
+    # wording basis; a citation to a supported claim is not one, because
+    # the deterministic check never compares a sentence to its claim.
+    standalone: bool = False
     dimension: str | None = None
     origin: str = ""
     map_ref: str | None = None
@@ -905,6 +910,10 @@ class ClaimVerdict(Record):
     verdict: Verdict
     reason: str
     topics_supported: list[Topic] = pydantic.Field(default_factory=list)
+    # Whether this statement, quoted verbatim and alone, would still be
+    # accurate without the surrounding draft. Defaults to false, so a
+    # verifier that says nothing approves nothing.
+    standalone: bool = False
 
 
 class RelationshipVerdict(Record):
@@ -961,6 +970,50 @@ class DraftReview(Record):
     issues: list[SectionIssue] = pydantic.Field(default_factory=list)
     consistent: bool = True
     summary: str = ""
+    # Section ids that remain accurate on their own if other sections
+    # are removed around them. Defaults to empty: a review that judges
+    # nothing retains nothing.
+    retainable: list[str] = pydantic.Field(default_factory=list)
+
+
+DeliveryLevel = Literal["verified", "partial", "diagnostic_only"]
+
+
+class DeliveryResult(Record):
+    """What delivery decided, and why: the one authority all surfaces read.
+
+    ``report_status`` alone cannot tell a useful partial report from a
+    withheld one -- both are ``incomplete`` -- so the level is recorded
+    beside it and the report, the CLI and Studio all render this record.
+    """
+
+    level: DeliveryLevel
+    status: ReportStatus
+    reason: str = ""
+    sections: list[str] = pydantic.Field(default_factory=list)
+    removed: list[str] = pydantic.Field(default_factory=list)
+    floor: str = ""
+    drift: list[str] = pydantic.Field(default_factory=list)
+
+
+class ReviewSubject(Record):
+    """The exact substantive document one final review judged.
+
+    A certificate binds to this, never to ``draft_version``: a draft can
+    be rewritten, a supporting claim requalified and the appendices
+    re-derived without that counter moving. ``sections`` holds one
+    digest per section, so one changed section loses its own retention
+    approval without invalidating the others.
+    """
+
+    digest: str
+    sections: dict[str, str] = pydantic.Field(default_factory=dict)
+    section_ids: list[str] = pydantic.Field(default_factory=list)
+    # The exact appendix lines shown to the verifier. Delivery renders
+    # these, not a fresh derivation, so the reader and the reviewer see
+    # the same limitations and coverage.
+    appendix: list[str] = pydantic.Field(default_factory=list)
+    draft_version: int = 0
 
 
 class CoverageProposal(Record):
@@ -1157,6 +1210,8 @@ PERSISTED: tuple[type[Record], ...] = (
     MapDraft,
     TaskResult,
     Brief,
+    ReviewSubject,
+    DeliveryResult,
     Reference,
     WorkerInput,
     Issue,

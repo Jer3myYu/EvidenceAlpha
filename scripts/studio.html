@@ -212,6 +212,20 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const cite = s => esc(s).replace(/\[((?:[CSE]\d+)(?:\s*,\s*[CSE]\d+)*)\]/g, '<span class="cite">[$1]</span>');
 const size = s => `${(s || '').length.toLocaleString()} chars · ≈${Math.round((s || '').length / 4).toLocaleString()} tokens`;
 const chip = v => `<span class="chip ${esc(v)}">${esc(v)}</span>`;
+// A completed execution is not a quality signal on its own: a partial
+// unverified report and a withheld one are both `incomplete`, so the
+// level travels with the status to every surface.
+const levelBadge = d => !d || !d.level ? ''
+  : d.level === 'verified' ? '<span class="badge ok">verified</span>'
+  : d.level === 'partial' ? '<span class="badge warn">partial, not fully verified</span>'
+  : '<span class="badge warn">diagnostics only, body withheld</span>';
+const deliveryNote = d => {
+  if (!d || !d.level || d.level === 'verified') return '';
+  const bits = [esc(d.reason || '')];
+  if ((d.removed || []).length) bits.push('not included: ' + esc(d.removed.join(', ')));
+  if (d.floor) bits.push(esc(d.floor));
+  return `<div class="kv">${bits.filter(Boolean).join(' - ')}</div>`;
+};
 const svgEl = (tag, attrs = {}, text) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
 
 // ---------- architecture ----------
@@ -313,7 +327,7 @@ function renderMeta() {
   if (!meta.mode) { m.textContent = 'Start a live run or replay a recorded thread.'; return; }
   const last = lastNode();
   const done = last && last.node === 'deliver';
-  const st = running ? `<span class="badge run">running: ${esc(running)}</span>` : done ? `<span class="badge ok">completed</span> ${chip(last.state.meta.report_status)}` : (events.length ? '<span class="badge warn">interrupted</span>' : '<span class="badge info">starting</span>');
+  const st = running ? `<span class="badge run">running: ${esc(running)}</span>` : done ? `<span class="badge ok">completed</span> ${chip(last.state.meta.report_status)} ${levelBadge(last.state.delivery)}` : (events.length ? '<span class="badge warn">interrupted</span>' : '<span class="badge info">starting</span>');
   m.innerHTML = `<div><b>${esc(meta.mode)}</b>${meta.version ? ' · ' + esc(meta.version) : ''} · thread <code>${esc(meta.thread_id || '…')}</code> ${st}</div><div class="q">${esc(meta.question)}</div>`;
 }
 function renderBudget() {
@@ -363,7 +377,7 @@ function cardFor(e, i) {
   else if (n === 'write') { const secs = u.sections || []; title = `write · ${secs.length} sections`; body = secs.map(x => `<details><summary><b>${esc(x.title)}</b> · ${size(x.text)}</summary><div class="inner prose">${cite(x.text)}</div></details>`).join('') + routeLines(e); }
   else if (n === 'final_review') { const r = u.final_review || {}; title = 'final_review · verifier'; body = ((r.issues || []).length ? tbl(['section', 'category', 'severity', 'description'], r.issues.map(x => [esc(x.section_id), esc(x.category), chip(x.severity), esc(x.description)])) : '<div class="kv">no issues from the draft review</div>') + routeLines(e); }
   else if (n === 'remediate') { title = 'remediate'; body = routeLines(e); }
-  else if (n === 'deliver') { const m = u.meta || {}; title = `deliver · ${chip(m.report_status)}`; body = `<div class="kv">report: <code>${esc(m.report_path)}</code></div>` + tbl(['Q', 'status'], (u.coverage || []).map(c => [`Q${c.question}`, chip(c.status)])) + routeLines(e); }
+  else if (n === 'deliver') { const m = u.meta || {}; title = `deliver · ${chip(m.report_status)} ${levelBadge(u.delivery)}`; body = deliveryNote(u.delivery) + `<div class="kv">report: <code>${esc(m.report_path)}</code></div>` + tbl(['Q', 'status'], (u.coverage || []).map(c => [`Q${c.question}`, chip(c.status)])) + routeLines(e); }
   else { body = routeLines(e); }
   const open = Object.values(s.issues || {}).filter(x => x.status === 'open');
   if (!e.legacy && open.length && ['review', 'assess_coverage', 'final_review', 'remediate', 'deliver'].includes(base)) body += `<details><summary><b>Open issues</b> · ${open.length}</summary><div class="inner">${tbl(['id', 'severity', 'category', 'target', 'action', 'attempts', 'description'], open.map(x => [esc(x.id), chip(x.severity), esc(x.category), esc(x.target), esc(x.requested_action), x.attempts, esc(x.description)]))}</div></details>`;

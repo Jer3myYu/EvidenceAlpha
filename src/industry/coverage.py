@@ -419,6 +419,183 @@ def derive(
     return results
 
 
+@dataclasses.dataclass(frozen=True)
+class UsefulnessFloor:
+    """The Level-B bar: one rule, in one place, tuned in one object.
+
+    Plan revision 33 §4.39.3. The constants are a starting point, not a
+    validated threshold; they are calibrated on fixtures before being
+    fixed, which is why they live here rather than spread through the
+    delivery code.
+    """
+
+    mandatory_questions: tuple[int, ...] = (1, 2)
+    central_required: int = 3
+    min_supported_claims: int = 6
+    require_product: bool = True
+    require_boundary: bool = True
+    require_participant: bool = True
+
+
+FLOOR = UsefulnessFloor()
+
+
+def delivered_claims(
+    state: state_module.IndustryState, sections: list[records.Section]
+) -> dict[str, records.Claim]:
+    """The supported claims the delivered body actually cites.
+
+    Computed from what survives in the body, never from the registry: a
+    finding nobody copied into the report teaches the reader nothing.
+    """
+    claims = state.get("claims", {})
+    live = state.get("calculations", {})
+    cited: set[str] = set()
+    for section in sections:
+        cited.update(report.cited_claims(section.text))
+    return {
+        cid: claims[cid]
+        for cid in cited
+        if cid in claims
+        and claims[cid].review == "supported"
+        and merge.citable(claims[cid], claims, live)
+    }
+
+
+def delivery_coverage(
+    state: state_module.IndustryState, sections: list[records.Section]
+) -> list[records.Coverage]:
+    """Coverage of what the delivered body says, not of the registry."""
+    kept = delivered_claims(state, sections)
+    return derive({**state, "claims": kept}, state.get("assessment"))
+
+
+def meets_floor(
+    state: state_module.IndustryState,
+    sections: list[records.Section],
+    floor: UsefulnessFloor = FLOOR,
+) -> tuple[bool, str]:
+    """Whether the surviving body is still a useful research document.
+
+    Args:
+      state: The run state at delivery.
+      sections: The body delivery would publish.
+      floor: The tunable bar; defaults to ``FLOOR``.
+
+    Returns:
+      Whether the floor is met, and the reason either way.
+    """
+    if not sections:
+        return False, "no substantive body survived"
+    kept = delivered_claims(state, sections)
+    rows = {c.question: c for c in delivery_coverage(state, sections)}
+    missing = [
+        q
+        for q in floor.mandatory_questions
+        if rows.get(q) is None or rows[q].status == "uncovered"
+    ]
+    if missing:
+        names = ", ".join(f"Q{q}" for q in missing)
+        return False, f"{names} uncovered"
+    answered = [
+        q
+        for q in records.CENTRAL_QUESTIONS
+        if rows.get(q) is not None and rows[q].status != "uncovered"
+    ]
+    if len(answered) < floor.central_required:
+        return (
+            False,
+            f"{len(answered)} of {floor.central_required} central "
+            "questions have surviving content",
+        )
+    if len(kept) < floor.min_supported_claims:
+        return (
+            False,
+            f"{len(kept)} of {floor.min_supported_claims} supported "
+            "claims survive in the body",
+        )
+    topics = {t for claim in kept.values() for t in claim.reviewed_topics}
+    if floor.require_product and "product" not in topics:
+        return False, "no surviving product definition"
+    if floor.require_boundary and "boundary" not in topics:
+        return False, "no surviving industry boundary"
+    if floor.require_participant and not _participant_role(state, kept):
+        return False, "no surviving participant supply/buy role"
+    return (
+        True,
+        f"{len(kept)} supported claims, {len(answered)} central questions",
+    )
+
+
+def _participant_role(
+    state: state_module.IndustryState, kept: dict[str, records.Claim]
+) -> bool:
+    """Whether a surviving claim names a participant's supply or buy."""
+    industry_map = state.get("map")
+    if industry_map is None:
+        return False
+    flows = {
+        p.id: bool(p.supplies or p.buys) for p in industry_map.participants
+    }
+    return any(
+        claim.map_ref and flows.get(claim.map_ref, False)
+        for claim in kept.values()
+    )
+
+
+def classify_delivery(
+    state: state_module.IndustryState,
+    coverage: list[records.Coverage],
+    plan: report.DeliveryPlan,
+    floor: UsefulnessFloor = FLOOR,
+) -> records.DeliveryResult:
+    """Decide Level A, B or C for a finished run.
+
+    A needs an applicable certificate over an unchanged body and a
+    status better than ``incomplete``; a substantive change after the
+    review forbids it however well the change went. B needs the body to
+    clear the usefulness floor. C withholds the body.
+    """
+    kept = [s.id for s in plan.sections]
+    if plan.certified and not plan.changed:
+        status = report_status(coverage, state, verified=True)
+        if status != "incomplete":
+            return records.DeliveryResult(
+                level="verified",
+                status=status,
+                reason="final review applies to the delivered body",
+                sections=kept,
+                removed=list(plan.removed),
+            )
+        reason = "verified, but the coverage is incomplete"
+    elif state.get("final_review") is None:
+        reason = "no final review was made of this draft"
+    elif not plan.covered:
+        reason = "the draft changed after its final review"
+    elif not plan.consistent:
+        reason = "the final review did not judge the draft consistent"
+    else:
+        reason = "the body changed after its final review"
+    ok, detail = meets_floor(state, plan.sections, floor)
+    if ok:
+        return records.DeliveryResult(
+            level="partial",
+            status="incomplete",
+            reason=reason,
+            sections=kept,
+            removed=list(plan.removed),
+            floor=detail,
+        )
+    return records.DeliveryResult(
+        level="diagnostic_only",
+        status="incomplete",
+        reason=reason,
+        sections=[],
+        removed=list(plan.removed) + kept,
+        floor=detail,
+    )
+
+
 def report_status(
     coverage: list[records.Coverage],
     state: state_module.IndustryState,

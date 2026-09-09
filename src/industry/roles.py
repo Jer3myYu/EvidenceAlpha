@@ -929,7 +929,10 @@ def review_description(
             render_relationships(state, claim_ids, with_excerpts=True),
             "Judge every claim listed (a verdict per claim id, with "
             "topics_supported naming which of its tagged topics the "
-            "excerpts actually bear on; keep every reason to one short "
+            "excerpts actually bear on; standalone true only when the "
+            "claim's own statement, quoted alone and without the rest of "
+            "the report, would still be accurate and not misleading; "
+            "keep every reason to one short "
             "clause of at most 25 words, naming the excerpt id that "
             "decides it), every relationship listed "
             "(supported only if one of its cited excerpts names both "
@@ -1022,6 +1025,14 @@ async def final_review(
     )
 
 
+def frozen_appendix(state: state_module.IndustryState) -> list[str]:
+    """The appendix lines of record: the frozen ones once one exists."""
+    subject = state.get("review_subject")
+    if subject is not None:
+        return list(subject.appendix)
+    return report.appendices(state, state.get("coverage") or [])
+
+
 def final_review_description(state: state_module.IndustryState) -> str:
     """The Verifier's draft-review task text (pure)."""
     brief = state["brief"]
@@ -1036,7 +1047,7 @@ def final_review_description(state: state_module.IndustryState) -> str:
             ),
             render_findings(state, reviewed_only=True),
             render_sections(state.get("sections", [])),
-            "\n".join(report.appendices(state, state.get("coverage", []))),
+            "\n".join(frozen_appendix(state)),
             "Check the exact draft: the sections above plus the "
             "limitations and coverage blocks are what delivery "
             "publishes; every factual sentence must be "
@@ -1049,6 +1060,10 @@ def final_review_description(state: state_module.IndustryState) -> str:
             "claims they qualify; wording must be intelligible to a "
             "newcomer (category wording, minor). Give the section id and, "
             "where one applies, the claim id. Set consistent=false if any "
-            "material issue exists.",
+            "material issue exists. In retainable, list the section ids "
+            "that would still be accurate on their own if the other "
+            "sections were removed around them -- a section whose "
+            "meaning depends on another section's text, or whose "
+            "qualification sits elsewhere, does not belong there.",
         ]
     )

@@ -383,9 +383,24 @@ class FakeRoles:
         )
 
 
-def make(tmp_path, limits=None, saver=None):
+# These cases exercise routing, issues and redaction with tiny fake
+# drafts, not investor usefulness, so they run under a permissive
+# Level-B floor. The floor itself is covered in test_industry_report.py.
+OPEN_FLOOR = coverage.UsefulnessFloor(
+    mandatory_questions=(),
+    central_required=0,
+    min_supported_claims=0,
+    require_product=False,
+    require_boundary=False,
+    require_participant=False,
+)
+
+
+def make(tmp_path, limits=None, saver=None, floor=OPEN_FLOOR):
     runtime = budget.Runtime(
-        limits or records.Limits(), reports_dir=str(tmp_path / "reports")
+        limits or records.Limits(),
+        reports_dir=str(tmp_path / "reports"),
+        floor=floor,
     )
     api = FakeRoles()
     worker = FakeWorker()
@@ -599,7 +614,12 @@ def test_uncited_number_in_the_draft_reopens_editing(tmp_path):
     assert "write:revise" in api.calls
     # An open editorial issue is a limitation, not a central gap, and
     # its text is redacted from the delivered report.
-    assert state["meta"].report_status == "complete_with_limitations"
+    # Plan revision 33 §4.39: a body redacted after its final review
+    # is a substantive change the certificate no longer covers, so it
+    # is delivered as an explicitly partial Level-B report and never
+    # as complete_with_limitations.
+    assert state["meta"].report_status == "incomplete"
+    assert state["delivery"].level == "partial"
     text = pathlib.Path(state["meta"].report_path).read_text(encoding="utf-8")
     if any(
         i.status == "open" and i.text and "52亿元" in i.text
@@ -741,7 +761,12 @@ def test_final_review_issue_stays_open_until_a_later_clean_review(tmp_path):
     state = run(compiled.ainvoke({"question": "q"}, config))
     issue = [i for i in state["issues"].values() if i.category == "wording"][0]
     assert issue.status == "open" and issue.draft_version >= 1
-    assert state["meta"].report_status == "complete_with_limitations"
+    # Plan revision 33 §4.39: a body redacted after its final review
+    # is a substantive change the certificate no longer covers, so it
+    # is delivered as an explicitly partial Level-B report and never
+    # as complete_with_limitations.
+    assert state["meta"].report_status == "incomplete"
+    assert state["delivery"].level == "partial"
     assert "write:revise" in api.calls  # the cycle rewrote and re-reviewed
 
 
@@ -1340,7 +1365,12 @@ def test_every_unsupported_unit_in_a_section_is_redacted(tmp_path):
         if i.status == "open" and i.target == "intro" and i.text
     }
     assert units == {"本行业需求每年增长99%。", "行业利润率永久保持88%。"}
-    assert state["meta"].report_status == "complete_with_limitations"
+    # Plan revision 33 §4.39: a body redacted after its final review
+    # is a substantive change the certificate no longer covers, so it
+    # is delivered as an explicitly partial Level-B report and never
+    # as complete_with_limitations.
+    assert state["meta"].report_status == "incomplete"
+    assert state["delivery"].level == "partial"
     text = pathlib.Path(state["meta"].report_path).read_text(encoding="utf-8")
     heading = "## 局限性" if "## 局限性" in text else "## Limitations"
     body, _, rest = text.partition(heading)

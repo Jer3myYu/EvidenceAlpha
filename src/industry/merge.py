@@ -836,6 +836,11 @@ def apply_review(
                 "reviewed_topics": [
                     t for t in verdict.topics_supported if t in claim.topics
                 ],
+                # Standalone delivery is approved only for a supported
+                # claim: a qualified statement quoted alone would drop
+                # the restriction that makes it true.
+                "standalone": verdict.standalone
+                and verdict.verdict == "supported",
             }
         )
         # What rests on a claim is invalidated when the claim stops

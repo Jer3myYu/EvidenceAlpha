@@ -10,6 +10,7 @@ appends the open issues as limitations and the status line.
 """
 
 import dataclasses
+import hashlib
 import os
 import pathlib
 import re
@@ -374,15 +375,18 @@ def known_entities(state: state_module.IndustryState) -> list[str]:
 
 def _source_index(
     state: state_module.IndustryState,
+    sections: list[records.Section] | None = None,
 ) -> tuple[dict[str, int], list[str]]:
-    """Number the sources cited by any current section's claims."""
+    """Number the sources cited by the delivered sections' claims."""
     claims = state.get("claims", {})
     evidence = state.get("evidence", {})
     sources = state.get("sources", {})
     versions = state.get("source_versions", {})
+    if sections is None:
+        sections = state.get("sections", [])
     order: dict[str, int] = {}
     lines: list[str] = []
-    for section in state.get("sections", []):
+    for section in sections:
         for cid in cited_claims(section.text):
             claim = claims.get(cid)
             if claim is None:
@@ -486,16 +490,372 @@ def appendices(
     return lines
 
 
+_UNIT = "\x1f"
+
+
+def _support_context(
+    state: state_module.IndustryState, cited: list[str]
+) -> list[str]:
+    """The support a section rests on, as comparable strings.
+
+    A requalified claim, a reworded restriction, a replaced statement or
+    a recomputed calculation all change what the draft means, so each
+    changes the digest and costs the section its approval.
+    """
+    claims = state.get("claims", {})
+    out: list[str] = []
+    for cid in sorted(set(cited)):
+        claim = claims.get(cid)
+        if claim is None:
+            out.append(f"{cid}:absent")
+            continue
+        out.append(
+            _UNIT.join(
+                [
+                    cid,
+                    claim.statement,
+                    claim.review,
+                    claim.review_reason or "",
+                    claim.calculation_id or "",
+                    ",".join(claim.evidence_ids),
+                    "standalone" if claim.standalone else "",
+                ]
+            )
+        )
+    return out
+
+
+def section_digest(
+    state: state_module.IndustryState, section: records.Section
+) -> str:
+    """The identity of one section: its exact text and its support."""
+    parts = [section.id, section.title, section.text]
+    parts += _support_context(state, cited_claims(section.text))
+    return hashlib.sha256(_UNIT.join(parts).encode("utf-8")).hexdigest()
+
+
+def review_subject(
+    state: state_module.IndustryState,
+    coverage: list[records.Coverage],
+) -> records.ReviewSubject:
+    """Freeze the exact document a final review is about to judge.
+
+    Called before the review, so the appendix lines the verifier reads
+    are the ones delivery renders: ``final_review`` reopens issues and
+    re-derives coverage after the call, and delivery derives it again,
+    which used to let the delivered limitations differ from the
+    reviewed ones with no new draft.
+
+    Args:
+      state: The run state as the reviewer will see it.
+      coverage: The coverage rows behind the appendix.
+
+    Returns:
+      The frozen subject, digested per section and as a whole.
+    """
+    sections = state.get("sections", [])
+    appendix = appendices(state, coverage)
+    digests = {s.id: section_digest(state, s) for s in sections}
+    brief = state["brief"]
+    parts = [
+        brief.industry,
+        brief.geography,
+        brief.cutoff,
+        brief.language,
+        brief.mode,
+    ]
+    for section in sections:
+        parts += [section.id, digests[section.id]]
+    parts += appendix
+    return records.ReviewSubject(
+        digest=hashlib.sha256(_UNIT.join(parts).encode("utf-8")).hexdigest(),
+        sections=digests,
+        section_ids=[s.id for s in sections],
+        appendix=appendix,
+        draft_version=state.get("draft_version", 0),
+    )
+
+
+def certificate_applies(state: state_module.IndustryState) -> bool:
+    """Whether the stored review still judges the current body.
+
+    The frozen appendix is what delivery renders, so appendix drift does
+    not invalidate the certificate; it is reported as a diagnostic. A
+    changed section, a changed set of sections, or changed support does
+    invalidate it.
+    """
+    subject = state.get("review_subject")
+    review = state.get("final_review")
+    if subject is None or review is None:
+        return False
+    sections = state.get("sections", [])
+    if [s.id for s in sections] != subject.section_ids:
+        return False
+    return all(
+        subject.sections.get(s.id) == section_digest(state, s) for s in sections
+    )
+
+
+def retainable_sections(state: state_module.IndustryState) -> set[str]:
+    """Sections the review judged able to stand on their own, unchanged.
+
+    A section the verifier did not name, or one whose text or support
+    has changed since, is not retainable: its approval was for the words
+    that were reviewed.
+    """
+    subject = state.get("review_subject")
+    review = state.get("final_review")
+    if subject is None or review is None:
+        return set()
+    named = set(review.retainable)
+    return {
+        section.id
+        for section in state.get("sections", [])
+        if section.id in named
+        and subject.sections.get(section.id) == section_digest(state, section)
+    }
+
+
+def standalone_statements(state: state_module.IndustryState) -> list[str]:
+    """Claim statements the verifier approved for verbatim delivery."""
+    live = state.get("calculations", {})
+    claims = state.get("claims", {})
+    return [
+        claim.statement
+        for claim in claims.values()
+        if claim.standalone
+        and claim.review == "supported"
+        and claim.kind in ("fact", "map")
+        and merge.citable(claim, claims, live)
+    ]
+
+
+def appendix_drift(
+    state: state_module.IndustryState,
+    coverage: list[records.Coverage],
+) -> list[str]:
+    """Appendix lines that changed after the review, as diagnostics.
+
+    The reviewed lines are delivered unchanged; what moved since is
+    reported separately rather than silently rewritten into them.
+    """
+    subject = state.get("review_subject")
+    if subject is None:
+        return []
+    now = appendices(state, coverage)
+    if now == subject.appendix:
+        return []
+    frozen = set(subject.appendix)
+    return [line for line in now if line.strip() and line not in frozen]
+
+
+@dataclasses.dataclass(frozen=True)
+class DeliveryPlan:
+    """The body delivery would publish, and how it got there."""
+
+    sections: list[records.Section]
+    # The review read these exact words: every section is eligible for
+    # retention, whatever verdict it reached about them.
+    covered: bool
+    # Eligible *and* passed: the Level-A condition, with ``changed``.
+    certified: bool
+    consistent: bool
+    changed: bool
+    removed: list[str]
+    reasons: list[str]
+
+
+def _strip_citations(text: str) -> str:
+    return _CITATION.sub("", text).strip().strip("。.").strip()
+
+
+def _standalone_units(
+    section: records.Section, statements: set[str]
+) -> list[str]:
+    """Units of the section that are an approved statement verbatim.
+
+    The exact-wording rule: a unit survives an unreviewed draft only by
+    saying what an approved claim says. Citation markers are the one
+    difference tolerated, because they are delivery's own notation.
+    """
+    kept: list[str] = []
+    for unit in factual_units(section.text):
+        if _strip_citations(unit) in statements:
+            kept.append(unit)
+    return kept
+
+
+def _citations_resolve(state: state_module.IndustryState, text: str) -> bool:
+    """Whether every claim cited by the text may still be cited."""
+    claims = state.get("claims", {})
+    live = state.get("calculations", {})
+    for cid in cited_claims(text):
+        claim = claims.get(cid)
+        if claim is None or not merge.citable(claim, claims, live):
+            return False
+    return True
+
+
+def plan_delivery(state: state_module.IndustryState, note: str) -> DeliveryPlan:
+    """Decide the substantive body, unit by unit, before anything renders.
+
+    The deterministic gate of plan revision 33 §4.39.4. A section is
+    eligible when an applicable certificate covers the whole body, or
+    when the review named that section retainable and it has not
+    changed since. An ineligible section keeps only the units that
+    repeat an approved claim statement verbatim. A required removal that
+    cannot be applied safely -- stale text, or a row that would empty
+    its table -- escalates to removing the section, never to a partial
+    edit. A surviving unit whose citations no longer resolve goes with
+    its section.
+
+    Args:
+      state: The run state at delivery.
+      note: The redaction marker for a removed unit.
+
+    Returns:
+      The plan: the sections to render, whether a certificate covers
+      them, whether anything changed after the review, what was removed
+      and why.
+    """
+    review = state.get("final_review")
+    # A certificate bound to this body means the reviewer read these
+    # exact words. That alone makes a section eligible: a review that
+    # faulted one section did not withdraw the others, and removing a
+    # whole report over one unresolved section is what this contract
+    # exists to avoid.
+    covered = certificate_applies(state)
+    consistent = review is not None and review.consistent
+    certified = covered and consistent
+    issues = list(state.get("issues", {}).values())
+    approved = retainable_sections(state)
+    statements = {
+        _strip_citations(text) for text in standalone_statements(state)
+    }
+    kept: list[records.Section] = []
+    removed: list[str] = []
+    reasons: list[str] = []
+    changed = False
+    for section in state.get("sections", []):
+        if not (covered or section.id in approved):
+            units = _standalone_units(section, statements)
+            changed = True
+            if units:
+                kept.append(
+                    section.model_copy(update={"text": "\n\n".join(units)})
+                )
+                reasons.append(
+                    f"{section.id}: kept {len(units)} approved statement(s); "
+                    "the rest was not reviewed"
+                )
+            else:
+                removed.append(section.id)
+                reasons.append(f"{section.id}: removed, no reviewed wording")
+            continue
+        units = removable_issue_units(issues, section.id)
+        if unremovable_units(section.text, units):
+            removed.append(section.id)
+            reasons.append(
+                f"{section.id}: removed, a required removal could not be "
+                "applied safely"
+            )
+            changed = True
+            continue
+        text = redact(section.text, issues, section.id, note)
+        if text != section.text:
+            changed = True
+            reasons.append(f"{section.id}: unsupported text removed")
+        if not _citations_resolve(state, text):
+            removed.append(section.id)
+            reasons.append(
+                f"{section.id}: removed, a citation no longer resolves"
+            )
+            changed = True
+            continue
+        kept.append(section.model_copy(update={"text": text}))
+    return DeliveryPlan(
+        kept, covered, certified, consistent, changed, removed, reasons
+    )
+
+
+def removal_note(state: state_module.IndustryState) -> str:
+    """The marker delivery leaves where a unit was removed."""
+    return (
+        "[已移除未经核实的表述]"
+        if state["brief"].language == "zh"
+        else "[unverified statement removed]"
+    )
+
+
+def _label_lines(
+    state: state_module.IndustryState, delivery: records.DeliveryResult
+) -> list[str]:
+    """The prominent statement of what this report is, before the body.
+
+    A reader must not be able to mistake a partial, unverified report
+    for a verified one, so the level, the verification condition and
+    what is missing all stand above the first section.
+    """
+    if delivery.level == "verified":
+        return []
+    zh = state["brief"].language == "zh"
+    if delivery.level == "partial":
+        head = (
+            "**不完整——部分研究报告，未经完整最终核验**"
+            if zh
+            else "**Incomplete - partial research report, not fully "
+            "verified**"
+        )
+    else:
+        head = (
+            "**不完整——正文已保留未发布，仅提供诊断信息**"
+            if zh
+            else "**Incomplete - the substantive body was withheld; "
+            "diagnostics only**"
+        )
+    lines = ["> " + head, ">", f"> {delivery.reason}."]
+    if delivery.removed:
+        removed = (
+            "、".join(delivery.removed) if zh else ", ".join(delivery.removed)
+        )
+        label = "未纳入的部分" if zh else "Not included"
+        lines.append(f"> {label}: {removed}.")
+    if delivery.floor:
+        lines.append(f"> {delivery.floor}.")
+    lines.append(
+        "> "
+        + (
+            "覆盖缺口与已移除内容见下文“局限性”与“问题覆盖”。"
+            if zh
+            else "Coverage gaps and removed content are listed under "
+            "Limitations and Coverage below."
+        )
+    )
+    return lines + [""]
+
+
 def render(
     state: state_module.IndustryState,
     coverage: list[records.Coverage],
     status: records.ReportStatus,
+    delivery: records.DeliveryResult | None = None,
+    plan: DeliveryPlan | None = None,
 ) -> str:
-    """The Markdown report with source citations, limitations, status."""
+    """The Markdown report with source citations, limitations, status.
+
+    With a ``delivery`` result and its ``plan``, the body is the one the
+    deterministic gate approved -- already redacted, already reduced to
+    what may be published -- the level is stated above it, the appendix
+    is the frozen one the reviewer read, and anything that moved since
+    is reported separately instead of rewriting those lines.
+    """
     brief = state["brief"]
     claims = state.get("claims", {})
     evidence = state.get("evidence", {})
-    order, source_lines = _source_index(state)
+    sections = plan.sections if plan is not None else state.get("sections", [])
+    if delivery is not None and delivery.level == "diagnostic_only":
+        sections = []
+    order, source_lines = _source_index(state, sections)
     zh = brief.language == "zh"
     parts = [f"# {brief.industry}", ""]
     scope_line = (
@@ -511,16 +871,32 @@ def render(
         for i in state.get("issues", {}).values()
         if i.status in records.UNRESOLVED_ISSUE_STATUSES
     ]
-    removed_note = (
-        "[已移除未经核实的表述]" if zh else "[unverified statement removed]"
-    )
-    for section in state.get("sections", []):
+    if delivery is not None:
+        parts += _label_lines(state, delivery)
+    for section in sections:
         # Open and retired (unresolvable) issues both redact: retiring
-        # an issue at the follow-up limit never makes its unit deliverable.
-        text = redact(section.text, unresolved, section.id, removed_note)
+        # an issue at the follow-up limit never makes its unit
+        # deliverable. With a plan the gate has already applied them.
+        text = section.text
+        if plan is None:
+            text = redact(
+                section.text, unresolved, section.id, removal_note(state)
+            )
         text = _CITATION.sub(lambda m: _cite(m, claims, evidence, order), text)
         parts += [f"## {section.title}", "", text, ""]
-    parts += appendices(state, coverage)
+    subject = state.get("review_subject")
+    if delivery is not None and subject is not None:
+        parts += list(subject.appendix)
+        drift = appendix_drift(state, coverage)
+        if drift:
+            parts += [
+                "## " + ("核验后的变化" if zh else "Changes after review"),
+                "",
+            ]
+            parts += drift
+            parts.append("")
+    else:
+        parts += appendices(state, coverage)
     parts += ["## " + ("来源" if zh else "Sources"), ""]
     parts += source_lines or ["(none cited)"]
     parts.append("")
