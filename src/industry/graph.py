@@ -300,10 +300,105 @@ def _reservation(
     )
 
 
+_LEVEL_RANK = {"diagnostic_only": 0, "partial": 1, "verified": 2}
+
+
+def level_rank(level: str) -> int:
+    """How good a delivery level is, for choosing between candidates."""
+    return _LEVEL_RANK.get(level, 0)
+
+
+def issues_for_candidate(
+    candidate: records.DeliveryCandidate,
+    current: dict[str, records.Issue],
+) -> dict[str, records.Issue]:
+    """The issue state that applies to a retained body.
+
+    A later draft's clean review can resolve wording that still stands
+    in the retained one, so a resolution recorded against another
+    ``draft_version`` does not clear it here. An issue raised since is
+    applied only when its exact unit is actually in this body.
+    """
+    applies = dict(candidate.issues)
+    body = "\n".join(section.text for section in candidate.sections)
+    for issue_id, issue in current.items():
+        if issue_id not in applies:
+            if issue.text and issue.text in body:
+                applies[issue_id] = issue
+            continue
+        if (
+            issue.status != applies[issue_id].status
+            and issue.draft_version == candidate.draft_version
+        ):
+            applies[issue_id] = issue
+    return applies
+
+
+def _with_reservation(call: records.Attempt, **changes: Any) -> records.Attempt:
+    """The same single call with its reservation fields changed."""
+    return call.model_copy(
+        update={"reserved": call.reserved.model_copy(update=changes)}
+    )
+
+
+def _held_review(calls: dict[str, records.Attempt]) -> records.Attempt | None:
+    """The final-review allowance held by a write, if one is waiting."""
+    for call in calls.values():
+        if (
+            call.task_id == "final_review"
+            and call.status == "running"
+            and call.reserved.held
+        ):
+            return call
+    return None
+
+
 def reserve_node(node: str, limits: records.Limits):
     """The checkpointed admission step that precedes a single-call node."""
 
     async def reserve(state: state_module.IndustryState) -> dict[str, Any]:
+        calls = dict(state.get("single_calls", {}))
+        if node == "final_review":
+            held = _held_review(calls)
+            if held is not None:
+                # Its allowance was taken with the write it validates
+                # and charged ever since; activating it starts no
+                # second reservation.
+                calls[held.id] = _with_reservation(held, held=False)
+                return {
+                    "single_calls": calls,
+                    "route_log": [
+                        f"reserve_final_review: {held.id} activated, held "
+                        "since its write was admitted"
+                    ],
+                }
+        if node == "write":
+            allowed = budget.admit_pair(state, limits)
+            if allowed <= 0:
+                return {
+                    "route_log": [
+                        "reserve_write: refused, a write and its final "
+                        "review do not both fit; the reviewed body stands"
+                    ]
+                }
+            writer = _reservation(state, node, limits, allowed)
+            writer = _with_reservation(writer, pair_id=writer.id)
+            calls[writer.id] = writer
+            review = _reservation(
+                {**state, "single_calls": calls},
+                "final_review",
+                limits,
+                allowed,
+            )
+            review = _with_reservation(review, pair_id=writer.id, held=True)
+            calls[review.id] = review
+            return {
+                "single_calls": calls,
+                "route_log": [
+                    f"reserve_write: {writer.id} reserved with "
+                    f"{review.id} held ({allowed} turns each)"
+                ],
+            }
         allowed = budget.admit_single_call(state, limits, node)
         if allowed <= 0:
             return {
@@ -312,7 +407,6 @@ def reserve_node(node: str, limits: records.Limits):
                     "will be skipped"
                 ]
             }
-        calls = dict(state.get("single_calls", {}))
         reservation = _reservation(state, node, limits, allowed)
         calls[reservation.id] = reservation
         return {
@@ -1457,11 +1551,14 @@ def build_graph(
         }
 
     def after_remediate(state: state_module.IndustryState) -> str:
+        stage = state.get("return_to", "write")
+        if stage == "write" and budget.admit_pair(state, limits) <= 0:
+            return "deliver"
         return {
             "research": "reserve_prepare_tasks",
             "analyze": "reserve_analyze",
             "write": "reserve_write",
-        }[state.get("return_to", "write")]
+        }[stage]
 
     async def write(state: state_module.IndustryState) -> dict[str, Any]:
         instructions = write_instructions(state)
@@ -1473,6 +1570,17 @@ def build_graph(
         update.setdefault("route_log", [])
         if draft is None:
             return update
+        # The outgoing body is about to be replaced. If it was reviewed
+        # and is deliverable, it stays the incumbent until the
+        # replacement has completed its own review and classified at
+        # least as well.
+        kept = _retain(state)
+        if kept is not None:
+            update["candidate"] = kept
+            update["route_log"].append(
+                f"write: draft {kept.draft_version} retained as the "
+                f"{kept.level} candidate"
+            )
         version = state.get("draft_version", 0) + 1
         sections = [
             records.Section(
@@ -1610,29 +1718,123 @@ def build_graph(
             issues
             and state.get("cycle", 0) < limits.remediation_cycles
             and _progress(state)
+            # Affordability funds an attempt at a replacement. Without
+            # a write *and* its review, remediation would only spend
+            # what is left traversing refused nodes toward a rewrite
+            # that could never be validated.
+            and budget.admit_pair(state, limits) > 0
         ):
             return "remediate"
         return "deliver"
+
+    def _floor():
+        return runtime.floor or coverage_module.FLOOR
+
+    def _assess(
+        state: state_module.IndustryState,
+    ) -> tuple[report.DeliveryPlan, records.DeliveryResult]:
+        """Plan and classify a body with the unchanged §4.39 machinery."""
+        derived = coverage_module.derive(state, state.get("assessment"))
+        plan = report.plan_delivery(state, report.removal_note(state))
+        return plan, coverage_module.classify_delivery(
+            state, derived, plan, _floor()
+        )
+
+    def _retain(
+        state: state_module.IndustryState,
+    ) -> records.DeliveryCandidate | None:
+        """The outgoing body as a candidate, if it is worth keeping."""
+        subject = state.get("review_subject")
+        if subject is None or not report.certificate_applies(state):
+            return None
+        _, result = _assess(state)
+        if result.level == "diagnostic_only":
+            return None
+        fresh = records.DeliveryCandidate(
+            sections=list(state.get("sections", [])),
+            subject=subject,
+            review=state.get("final_review"),
+            draft_version=state.get("draft_version", 0),
+            issues=dict(state.get("issues", {})),
+            level=result.level,
+            status=result.status,
+        )
+        held = state.get("candidate")
+        if held is not None and level_rank(held.level) >= level_rank(
+            fresh.level
+        ):
+            # The incumbent wins ties: a replacement has to be better,
+            # not merely newer.
+            return held
+        return fresh
+
+    def _candidate_state(
+        state: state_module.IndustryState,
+        candidate: records.DeliveryCandidate,
+    ) -> dict[str, Any]:
+        """The retained body as a state, judged against current support."""
+        return {
+            **state,
+            "sections": list(candidate.sections),
+            "review_subject": candidate.subject,
+            "final_review": candidate.review,
+            "draft_version": candidate.draft_version,
+            "issues": issues_for_candidate(candidate, state.get("issues", {})),
+        }
 
     async def deliver(state: state_module.IndustryState) -> dict[str, Any]:
         # The report is not written over work that outlived its
         # cancellation: the same authority that admits sessions stops
         # delivery, resumably, until the survivor has ended.
         runtime.admission.check()
-        derived = coverage_module.derive(state, state.get("assessment"))
         # The gate decides the body before anything renders, and the
         # classification decides what the body may be called. A
         # certificate bound to `draft_version` alone never established
         # that the delivered words were the reviewed ones.
-        plan = report.plan_delivery(state, report.removal_note(state))
-        delivery = coverage_module.classify_delivery(
-            state, derived, plan, runtime.floor or coverage_module.FLOOR
-        )
+        chosen = state
+        plan, delivery = _assess(state)
+        delivery_of_later = delivery
+        reason = ""
+        incumbent = state.get("candidate")
+        if incumbent is not None:
+            # The retained body is judged against *current* support, with
+            # the issue state that applies to it -- never restored, and
+            # never given a later draft's resolutions.
+            kept_state = _candidate_state(state, incumbent)
+            kept_plan, kept_delivery = _assess(kept_state)
+            if level_rank(kept_delivery.level) > level_rank(delivery.level):
+                chosen, plan, delivery = kept_state, kept_plan, kept_delivery
+                later = state.get("draft_version", 0)
+                reason = (
+                    f"the body is reviewed draft {incumbent.draft_version}; "
+                    f"the later draft {later} classified "
+                    f"{delivery_of_later.level}"
+                )
+        derived = coverage_module.derive(chosen, chosen.get("assessment"))
+        if reason:
+            delivery = delivery.model_copy(
+                update={"reason": f"{delivery.reason}; {reason}"}
+            )
         delivery = delivery.model_copy(
-            update={"drift": report.appendix_drift(state, derived)}
+            update={"drift": report.appendix_drift(chosen, derived)}
         )
+        # A held review allowance that was never activated closes with
+        # zero usage, as any unused reservation does.
+        released = {
+            cid: call.model_copy(
+                update={
+                    "status": "done",
+                    "observed": records.Usage(),
+                    "reserved": call.reserved.model_copy(
+                        update={"held": False}
+                    ),
+                }
+            )
+            for cid, call in state.get("single_calls", {}).items()
+            if call.reserved.held and call.status == "running"
+        }
         status = delivery.status
-        text = report.render(state, derived, status, delivery, plan)
+        text = report.render(chosen, derived, status, delivery, plan)
         path = report.write_report(_thread_id(), text, runtime.reports_dir)
         meta = state["meta"].model_copy(
             update={
@@ -1641,7 +1843,7 @@ def build_graph(
                 "report_path": path,
             }
         )
-        return {
+        update: dict[str, Any] = {
             "coverage": derived,
             "meta": meta,
             "delivery": delivery,
@@ -1650,6 +1852,15 @@ def build_graph(
                 f"report {path}"
             ],
         }
+        if released:
+            update["single_calls"] = {
+                **state.get("single_calls", {}),
+                **released,
+            }
+            update["route_log"].append(
+                "deliver: released " + ", ".join(sorted(released)) + " unused"
+            )
+        return update
 
     graph = StateGraph(state_module.IndustryState)
     for node in SINGLE_CALL_NODES:
@@ -1701,7 +1912,12 @@ def build_graph(
     graph.add_conditional_edges(
         "remediate",
         after_remediate,
-        ["reserve_prepare_tasks", "reserve_analyze", "reserve_write"],
+        [
+            "reserve_prepare_tasks",
+            "reserve_analyze",
+            "reserve_write",
+            "deliver",
+        ],
     )
     graph.add_edge("write", "reserve_final_review")
     graph.add_conditional_edges(

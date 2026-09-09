@@ -254,6 +254,26 @@ def admit_single_call(
     return full if fits else 0
 
 
+def admit_pair(
+    state: state_module.IndustryState, limits: records.Limits
+) -> int:
+    """Return the ``num_turns`` a write *and* its final review may take.
+
+    A substantive rewrite replaces the deliverable body, so it may only
+    start when the review that would validate it is affordable too. The
+    reserve was always documented as holding two complete calls; this
+    is what makes that true. ``0`` means the pair does not fit and the
+    rewrite must not begin.
+    """
+    left = remaining(state, limits)
+    full = limits.single_call_reserved()
+    fits = (
+        left.seconds >= 2 * limits.single_call_timeout_s
+        and left.turns >= 2 * full
+    )
+    return full if fits else 0
+
+
 def max_turns_for(reserved_turns: int, limits: records.Limits) -> int:
     """The SDK ``max_turns`` that keeps a call within its reservation."""
     return max(1, reserved_turns // limits.turns_per_exchange)

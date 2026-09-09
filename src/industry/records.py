@@ -50,7 +50,10 @@ import pydantic
 # be told apart by where their figures came from; a schema-7 thread can
 # hold a calculation that divided a figure by itself and is refused for
 # resume like the rest.
-SCHEMA_VERSION = 8
+# Schema 9 adds the reservation pair and the retained delivery
+# candidate: a schema-8 thread can hold a body whose review was never
+# affordable, and carries no candidate to fall back to.
+SCHEMA_VERSION = 9
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -636,6 +639,16 @@ class Reservation(Record):
     turns: int
     tool_calls: int
     seconds: float
+    # A write and the final review that validates it are admitted
+    # together and share this id: the reserve that was documented as
+    # holding two complete calls never in fact held the second one, so
+    # a rewrite could replace the deliverable body and then find its
+    # review unaffordable.
+    pair_id: str | None = None
+    # A held allowance funds a call that has not started. It is charged
+    # from the moment it is taken, so nothing else can spend it, and it
+    # is never mistaken for work that was interrupted.
+    held: bool = False
 
 
 class Attempt(Record):
@@ -1046,6 +1059,26 @@ class ReviewSubject(Record):
     draft_version: int = 0
 
 
+class DeliveryCandidate(Record):
+    """A reviewed body, kept until a replacement has been validated.
+
+    The exact sections, the review that judged them and the issue
+    dispositions as they stood for *this* body. A later draft's clean
+    review can resolve wording that still stands here, so its
+    resolutions are not inherited; ``ReviewSubject`` carries digests
+    and appendix lines but not the sections, so retention cannot be
+    built from the certificate alone.
+    """
+
+    sections: list[Section] = pydantic.Field(default_factory=list)
+    subject: ReviewSubject
+    review: DraftReview | None = None
+    draft_version: int = 0
+    issues: dict[str, Issue] = pydantic.Field(default_factory=dict)
+    level: DeliveryLevel = "diagnostic_only"
+    status: ReportStatus = "incomplete"
+
+
 class CoverageProposal(Record):
     """The Lead's proposed coverage of one question."""
 
@@ -1242,6 +1275,7 @@ PERSISTED: tuple[type[Record], ...] = (
     Brief,
     ReviewSubject,
     DeliveryResult,
+    DeliveryCandidate,
     Reference,
     WorkerInput,
     Issue,

@@ -63,6 +63,10 @@ class IndustryState(TypedDict, total=False):
     # every retention decision at delivery.
     review_subject: records.ReviewSubject | None
     delivery: records.DeliveryResult | None
+    # The best body validated so far. It stays authoritative until a
+    # replacement has completed its own review and classified at least
+    # as well.
+    candidate: records.DeliveryCandidate | None
     assessment: records.LeadAssessment | None
     cycle: int
     follow_up_rounds: int
