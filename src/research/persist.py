@@ -318,7 +318,29 @@ def validate_records(values: dict[str, Any]) -> list[str]:
         # checks below read records, not mappings.
         return problems
     problems.extend(_unbound_quantities(values))
+    problems.extend(_tautological_calculations(values))
     problems.extend(_withdrawn_but_citable(values))
+    return problems
+
+
+def _tautological_calculations(values: dict[str, Any]) -> list[str]:
+    """Successful shares or ratios that divided one figure by itself.
+
+    Checked whether or not a derived claim projects the calculation: a
+    state carrying a successful tautology is not one this program could
+    have written, and the projection may simply not have been created
+    yet.
+    """
+    calculations = values.get("calculations")
+    if not isinstance(calculations, dict):
+        return []
+    problems = []
+    for kid, record in calculations.items():
+        if not merge.calculation_identity_ok(record):
+            problems.append(
+                f"calculations[{kid}]: {record.kind} succeeded over one "
+                "figure, so its result states nothing"
+            )
     return problems
 
 

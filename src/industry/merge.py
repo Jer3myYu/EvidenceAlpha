@@ -1312,6 +1312,82 @@ def derived_fields(
     }
 
 
+def calc_input_origin(
+    consumed: records.CalcInput,
+) -> tuple[Any, ...] | None:
+    """Where an input's figure came from, or ``None`` if untraceable.
+
+    Two operands are the same figure when they came from the same
+    place, not when they happen to be equal: an observed value is its
+    exact evidence occurrence, a derived one is the producer result it
+    projects. Wording, scope, period and qualification are deliberately
+    excluded -- rewording a claim must not mint a second occurrence.
+    """
+    producer = consumed.source_calculation_id
+    version = consumed.source_calculation_version
+    if producer and version:
+        return ("derived", producer, version)
+    binding = consumed.quantity.binding if consumed.quantity else None
+    if binding is None:
+        return None
+    return (
+        "observed",
+        binding.evidence_id,
+        binding.excerpt_sha256,
+        binding.number_start,
+        binding.number_end,
+    )
+
+
+def identical_operands(
+    numerator: records.CalcInput, denominator: records.CalcInput
+) -> str | None:
+    """Why two operands are one figure, or ``None`` when they differ.
+
+    A share of a figure over itself is always 100% and a ratio always
+    1.0, so it states nothing and cannot be right. Headline run 5's
+    analyst asked for four of them, meaning two different numbers that
+    lived inside one claim; the claim carries one quantity, so both
+    operands resolved to the same one. Claim ids alone are too weak a
+    test: two claims can quote one occurrence, and two derived claims
+    can project one producer.
+    """
+    if numerator.claim_id == denominator.claim_id:
+        return (
+            "identical_operands: both sides are claim " f"{numerator.claim_id}"
+        )
+    left = calc_input_origin(numerator)
+    right = calc_input_origin(denominator)
+    if left is None or right is None:
+        unknown = numerator.claim_id if left is None else denominator.claim_id
+        return (
+            f"unknown_origin: claim {unknown} has no evidence binding and "
+            "no producer, so its figure cannot be told from another"
+        )
+    if left == right:
+        return (
+            "identical_operands: "
+            f"{numerator.claim_id} and {denominator.claim_id} are the same "
+            "figure"
+        )
+    return None
+
+
+def calculation_identity_ok(record: records.Calculation) -> bool:
+    """Whether a successful share or ratio divided two distinct figures.
+
+    Only the identity of the two operands is judged here. An unusual
+    input count is a structural matter the record checks already cover,
+    and refusing it in this rule's name would reject states for a
+    reason that has nothing to do with dividing a figure by itself.
+    """
+    if record.status != "ok" or record.kind not in ("share", "ratio"):
+        return True
+    if len(record.inputs) != 2:
+        return True
+    return identical_operands(record.inputs[0], record.inputs[1]) is None
+
+
 def calculation_current(
     claim: records.Claim,
     claims: dict[str, records.Claim],
@@ -1337,6 +1413,10 @@ def calculation_current(
     if claim.id in seen:
         return False
     record = calculations.get(claim.calculation_id)
+    if record is not None and not calculation_identity_ok(record):
+        # A figure divided by itself is not arithmetic anyone may cite,
+        # however well the snapshots round-trip.
+        return False
     if record is None or record.status != "ok" or record.unit is None:
         return False
     if record.result is None or claim.calculation_version != record.version:

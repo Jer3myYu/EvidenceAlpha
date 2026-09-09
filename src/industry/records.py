@@ -45,8 +45,12 @@ import pydantic
 # 7 adds the delivery contract: a claim's standalone approval, a frozen
 # ``ReviewSubject`` and the ``DeliveryResult``. A schema-6 thread has no
 # certificate and must never be given one, so it is not resumable
-# either; it replays read-only like every earlier schema.
-SCHEMA_VERSION = 7
+# either; it replays read-only like every earlier schema. Schema 8 adds
+# the producer behind a derived calculation input, so two operands can
+# be told apart by where their figures came from; a schema-7 thread can
+# hold a calculation that divided a figure by itself and is refused for
+# resume like the rest.
+SCHEMA_VERSION = 8
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -825,6 +829,28 @@ class CalcInput(Record):
     claim_version: int
     quantity: Quantity
     qualification: str | None = None
+    # For a derived parent, the producer behind its number. An observed
+    # parent carries its origin in ``quantity.binding`` instead; a
+    # derived one has no binding, so without this the two figures could
+    # not be told apart and a calculation could divide one producer's
+    # result by itself through two different claims.
+    source_calculation_id: str | None = None
+    source_calculation_version: int | None = None
+
+    @pydantic.model_validator(mode="after")
+    def _one_origin(self) -> "CalcInput":
+        """An input is observed or derived, never half of each."""
+        producer = self.source_calculation_id, self.source_calculation_version
+        if any(producer) and not all(producer):
+            raise ValueError(
+                "a derived input needs both source_calculation_id and "
+                "source_calculation_version"
+            )
+        if self.source_calculation_version is not None and (
+            self.source_calculation_version <= 0
+        ):
+            raise ValueError("source_calculation_version must be positive")
+        return self
 
 
 class CalcRequest(Record):

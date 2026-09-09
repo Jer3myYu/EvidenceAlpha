@@ -128,6 +128,12 @@ def cinput(
         qualification=(
             claim.review_reason if claim.review == "qualified" else None
         ),
+        source_calculation_id=claim.calculation_id,
+        source_calculation_version=(
+            claim.calculation_version
+            if claim.calculation_id is not None
+            else None
+        ),
     )
 
 

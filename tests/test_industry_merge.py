@@ -1640,11 +1640,24 @@ def test_a_derived_claim_keeps_its_restriction_through_a_repeat():
             ),
         )
     )
+    # A share needs two distinct figures; C2 is the denominator. C1
+    # stays an input, so the derived claim still inherits its
+    # qualification, which is what this case is about.
+    state["claims"]["C2"] = state["claims"]["C1"].model_copy(
+        update={
+            "id": "C2",
+            "review": "supported",
+            "review_reason": "E1 states it",
+            "quantity": support.bound(
+                104, "亿元", "E1", "104亿元", period="2024"
+            ),
+        }
+    )
     request = records.CalcRequest(
         kind="share",
         label="share",
         numerator_claim_id="C1",
-        denominator_claim_id="C1",
+        denominator_claim_id="C2",
     )
     result = calc.compute(
         "K1", request, calc.inputs_from_claims(state["claims"], {})

@@ -154,6 +154,14 @@ def inputs_from_claims(
             qualification=(
                 claim.review_reason if claim.review == "qualified" else None
             ),
+            # A derived parent's figure is its producer's result, not an
+            # evidence occurrence, so its origin is recorded here.
+            source_calculation_id=claim.calculation_id,
+            source_calculation_version=(
+                claim.calculation_version
+                if claim.calculation_id is not None
+                else None
+            ),
         )
         for cid, claim in claims.items()
         if claim.quantity is not None and merge.citable(claim, claims, live)
@@ -262,6 +270,11 @@ def _compute(
         )
     numerator = _input(request.numerator_claim_id, inputs, "numerator")
     denominator = _input(request.denominator_claim_id, inputs, "denominator")
+    # One figure over itself is 100% or 1.0 whatever the label claims,
+    # so it is refused before the division rather than reported.
+    same = merge.identical_operands(numerator, denominator)
+    if same is not None:
+        raise CalcError(same)
     above, below = numerator.quantity, denominator.quantity
     _finite(above.value, "numerator")
     _finite(below.value, "denominator")

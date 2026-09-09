@@ -1861,12 +1861,22 @@ def test_recomputation_stands_without_the_analysts_reservation(tmp_path):
         partition="q4",
         questions=[4],
     )
-    claims = {"C1": parent}
+    # Two distinct figures: a share of one over itself states nothing
+    # and is refused before the division.
+    whole = parent.model_copy(
+        update={
+            "id": "C0",
+            "quantity": support.bound(
+                104, "亿元", "E1", "104亿元", period="2024"
+            ),
+        }
+    )
+    claims = {"C0": whole, "C1": parent}
     request = records.CalcRequest(
         kind="share",
         label="share",
         numerator_claim_id="C1",
-        denominator_claim_id="C1",
+        denominator_claim_id="C0",
     )
     producer = calc.compute("K1", request, calc.inputs_from_claims(claims, {}))
     claims["C2"] = records.Claim(

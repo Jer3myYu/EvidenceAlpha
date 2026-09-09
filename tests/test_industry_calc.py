@@ -169,6 +169,8 @@ def test_a_quotient_of_a_quotient_keeps_its_grouping():
     assert quantities.render(second.unit) == "USD/kg/day"
     assert first.unit != second.unit
     # A share over the two different dimensions refuses.
+    # A derived input carries the producer behind its figure, as
+    # `inputs_from_claims` copies it, so two results can be told apart.
     derived = {
         "K1": records.CalcInput(
             claim_id="D1",
@@ -176,6 +178,8 @@ def test_a_quotient_of_a_quotient_keeps_its_grouping():
             quantity=records.Quantity(
                 value=first.result, unit=first.unit, binding=None
             ),
+            source_calculation_id="K1",
+            source_calculation_version=1,
         ),
         "K2": records.CalcInput(
             claim_id="D2",
@@ -183,6 +187,8 @@ def test_a_quotient_of_a_quotient_keeps_its_grouping():
             quantity=records.Quantity(
                 value=second.result, unit=second.unit, binding=None
             ),
+            source_calculation_id="K2",
+            source_calculation_version=1,
         ),
     }
     share = calc.compute(
@@ -308,14 +314,24 @@ def test_a_chain_recomputes_whatever_the_order_of_its_ids():
         partition="q4",
         questions=[4],
     )
-    claims = {"C1": parent}
+    # Two real operands: a share of a figure over itself states nothing
+    # and is refused, so the chain is built from two distinct figures.
+    whole = parent.model_copy(
+        update={
+            "id": "C0",
+            "quantity": support.bound(
+                104, "亿元", "E1", "104亿元", period="2024"
+            ),
+        }
+    )
+    claims = {"C0": whole, "C1": parent}
     upstream = calc.compute(
         "K2",
         records.CalcRequest(
             kind="share",
             label="share",
             numerator_claim_id="C1",
-            denominator_claim_id="C1",
+            denominator_claim_id="C0",
         ),
         calc.inputs_from_claims(claims, {}),
     )
@@ -332,10 +348,10 @@ def test_a_chain_recomputes_whatever_the_order_of_its_ids():
     downstream = calc.compute(
         "K10",
         records.CalcRequest(
-            kind="share",
+            kind="ratio",
             label="share2",
             numerator_claim_id="C2",
-            denominator_claim_id="C2",
+            denominator_claim_id="C0",
         ),
         calc.inputs_from_claims(claims, calculations),
     )
