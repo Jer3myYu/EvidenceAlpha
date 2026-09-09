@@ -25,6 +25,8 @@ between roles is the typed workflow state, mediated by LangGraph.
 import asyncio
 import dataclasses
 import os
+import threading
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -32,6 +34,7 @@ import claude_agent_sdk
 import pydantic
 
 from industry import admission as admission_module
+from industry import sdk_children
 from research import evaluate as evaluate_module
 from research import plan as plan_module
 from research import sources as sources_module
@@ -66,8 +69,9 @@ class RoleHung(RuntimeError):
     """This call's cancellation did not stop it within the grace period.
 
     One meaning only: the call missed its deadline and its kickoff is
-    still alive. The caller charges the reservation and degrades, as
-    for ``RoleTimeout``; the live kickoff keeps its admission slot as a
+    still alive (including its SDK child teardown). The caller charges
+    the reservation and degrades, as for ``RoleTimeout``; the live
+    kickoff keeps its admission slot as a
     survivor, so the next admission anywhere in the process raises
     ``admission.Blocked`` until it ends -- that guard is the authority's,
     not this exception's.
@@ -153,6 +157,8 @@ class ClaudeLLM(crewai.BaseLLM):
         self.last_usage: dict[str, Any] | None = None
         self._cancel: Callable[[], None] | None = None
         self._cancel_requested = False
+        self._cancel_lock = threading.Lock()
+        self._children = sdk_children.Watch(f"role-{uuid.uuid4().hex}")
 
     def cancel(self) -> None:
         """Cancel the call in flight, or the next one, from any thread.
@@ -160,9 +166,30 @@ class ClaudeLLM(crewai.BaseLLM):
         A request that arrives before ``call`` has installed its handle
         is latched, so the call ends as soon as it starts.
         """
-        self._cancel_requested = True
-        if self._cancel is not None:
-            self._cancel()
+        with self._cancel_lock:
+            self._cancel_requested = True
+            if self._cancel is not None:
+                self._cancel()
+
+    def describe(self) -> str:
+        """Name the child still owned by this role, when present."""
+        return self._children.describe() or "CrewAI kickoff still running"
+
+    async def _drain_children(self, teardown: list[asyncio.Future]) -> None:
+        """Keep the SDK's loop alive until every child really terminates.
+
+        This runs after the consumption task ends, outside its cancellation
+        target. The caller's bounded grace may expire, but its retained
+        kickoff still owns this loop, the teardown and the admission slot.
+        Even exhausted terminate/kill escalation cannot release that slot
+        over a surviving child.
+        """
+        # The cancellation backstop may have started before the SDK's
+        # consumption finished. Scan again now that no more children can
+        # start, and join both ends before closing their loop.
+        pending = admission_module.when_all(*teardown, self._children.close())
+        if pending is not None:
+            await pending
 
     async def acall(
         self,
@@ -192,7 +219,10 @@ class ClaudeLLM(crewai.BaseLLM):
             # need a second attempt (Phase 6.2); text is one turn.
             max_turns=1 if response_model is None else self.max_turns,
             setting_sources=[],
-            env={"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
+            env={
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                **sdk_children.marked_env(self._children.session_id),
+            },
         )
         if self.thinking is not None:
             options.thinking = self.thinking
@@ -246,12 +276,14 @@ class ClaudeLLM(crewai.BaseLLM):
 
         That thread has no event loop, so the SDK call gets a private
         one for its duration; the workflow's own loop is not involved.
-        The call runs as a task on that loop so ``cancel`` can end it
-        from the workflow's thread (``run_task`` does, on a deadline).
+        Cancellation targets only the consumption task. Every exit drains
+        its children on this same loop before closing it or returning to
+        CrewAI: kickoff completion therefore includes actual child exit.
         """
         if self._cancel_requested:
             raise asyncio.CancelledError("cancelled before the call started")
         loop = asyncio.new_event_loop()
+        teardown: list[asyncio.Future] = []
         try:
             task = loop.create_task(
                 self.acall(
@@ -264,13 +296,31 @@ class ClaudeLLM(crewai.BaseLLM):
                     response_model,
                 )
             )
-            self._cancel = lambda: loop.call_soon_threadsafe(task.cancel)
-            if self._cancel_requested:
+
+            def cancel_call() -> None:
                 task.cancel()
+                if not teardown:
+                    # SDK cleanup itself can stall inside task. Its full
+                    # grace still applies, but escalation must not depend
+                    # on that task returning before the backstop starts.
+                    teardown.append(self._children.close())
+
+            with self._cancel_lock:
+                self._cancel = lambda: loop.call_soon_threadsafe(cancel_call)
+                if self._cancel_requested:
+                    task.cancel()
             return loop.run_until_complete(task)
         finally:
-            self._cancel = None
-            loop.close()
+            # Removing the handle under the same lock as cancel() prevents
+            # a racing caller from scheduling onto a closed private loop.
+            # Further cancellation is latched; it cannot tear away cleanup.
+            with self._cancel_lock:
+                self._cancel = None
+            try:
+                loop.run_until_complete(self._drain_children(teardown))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            finally:
+                loop.close()
 
     def supports_stop_words(self) -> bool:
         """Stop sequences are not forwarded; the call is one turn anyway."""
@@ -331,8 +381,9 @@ async def run_task(
       grace: Seconds to wait for the cancelled call to wind down
         (``CANCEL_GRACE_SECONDS`` unless given).
       admission: The authority the call takes its slot from, held until
-        the kickoff has actually ended: a kickoff that outlives its
-        cancellation keeps the slot as a survivor, and nothing is
+        the kickoff, including SDK child teardown, has actually ended:
+        a kickoff that outlives its cancellation keeps the slot as a
+        survivor, and nothing is
         admitted in that process until it ends. The industry graph
         passes its runtime's; callers without one get ``PROCESS``.
 
@@ -382,7 +433,9 @@ async def run_task(
     )
     # One of the process's slots, shared with the worker sessions; a
     # survivor anywhere in the process refuses this before any call.
-    slot = await authority.acquire("role", role.name)
+    slot = await authority.acquire(
+        "role", role.name, getattr(llm, "describe", None)
+    )
     kickoff: asyncio.Future | None = None
     try:
         kickoff = asyncio.ensure_future(crew.akickoff())
@@ -405,6 +458,8 @@ async def run_task(
             await _stop(kickoff, llm, grace)
             raise
     finally:
+        # ClaudeLLM keeps its private loop and kickoff alive through actual
+        # SDK child exit. Thus this one completion includes both lifetimes.
         # The slot ends with the kickoff, not with this coroutine:
         # released now if the kickoff has ended, kept as a survivor until
         # it does otherwise -- after a grace that expired, or a second
