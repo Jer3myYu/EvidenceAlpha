@@ -467,6 +467,50 @@ class SourceVersion(Record):
     chunk_count: int = 0
 
 
+ContextStatus = Literal["stated", "inferred", "ambiguous", "not_applicable"]
+
+
+class ContextBinding(Record):
+    """Interpreted context for one slice of one excerpt.
+
+    Not every passage has a single subject, period or unit. A table
+    comparing four companies over three years has no one answer to
+    "which entity?", and forcing one is how a 清溢 figure becomes a 龙图
+    figure. So context binds to a slice, with the cell coordinates
+    ``EvidenceBinding`` already carries, and says what supports it
+    (plan D-U7).
+
+    ``basis`` is the page, header, caption or sentence that justifies
+    the interpretation. It is never optional for a ``stated`` or
+    ``inferred`` binding: filling a null field is not evidence.
+    """
+
+    model_config = pydantic.ConfigDict(extra="forbid", frozen=True)
+
+    evidence_id: str
+    status: ContextStatus
+    basis: str = ""
+    entity: str | None = None
+    period: str | None = None
+    unit: str | None = None
+    scope: str | None = None
+    # Which part of the excerpt this describes; absent means the whole.
+    cell_row: int | None = None
+    cell_col: int | None = None
+    claim_id: str | None = None
+
+    @pydantic.model_validator(mode="after")
+    def _interpretations_show_their_basis(self) -> "ContextBinding":
+        if self.status in ("stated", "inferred") and not self.basis.strip():
+            raise ValueError(
+                "a stated or inferred context binding names what supports "
+                "it; filling a null field is not evidence"
+            )
+        if (self.cell_row is None) != (self.cell_col is None):
+            raise ValueError("cell_row and cell_col go together")
+        return self
+
+
 class Evidence(Record):
     """A verbatim excerpt with its locator and extraction limitations."""
 
@@ -487,6 +531,25 @@ class Evidence(Record):
     # The table geometry of a table chunk extracted under revision v3;
     # ``None`` for prose, snippets, PDFs and v2 evidence.
     table: TableLayout | None = None
+    # What justifies the ``entity``/``period``/``unit``/``scope`` above,
+    # when they are set at all: the page, header, caption or sentence
+    # the interpretation rests on (plan D-U7). Empty means they were
+    # never interpreted -- which is what all 144 of run 7's evidence
+    # records were.
+    context_basis: str = ""
+
+    @pydantic.model_validator(mode="after")
+    def _context_shows_its_basis(self) -> "Evidence":
+        interpreted = any(
+            value is not None
+            for value in (self.entity, self.period, self.unit, self.scope)
+        )
+        if interpreted and not self.context_basis.strip():
+            raise ValueError(
+                "evidence whose entity, period, unit or scope is set names "
+                "what supports that reading in context_basis"
+            )
+        return self
 
     @pydantic.model_validator(mode="after")
     def _passages_need_a_version(self) -> "Evidence":
@@ -888,6 +951,7 @@ class TaskResult(Record):
     # whole task run again.
     evidence_acceptance: EvidenceAcceptance = "accepted"
     unmet: list[str] = pydantic.Field(default_factory=list)
+    context: list[ContextBinding] = pydantic.Field(default_factory=list)
 
 
 class Brief(Record):
@@ -1441,6 +1505,7 @@ class RunMeta(Record):
 PERSISTED: tuple[type[Record], ...] = (
     UnitExpr,
     EvidenceBinding,
+    ContextBinding,
     Quantity,
     QuantityDraft,
     TableCell,

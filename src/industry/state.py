@@ -57,6 +57,10 @@ class IndustryState(TypedDict, total=False):
     sources: dict[str, records.Source]
     source_versions: dict[str, records.SourceVersion]
     evidence: dict[str, records.Evidence]
+    # Interpreted context bound to a slice of an excerpt, with what
+    # supports each reading (plan D-U7). Separate from ``evidence`` so
+    # the verbatim excerpt is never rewritten by an interpretation.
+    context: dict[str, list[records.ContextBinding]]
     claims: dict[str, records.Claim]
     relationships: dict[str, records.Relationship]
     calculations: dict[str, records.Calculation]

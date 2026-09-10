@@ -457,6 +457,7 @@ def _result(
         sources=list(collector.sources.values()),
         source_versions=list(collector.versions.values()),
         evidence=list(collector.evidence),
+        context=list(collector.context),
         findings=output.findings if output else [],
         attachments=_attachments(work.task, output),
         map=output.map if output else None,

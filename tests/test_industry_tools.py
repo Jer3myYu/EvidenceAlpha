@@ -164,12 +164,14 @@ def test_allowed_tool_names():
         "search_documents",
         "fetch_source",
         "read_source",
+        "record_context",
     }
     assert allowed == [
         "mcp__research__search_web",
         "mcp__research__search_documents",
         "mcp__research__fetch_source",
         "mcp__research__read_source",
+        "mcp__research__record_context",
     ]
 
 
@@ -584,3 +586,84 @@ def test_a_cancelled_index_write_keeps_the_lock_until_its_thread_ends():
         assert backend.indexed == [("v1", "https://a.example/x?b=1", 2)]
 
     run(scenario())
+
+
+def test_a07_context_binds_to_a_slice_and_must_show_its_basis():
+    """A07/A08: a table of four companies has no one subject (plan D-U7)."""
+    _, collector, _, found, _ = setup()
+    run(found["fetch_source"]({"url": "https://a.example/x?b=1#frag"}))
+    run(
+        found["read_source"](
+            {"source_url": "https://a.example/x?b=1", "page": 3}
+        )
+    )
+    label = collector.evidence[0].id
+    out = text_of(
+        run(
+            found["record_context"](
+                {
+                    "evidence_id": label,
+                    "entity": "清溢光电",
+                    "period": "FY2024",
+                    "basis": "table caption: 清溢光电 2024 年年度报告",
+                    "cell_row": 1,
+                    "cell_col": 2,
+                }
+            )
+        )
+    )
+    assert "cell (1, 2)" in out and "entity=清溢光电" in out
+    binding = collector.context[0]
+    assert binding.evidence_id == label and binding.status == "stated"
+    assert binding.cell_row == 1 and binding.basis.startswith("table caption")
+    # The excerpt itself is untouched: an interpretation lives beside it.
+    assert collector.evidence[0].entity is None
+
+
+def test_a08_an_interpretation_without_a_basis_is_refused():
+    _, collector, _, found, _ = setup()
+    run(found["fetch_source"]({"url": "https://a.example/x?b=1#frag"}))
+    run(
+        found["read_source"](
+            {"source_url": "https://a.example/x?b=1", "page": 3}
+        )
+    )
+    label = collector.evidence[0].id
+    out = text_of(
+        run(
+            found["record_context"](
+                {"evidence_id": label, "entity": "龙图光罩", "basis": "  "}
+            )
+        )
+    )
+    assert "refused" in out and "names what supports" in out
+    assert collector.context == []
+
+
+def test_a08_genuine_ambiguity_is_recordable_without_a_basis():
+    _, collector, _, found, _ = setup()
+    run(found["fetch_source"]({"url": "https://a.example/x?b=1#frag"}))
+    run(
+        found["read_source"](
+            {"source_url": "https://a.example/x?b=1", "page": 3}
+        )
+    )
+    label = collector.evidence[0].id
+    out = text_of(
+        run(
+            found["record_context"](
+                {"evidence_id": label, "status": "ambiguous"}
+            )
+        )
+    )
+    assert "is ambiguous" in out
+    assert collector.context[0].status == "ambiguous"
+
+
+def test_record_context_refuses_a_label_from_another_session():
+    _, collector, _, found, _ = setup()
+    out = text_of(
+        run(found["record_context"]({"evidence_id": "E9", "basis": "x"}))
+    )
+    assert "not an evidence label from this session" in out
+    assert collector.context == []

@@ -77,6 +77,9 @@ class _Registry:
         self.sources = dict(state.get("sources", {}))
         self.versions = dict(state.get("source_versions", {}))
         self.evidence = dict(state.get("evidence", {}))
+        self.context = {
+            key: list(value) for key, value in state.get("context", {}).items()
+        }
         self.claims = dict(state.get("claims", {}))
         self.relationships = dict(state.get("relationships", {}))
         self.industry_map = state.get("map", records.IndustryMap())
@@ -571,6 +574,7 @@ def _fold_result(
     """
     evidence_map = _fold_acquisitions(registry, result)
     registry.attach_evidence(result, evidence_map)
+    _fold_context(registry, result, evidence_map)
     if task.kind == "acquisition":
         if result.findings or result.map is not None:
             drafted = "a map" if result.map is not None else "no map"
@@ -583,6 +587,32 @@ def _fold_result(
         _fold_finding(registry, result.attempt_id, draft, evidence_map)
     if result.map is not None:
         _fold_map(registry, result.attempt_id, result.map, evidence_map)
+
+
+def _fold_context(
+    registry: _Registry,
+    result: records.TaskResult,
+    evidence_map: dict[str, str],
+) -> None:
+    """Keep the session's interpreted readings, under registry labels.
+
+    The excerpt is never rewritten (plan D-U7): a reading of what a
+    passage is about lives beside it, with the basis that supports it,
+    and a reading naming evidence this merge did not admit is dropped
+    rather than left pointing at nothing.
+    """
+    for binding in result.context:
+        evidence_id = evidence_map.get(binding.evidence_id)
+        if evidence_id is None:
+            registry.log.append(
+                f"{result.attempt_id}: context for "
+                f"{binding.evidence_id} dropped, evidence unknown"
+            )
+            continue
+        rebound = binding.model_copy(update={"evidence_id": evidence_id})
+        existing = registry.context.setdefault(evidence_id, [])
+        if rebound not in existing:
+            existing.append(rebound)
 
 
 RECOVERY_PREFIX = "acquisition_recovery:"
@@ -1279,6 +1309,7 @@ def merge_results(
         "sources": registry.sources,
         "source_versions": registry.versions,
         "evidence": registry.evidence,
+        "context": registry.context,
         "claims": registry.claims,
         "relationships": registry.relationships,
         "map": registry.industry_map,

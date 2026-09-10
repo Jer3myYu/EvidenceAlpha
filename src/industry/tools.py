@@ -30,6 +30,7 @@ import pathlib
 from typing import Any, Protocol
 
 import claude_agent_sdk
+import pydantic
 
 from industry import budget
 from industry import records
@@ -58,6 +59,7 @@ TOOL_NAMES = (
     "search_documents",
     "fetch_source",
     "read_source",
+    "record_context",
 )
 
 
@@ -377,6 +379,7 @@ class Collector:
       evidence: Evidence in the order it was seen (``E1``...).
       web_searches: Admitted search calls.
       fetches: Admitted fetch calls that produced a version.
+      context: Interpreted readings bound to a slice of an excerpt.
     """
 
     attempt_id: str
@@ -386,6 +389,9 @@ class Collector:
         default_factory=dict
     )
     evidence: list[records.Evidence] = dataclasses.field(default_factory=list)
+    context: list[records.ContextBinding] = dataclasses.field(
+        default_factory=list
+    )
     web_searches: int = 0
     fetches: int = 0
 
@@ -418,6 +424,10 @@ class Collector:
         )
         self.sources[source.id] = source
         return source
+
+    def bind_context(self, binding: records.ContextBinding) -> None:
+        """Keep one interpreted reading of an excerpt, with its basis."""
+        self.context.append(binding)
 
     def add_evidence(
         self,
@@ -858,7 +868,104 @@ def build_tools(
                 )
         return _text("\n\n".join(lines))
 
-    tool_list = [search_web, search_documents, fetch_source, read_source]
+    @claude_agent_sdk.tool(
+        "record_context",
+        "Say what an [E#] excerpt is actually about, and quote what "
+        "tells you so. Give 'evidence_id' and any of 'entity', "
+        "'period', 'unit', 'scope', plus 'basis' -- the heading, "
+        "caption, or sentence in that excerpt or its document that "
+        "establishes the reading. For a table that compares several "
+        "companies or years, bind one cell with 'cell_row' and "
+        "'cell_col' rather than claiming one subject for the whole "
+        "table. Use status 'ambiguous' when the excerpt genuinely does "
+        "not say, and record that instead of guessing.",
+        _schema(
+            {
+                "evidence_id": ("string", "The [E#] label to describe."),
+                "basis": (
+                    "string",
+                    "The heading, caption, or sentence that establishes "
+                    "this reading. Required unless status is ambiguous "
+                    "or not_applicable.",
+                ),
+            },
+            {
+                "status": (
+                    "string",
+                    "stated, inferred, ambiguous, or not_applicable; "
+                    "stated by default.",
+                ),
+                "entity": ("string", "Whose figure or statement this is."),
+                "period": ("string", "The period it covers."),
+                "unit": ("string", "Its unit or currency."),
+                "scope": (
+                    "string",
+                    "The business scope: consolidated, a segment, "
+                    "merchant only, and so on.",
+                ),
+                "cell_row": ("integer", "Table row, for one cell."),
+                "cell_col": ("integer", "Table column, for one cell."),
+            },
+        ),
+    )
+    async def record_context(args: dict[str, Any]) -> dict[str, Any]:
+        known = {item.id for item in collector.evidence}
+        evidence_id = str(args.get("evidence_id") or "").strip().strip("[]")
+        if evidence_id not in known:
+            named = evidence_id or "no label"
+            return _text(
+                f"record_context: {named} is not an evidence label from "
+                "this session."
+            )
+        status = str(args.get("status") or "stated")
+        if status not in ("stated", "inferred", "ambiguous", "not_applicable"):
+            return _text(
+                "record_context: status must be stated, inferred, "
+                "ambiguous, or not_applicable."
+            )
+        try:
+            binding = records.ContextBinding(
+                evidence_id=evidence_id,
+                status=status,  # type: ignore[arg-type]
+                basis=str(args.get("basis") or ""),
+                entity=args.get("entity") or None,
+                period=args.get("period") or None,
+                unit=args.get("unit") or None,
+                scope=args.get("scope") or None,
+                cell_row=args.get("cell_row"),
+                cell_col=args.get("cell_col"),
+            )
+        except pydantic.ValidationError as error:
+            why = error.errors()[0]["msg"]
+            return _text(f"record_context refused: {why}")
+        collector.bind_context(binding)
+        where = (
+            f" cell ({binding.cell_row}, {binding.cell_col})"
+            if binding.cell_row is not None
+            else ""
+        )
+        return _text(
+            f"Recorded: {evidence_id}{where} is {status}"
+            + "".join(
+                f", {field}={value}"
+                for field, value in (
+                    ("entity", binding.entity),
+                    ("period", binding.period),
+                    ("unit", binding.unit),
+                    ("scope", binding.scope),
+                )
+                if value
+            )
+            + "."
+        )
+
+    tool_list = [
+        search_web,
+        search_documents,
+        fetch_source,
+        read_source,
+        record_context,
+    ]
     server = claude_agent_sdk.create_sdk_mcp_server(
         name="research", tools=tool_list
     )
