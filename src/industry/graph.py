@@ -577,9 +577,16 @@ def _render_pdf(thread_id: str, text: str, directory: str) -> str:
     try:
         written = pdf_module.write_pdf(thread_id, text, directory)
     except Exception as error:  # pylint: disable=broad-exception-caught
+        # The Markdown was replaced already; an earlier run's PDF must
+        # not stay beside it pretending to be this report.
+        pdf_module.discard_stale(thread_id, directory)
+        try:
+            detail = f"{type(error).__name__}: {error}"
+        except Exception:  # pylint: disable=broad-exception-caught
+            detail = type(error).__name__
         return (
             "deliver: pdf rendering failed, the Markdown report stands "
-            f"({type(error).__name__}: {error})"
+            f"({detail})"
         )
     return f"deliver: pdf {written}"
 

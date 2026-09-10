@@ -6,6 +6,11 @@ safe -- the PDF says what the Markdown says, and a formatting failure
 costs the reader a formatted copy but never the report or its status --
 plus the layout features an investor reads: the level callout, tables,
 Chinese text, the numbered source list and page numbers.
+
+The read-back checks here are the ones a GPT-6 review of `f495f8f`
+showed were needed: independent per-line containment passed against a
+renderer that clipped an oversized block, renumbered the source list,
+dropped a dash-only table row, and appended invented text.
 """
 
 import pathlib
@@ -91,15 +96,78 @@ def test_a_delivered_report_renders_to_a_readable_pdf() -> None:
 
 
 def test_every_line_of_the_delivered_markdown_reaches_the_page() -> None:
-    """Rendering adds no claim and drops no substantive text."""
+    """Rendering drops no substantive text, in the report's own order."""
+    pdf.verify_complete(pdf.render_pdf(REPORT), REPORT)
     packed = _packed(_text(pdf.render_pdf(REPORT)))
     for line in REPORT.splitlines():
         stripped = line.strip().lstrip(">").strip().lstrip("#").strip()
-        stripped = re.sub(r"^\d+\.\s+|^-\s+", "", stripped).replace("**", "")
+        stripped = re.sub(r"^-\s+", "", stripped).replace("**", "")
         if not stripped or set(stripped) <= set("|-: "):
             continue
         wanted = _packed(stripped.strip("|").replace("|", ""))
         assert wanted in packed, line
+
+
+def test_a_render_that_loses_text_is_refused_not_returned() -> None:
+    """A block too tall to fit is clipped by the engine, silently.
+
+    One oversized callout swallowed the end of the limitations block
+    and still returned a two-page PDF. Delivery must get an error, not
+    a report that is quietly short.
+    """
+    oversized = "> WARNING\n> " + "内容 " * 3000 + "END_OF_LIMITATIONS"
+    with pytest.raises(pdf.IncompleteRender):
+        pdf.render_pdf(oversized)
+
+
+def test_reordered_or_invented_text_fails_verification() -> None:
+    """The check is bidirectional: nothing moves and nothing is added."""
+    rendered = pdf.render_pdf(REPORT)
+    reordered = "\n\n".join(reversed(REPORT.split("\n\n")))
+    with pytest.raises(pdf.IncompleteRender):
+        pdf.verify_complete(rendered, reordered)
+    shortened = "# 光掩模产业调研\n\n范围：global\n"
+    with pytest.raises(pdf.IncompleteRender) as caught:
+        pdf.verify_complete(rendered, shortened)
+    assert "carries text the report does not" in str(caught.value)
+
+
+def test_the_source_list_keeps_the_numbers_the_citations_point_at() -> None:
+    """An ``<ol>``'s own counter would repoint every citation.
+
+    ``[7]`` in the body means source 7. A list that renumbers from 1
+    per block silently rewrites what the reader is being sent to.
+    """
+    sources = "## 来源\n\n2. Source two\n\n7. Source seven\n"
+    packed = _packed(_text(pdf.render_pdf(sources)))
+    assert "2.Sourcetwo" in packed
+    assert "7.Sourceseven" in packed
+
+
+def test_a_dash_only_row_is_data_not_a_second_header_rule() -> None:
+    """Only the row under the header is the ``|---|`` separator."""
+    table = "| a | b |\n|---|---|\n| - | - |\n| x | y |\n"
+    data = pdf.render_pdf(table)
+    pdf.verify_complete(data, table)
+    assert _packed(_text(data)).count("-") == 2
+
+
+def test_an_empty_edge_cell_does_not_shift_the_columns() -> None:
+    """``strip("|")`` would eat the empty cell and move v2 under h1."""
+    table = "| h1 | h2 |\n|---|---|\n|  | v2 |\n"
+    assert pdf.markdown_to_html(table).count("<td>") == 2
+
+
+def test_a_hostile_title_cannot_corrupt_the_document() -> None:
+    """The file id is set through the trailer, not by byte surgery.
+
+    Rewriting the first ``/ID`` found in the saved bytes hit the title
+    string instead of the trailer and shifted every later offset.
+    """
+    data = pdf.render_pdf("# Test\n\nApproved text", title="/ID[<00><00>]")
+    with pymupdf.open("pdf", data) as doc:
+        assert not doc.is_repaired
+        assert doc.metadata["title"] == "/ID[<00><00>]"
 
 
 def test_chinese_text_is_embedded_not_dropped() -> None:

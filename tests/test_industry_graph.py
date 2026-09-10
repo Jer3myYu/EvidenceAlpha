@@ -2888,3 +2888,32 @@ def test_a_failed_pdf_render_costs_the_reader_nothing_but_the_pdf(
         "(OSError: no space)" in state["route_log"]
     )
     assert pdf_module.pdf_beside(meta.report_path) is None
+
+
+def test_a_failed_rerender_does_not_leave_last_run_s_pdf_behind(
+    tmp_path, monkeypatch
+):
+    """A stale PDF beside fresh Markdown would misstate the delivery.
+
+    The Markdown is replaced first. If the PDF then fails, the previous
+    run's file would still be sitting there -- different claims, maybe
+    a different verification warning -- and `pdf_beside` would offer it
+    as this report's formatted copy.
+    """
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    stale = reports / "t1.pdf"
+    stale.write_bytes(b"%PDF-1.7 an older delivery")
+    monkeypatch.setattr(
+        pdf_module,
+        "write_pdf",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("no space")),
+    )
+    runtime, _, _, compiled = make(tmp_path)
+    config = persist.thread_config("t1")
+    runtime.begin("t1")
+    state = run(compiled.ainvoke({"question": "光掩模产业调研"}, config))
+    assert not stale.exists()
+    assert (reports / "t1.md").is_file()
+    assert state["meta"].report_status == "complete"
+    assert pdf_module.pdf_beside(state["meta"].report_path) is None

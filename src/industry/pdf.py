@@ -10,8 +10,14 @@ read.
 The parser accepts the narrow Markdown subset ``report.render`` emits
 (one H1, H2 sections, paragraphs, pipe tables, ``-`` bullets with one
 level of nesting, the numbered source list, and the ``>`` callout that
-states an incomplete report's level). Every non-blank input line
-reaches the page: ``markdown_text`` in, the same text out.
+states an incomplete report's level).
+
+**Every non-blank input line reaches the page, or no PDF is produced.**
+The layout engine silently clips a block it cannot fit -- a table cell
+taller than the frame loses its tail -- so ``render_pdf`` reads its own
+output back and raises ``IncompleteRender`` unless every fragment of
+the delivered text is there, in order. Delivery treats that as it
+treats any other rendering failure: the Markdown report stands.
 
 Rendering uses PyMuPDF's Story engine, already a project dependency for
 ``PyMuPDFLoader``. Its bundled Droid Sans Fallback face covers the
@@ -41,7 +47,14 @@ FOOTER_BASELINE = PAGE.y1 - 38.0
 # Fixed metadata: two renders of one report produce identical bytes.
 PRODUCER = "EvidenceAlpha industry research"
 
-_FILE_ID = re.compile(rb"/ID\s*\[\s*<[0-9A-Fa-f]*>\s*<[0-9A-Fa-f]*>\s*\]")
+# Extraction turns these back into the glyphs the input carried.
+_LIGATURES = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"}
+_FOOTER = re.compile(r"(?m)^\d+ / \d+$")
+_BULLET = re.compile(r"^-\s+")
+# The only mark the renderer itself puts on the page: a list bullet.
+# Anything else between two fragments of delivered text is text the
+# report does not contain.
+_DECORATION = frozenset("\u2022")
 _TABLE_RULE = re.compile(r"^\|[\s:|-]+\|$")
 _ORDERED = re.compile(r"^(\d+)\.\s+(.*)$")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -63,8 +76,8 @@ p.callout-line { font-size: 9pt; margin: 0 0 2pt 0; text-align: left; }
 ul { margin: 0 0 8pt 0; padding-left: 14pt; }
 li { margin: 0 0 4pt 0; text-align: left; }
 li.sub { color: #4a525c; font-size: 9pt; }
-ol { margin: 0 0 8pt 0; padding-left: 18pt; }
-ol li { font-size: 8.5pt; color: #333a42; margin: 0 0 3pt 0; }
+p.numbered { font-size: 8.5pt; color: #333a42; margin: 0 0 3pt 0;
+             padding-left: 18pt; text-indent: -18pt; text-align: left; }
 /* No border-collapse anywhere: the Story engine repaints a collapsed
    table's cell backgrounds at the same coordinates on every later page.
    Separate borders are drawn thin so the doubled edge stays hairline. */
@@ -76,19 +89,48 @@ td { border: 0.4pt solid #c2c9d2; padding: 4pt; font-size: 8.5pt;
 """
 
 
+class IncompleteRender(RuntimeError):
+    """The rendered PDF does not carry all of the delivered text.
+
+    Raised rather than returning a PDF that quietly drops a limitation
+    or a table row: a report the reader cannot trust to be complete is
+    worse than no formatted copy at all.
+    """
+
+
 def _inline(text: str) -> str:
     """Escape one line and keep ``**bold**`` as the only inline markup."""
     escaped = html.escape(text, quote=False)
     return _BOLD.sub(r"<b>\1</b>", escaped)
 
 
+def _split_row(row: str) -> list[str]:
+    """One pipe row's cells, without its two delimiting pipes.
+
+    Only the outermost pair is a delimiter: ``strip("|")`` would eat an
+    empty leading or trailing cell and shift every value one column.
+    """
+    inner = row.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return [cell.strip() for cell in inner.split("|")]
+
+
 def _table_html(rows: list[str]) -> str:
-    """Render the collected pipe-table lines, header row first."""
-    cells = [
-        [cell.strip() for cell in row.strip().strip("|").split("|")]
-        for row in rows
-        if not _TABLE_RULE.match(row.strip())
+    """Render the collected pipe-table lines, header row first.
+
+    Only the row immediately under the header may be the ``|---|`` rule.
+    A later row of dashes is data -- a table of placeholders would
+    otherwise lose it silently.
+    """
+    kept = [
+        row
+        for index, row in enumerate(rows)
+        if not (index == 1 and _TABLE_RULE.match(row.strip()))
     ]
+    cells = [_split_row(row) for row in kept]
     if not cells:
         return ""
     width = max(len(row) for row in cells)
@@ -146,7 +188,7 @@ def markdown_to_html(markdown_text: str) -> str:
             out.append("<ul>" + "".join(bullets) + "</ul>")
             bullets = []
         if ordered:
-            out.append("<ol>" + "".join(ordered) + "</ol>")
+            out.extend(ordered)
             ordered = []
 
     for raw in markdown_text.splitlines():
@@ -175,7 +217,14 @@ def markdown_to_html(markdown_text: str) -> str:
         if match:
             if not ordered:
                 flush()
-            ordered.append(f"<li>{_inline(match.group(2))}</li>")
+            # The literal number, never an ``<ol>``'s own counter: the
+            # source list is what ``[3]`` in the body points at, and an
+            # engine that restarts numbering would repoint every
+            # citation in the report.
+            ordered.append(
+                f'<p class="numbered">{_inline(match.group(1))}. '
+                f"{_inline(match.group(2))}</p>"
+            )
             continue
         flush()
         if stripped.startswith("## "):
@@ -206,40 +255,134 @@ def _stamp_page_numbers(doc: pymupdf.Document) -> None:
         )
 
 
-def _fixed_file_id(data: bytes, title: str) -> bytes:
-    """Replace the trailer's random ``/ID`` with a content-derived one.
+def _set_file_id(doc: pymupdf.Document, markdown_text: str, title: str) -> None:
+    """Give the document an identifier derived from what it contains.
 
     A PDF writer stamps a fresh random file identifier on every save,
-    which is the one thing that would stop identical input producing
-    identical bytes. Deriving it from the content keeps the identifier
-    meaningful -- two files with the same id hold the same report -- and
-    makes the renderer reproducible.
+    and that alone would stop identical input producing identical
+    bytes. The digest is taken from the renderer's *inputs* rather than
+    from the saved bytes, so it can be set through the document's own
+    trailer -- rewriting raw bytes risked matching a ``/ID`` inside a
+    compressed stream or a metadata string and corrupting the file.
 
     Args:
-      data: The saved PDF bytes.
-      title: Mixed into the digest, as it is part of the document.
+      doc: The document, before it is saved.
+      markdown_text: The delivered report, verbatim.
+      title: Also part of the document, so also part of the digest.
+    """
+    seed = f"{title}\x00{markdown_text}".encode()
+    digest = hashlib.sha256(seed).hexdigest()[:32].upper()
+    doc.xref_set_key(-1, "ID", f"[<{digest}><{digest}>]")
+
+
+def _packed(text: str) -> str:
+    """Text with all whitespace removed, for layout-independent search."""
+    return re.sub(r"\s+", "", text)
+
+
+def rendered_text(data: bytes) -> str:
+    """Everything the PDF actually puts on its pages.
+
+    The stamped page numbers come out too, and they sit between the two
+    halves of any paragraph that flows across a break, so they are
+    removed before the text is compared with its source.
+
+    Args:
+      data: The PDF bytes.
 
     Returns:
-      ``data`` with a deterministic identifier, unchanged in length.
+      The page text, footers dropped and ligatures expanded.
     """
-    match = _FILE_ID.search(data)
-    if match is None:
-        return data
-    head, tail = data[: match.start()], data[match.end() :]
-    digest = (
-        hashlib.sha256(head + tail + title.encode())
-        .hexdigest()[:32]
-        .upper()
-        .encode()
-    )
-    return head + b"/ID[<" + digest + b"><" + digest + b">]" + tail
+    with pymupdf.open("pdf", data) as doc:
+        raw = "\n".join(page.get_text() for page in doc)
+    for ligature, plain in _LIGATURES.items():
+        raw = raw.replace(ligature, plain)
+    return _FOOTER.sub("", raw)
+
+
+def expected_fragments(markdown_text: str) -> list[str]:
+    """The pieces of delivered text a faithful rendering must show.
+
+    One fragment per line, except a table row, which contributes one
+    fragment per cell -- a row is laid out as separate cells and never
+    reads back as one string. Markup that the renderer turns into
+    typography rather than words (``#``, ``>``, ``**``, the bullet
+    dash, the table rule) is dropped; a list's number is **kept**,
+    because the source list is what the body's citations point at.
+
+    Args:
+      markdown_text: The delivered report, verbatim.
+
+    Returns:
+      The fragments, whitespace removed, in the order they must appear.
+    """
+    fragments: list[str] = []
+    row = 0
+    for line in markdown_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            # The same rule ``_table_html`` applies, so the two can
+            # never disagree about which dashes are a separator and
+            # which are a cell the reader must still see.
+            if not (row == 1 and _TABLE_RULE.match(stripped)):
+                fragments += _split_row(stripped)
+            row += 1
+            continue
+        row = 0
+        if not stripped:
+            continue
+        stripped = stripped.lstrip(">").strip().lstrip("#").strip()
+        stripped = _BULLET.sub("", stripped).replace("**", "")
+        fragments.append(stripped)
+    return [packed for packed in map(_packed, fragments) if packed]
+
+
+def verify_complete(data: bytes, markdown_text: str) -> None:
+    """Raise unless the PDF is the delivered report and nothing else.
+
+    Three things are checked by reading the finished pages back, and
+    they are the three ways typography could change what was verified:
+    nothing delivered is **missing** (the layout engine clips what it
+    cannot fit and still reports success), nothing is **reordered**
+    (text that survives but moves is not the report that was
+    verified), and nothing is **added** -- the only mark the renderer
+    contributes of its own is a list bullet.
+
+    Args:
+      data: The rendered PDF bytes.
+      markdown_text: The delivered report, verbatim.
+
+    Raises:
+      IncompleteRender: If a fragment is missing or out of order.
+    """
+    page_text = _packed(rendered_text(data))
+    cursor = 0
+    between: list[str] = []
+    for fragment in expected_fragments(markdown_text):
+        found = page_text.find(fragment, cursor)
+        if found < 0:
+            missing = fragment[:60]
+            raise IncompleteRender(
+                f"the rendered PDF is missing, or reorders, {missing!r}"
+            )
+        between.append(page_text[cursor:found])
+        cursor = found + len(fragment)
+    between.append(page_text[cursor:])
+    added = {char for chunk in between for char in chunk} - _DECORATION
+    if added:
+        unexpected = "".join(sorted(added))[:60]
+        raise IncompleteRender(
+            f"the rendered PDF carries text the report does not: "
+            f"{unexpected!r}"
+        )
 
 
 def render_pdf(markdown_text: str, title: str = "") -> bytes:
     """Lay the delivered Markdown out as a paged PDF.
 
     Deterministic: the same Markdown renders to the same bytes, because
-    the document carries fixed metadata and no timestamp.
+    the document carries fixed metadata, no timestamp, and an
+    identifier derived from its own content.
 
     Args:
       markdown_text: The delivered report, verbatim.
@@ -248,17 +391,25 @@ def render_pdf(markdown_text: str, title: str = "") -> bytes:
 
     Returns:
       The PDF bytes.
+
+    Raises:
+      IncompleteRender: If the laid-out pages do not carry every
+        fragment of the delivered text, in order.
     """
     buffer = io.BytesIO()
     writer = pymupdf.DocumentWriter(buffer)
-    story = pymupdf.Story(html=markdown_to_html(markdown_text), user_css=CSS)
-    more = 1
-    while more:
-        device = writer.begin_page(PAGE)
-        more, _ = story.place(FRAME)
-        story.draw(device)
-        writer.end_page()
-    writer.close()
+    try:
+        story = pymupdf.Story(
+            html=markdown_to_html(markdown_text), user_css=CSS
+        )
+        more = 1
+        while more:
+            device = writer.begin_page(PAGE)
+            more, _ = story.place(FRAME)
+            story.draw(device)
+            writer.end_page()
+    finally:
+        writer.close()
 
     doc = pymupdf.open("pdf", buffer.getvalue())
     try:
@@ -278,15 +429,24 @@ def render_pdf(markdown_text: str, title: str = "") -> bytes:
         # Only the glyphs this report uses: a full CJK face embeds
         # ~1.8 MB, its subset ~140 KB.
         doc.subset_fonts()
-        return _fixed_file_id(doc.tobytes(garbage=3, deflate=True), title)
+        _set_file_id(doc, markdown_text, title)
+        # ``no_new_id``: without it the writer refreshes the trailer's
+        # second identifier on every save, which is the last thing
+        # that would make two renders of one report differ.
+        data = doc.tobytes(garbage=3, deflate=True, no_new_id=True)
     finally:
         doc.close()
+    verify_complete(data, markdown_text)
+    return data
 
 
 def write_pdf(
     thread_id: str, markdown_text: str, directory: str = REPORTS_DIR
 ) -> str:
     """Write the rendered PDF atomically beside the Markdown report.
+
+    Rendering happens before the temporary file is created, so a
+    refused render leaves nothing behind to clean up.
 
     Args:
       thread_id: Names the file, as it names the Markdown report.
@@ -298,12 +458,15 @@ def write_pdf(
     """
     path = pathlib.Path(directory) / f"{thread_id}.pdf"
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = render_pdf(markdown_text, title=thread_id)
     handle = tempfile.NamedTemporaryFile(
         "wb", dir=path.parent, prefix=".tmp-", suffix=".pdf", delete=False
     )
     try:
-        handle.write(render_pdf(markdown_text, title=thread_id))
-        handle.close()
+        try:
+            handle.write(data)
+        finally:
+            handle.close()
         os.replace(handle.name, path)
     finally:
         if os.path.exists(handle.name):
@@ -328,3 +491,27 @@ def pdf_beside(report_path: str | None) -> str | None:
         return None
     candidate = pathlib.Path(report_path).with_suffix(".pdf")
     return str(candidate) if candidate.is_file() else None
+
+
+def discard_stale(thread_id: str, directory: str = REPORTS_DIR) -> str | None:
+    """Delete a thread's PDF, so a failed render cannot leave a stale one.
+
+    A rerun replaces the Markdown report first. If the PDF then fails to
+    render, the previous run's PDF would still be sitting beside it, and
+    ``pdf_beside`` would offer that older report -- different claims,
+    possibly a different verification warning -- as this delivery's
+    formatted copy.
+
+    Args:
+      thread_id: The thread whose PDF is now out of date.
+      directory: Where reports are written.
+
+    Returns:
+      The path removed, or ``None`` if there was nothing to remove.
+    """
+    path = pathlib.Path(directory) / f"{thread_id}.pdf"
+    try:
+        path.unlink()
+    except OSError:
+        return None
+    return str(path)
