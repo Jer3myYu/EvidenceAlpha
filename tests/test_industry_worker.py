@@ -192,6 +192,7 @@ def test_success_builds_the_session_and_result():
         "mcp__research__search_web",
         "mcp__research__search_documents",
         "mcp__research__fetch_source",
+        "mcp__research__read_source",
     ]
     assert options.output_format["schema"]["title"] == "TaskOutput"
     assert options.setting_sources == []

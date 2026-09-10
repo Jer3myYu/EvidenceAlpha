@@ -869,6 +869,30 @@ def acquire_bytes(
     return version, chunks
 
 
+def read_snapshot(version: records.SourceVersion) -> list[Chunk]:
+    """Re-read a stored snapshot exactly as it was read when recorded.
+
+    The bytes are immutable and so is the way they were read: the
+    version's own ``content_type`` is used, never a type the server
+    would send today, so the chunks a reader gets back match the
+    locators the evidence already cites (plan D-U8).
+
+    Nothing is fetched, nothing is embedded, and no index is touched.
+    This is what makes a fetched document directly readable instead of
+    reachable only through fetch, whole-document embedding, and a
+    vector top-k.
+    """
+    content = pathlib.Path(version.blob_path).read_bytes()
+    fetched = Fetched(
+        url=version.final_url,
+        final_url=version.final_url,
+        content_type=version.content_type,
+        content=content,
+        retrieved_at=version.retrieved_at,
+    )
+    return chunk_blocks(extract(fetched))
+
+
 def acquire(
     url: str,
     source_id: str,

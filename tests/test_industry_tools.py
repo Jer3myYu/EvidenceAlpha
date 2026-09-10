@@ -70,6 +70,24 @@ class FakeBackend:
         self.indexed.append((version.id, canonical_url, len(chunks)))
         return len(chunks)
 
+    def read_snapshot(self, version):
+        del version
+        return [
+            snapshots.Chunk(0, "Front matter.", "Cover", 1, "text", ()),
+            snapshots.Chunk(
+                1, "HOYA supplies blanks.", "Market", 3, "text", ()
+            ),
+            snapshots.Chunk(
+                2,
+                "[table]\nvendor | share\nHOYA | 60%",
+                "Market",
+                3,
+                "table",
+                ("table_merged_cells",),
+            ),
+            snapshots.Chunk(3, "Outlook text.", "Outlook", 4, "text", ()),
+        ]
+
     def search_documents(self, query, k, source_url):
         del query, k
         if source_url == "https://none.example/":
@@ -141,12 +159,112 @@ def text_of(result):
 
 def test_allowed_tool_names():
     _, _, _, found, allowed = setup()
-    assert set(found) == {"search_web", "search_documents", "fetch_source"}
+    assert set(found) == {
+        "search_web",
+        "search_documents",
+        "fetch_source",
+        "read_source",
+    }
     assert allowed == [
         "mcp__research__search_web",
         "mcp__research__search_documents",
         "mcp__research__fetch_source",
+        "mcp__research__read_source",
     ]
+
+
+def test_the_advertised_schemas_expose_every_implemented_filter():
+    """Document 01 s5: an advertised schema must expose what it implements.
+
+    `search_web` implemented `max_results` and `search_documents`
+    implemented `source_url` and `k`, but neither declared them, so the
+    model could not reliably pass them (plan D-U8).
+    """
+    meter = budget.RunMeter(10)
+    meter.register("T2.1", 10)
+    _, _, tool_list = tools.build_tools(
+        tools.Collector("T2.1", "T2"),
+        meter,
+        FakeBackend(),
+        asyncio.Lock(),
+    )
+    schemas = {item.name: item.input_schema for item in tool_list}
+    advertised = {
+        name: set(schema["properties"]) for name, schema in schemas.items()
+    }
+    required = {
+        name: set(schema["required"]) for name, schema in schemas.items()
+    }
+    assert advertised["search_web"] == {"query", "max_results"}
+    assert advertised["search_documents"] == {"query", "source_url", "k"}
+    assert {"source_url", "page", "section", "contains"} <= advertised[
+        "read_source"
+    ]
+    # Exposed, not imposed: the SDK's shorthand marks every declared key
+    # required, which would have broken every call that omits a filter.
+    assert required["search_web"] == {"query"}
+    assert required["search_documents"] == {"query"}
+    assert required["read_source"] == {"source_url"}
+    assert required["fetch_source"] == {"url"}
+
+
+def test_read_source_reads_a_page_directly_with_its_neighbours():
+    """D-U8: a fetched document is readable without a vector round trip."""
+    _, collector, _, found, _ = setup()
+    run(found["fetch_source"]({"url": "https://a.example/x?b=1#frag"}))
+    collector.evidence.clear()
+    out = text_of(
+        run(
+            found["read_source"](
+                {"source_url": "https://a.example/x?b=1", "page": 3}
+            )
+        )
+    )
+    # The match is marked, and the passage before and after come with it.
+    assert "<- match" in out
+    assert "Front matter." in out and "Outlook text." in out
+    assert "page 3" in out and "section: Market" in out
+    kinds = [item.kind for item in collector.evidence]
+    assert "table" in kinds and "passage" in kinds
+    # Every passage carries the version it came from, so a locator is
+    # never ambiguous between two fetches of the same URL.
+    assert all(item.source_version_id == "v1" for item in collector.evidence)
+    table = next(i for i in collector.evidence if i.kind == "table")
+    assert table.limitations == ["table_merged_cells"]
+
+
+def test_read_source_locates_an_exact_phrase_and_reports_a_miss():
+    _, collector, _, found, _ = setup()
+    run(found["fetch_source"]({"url": "https://a.example/x?b=1#frag"}))
+    out = text_of(
+        run(
+            found["read_source"](
+                {
+                    "source_url": "https://a.example/x?b=1",
+                    "contains": "supplies blanks",
+                }
+            )
+        )
+    )
+    assert "HOYA supplies blanks." in out
+    miss = text_of(
+        run(
+            found["read_source"](
+                {"source_url": "https://a.example/x?b=1", "page": 99}
+            )
+        )
+    )
+    # A miss says what the document does hold, rather than nothing.
+    assert "nothing matched" in miss
+    assert "pages 1-4" in miss and "Market" in miss
+
+
+def test_read_source_refuses_a_source_this_attempt_never_fetched():
+    _, _, _, found, _ = setup()
+    out = text_of(
+        run(found["read_source"]({"source_url": "https://never.example/"}))
+    )
+    assert "no fetched version" in out and "fetch_source first" in out
 
 
 def test_search_web_collects_snippets_as_leads():
