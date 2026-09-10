@@ -155,6 +155,7 @@ class ClaudeLLM(crewai.BaseLLM):
         self.thinking = thinking
         # What the last completed call consumed, as the SDK reported it.
         self.last_usage: dict[str, Any] | None = None
+        self.on_invoke: Callable[[], None] | None = None
         self._cancel: Callable[[], None] | None = None
         self._cancel_requested = False
         self._cancel_lock = threading.Lock()
@@ -233,6 +234,8 @@ class ClaudeLLM(crewai.BaseLLM):
             }
         result = None
         exchanges = 0
+        if self.on_invoke is not None:
+            self.on_invoke()
         async for message in claude_agent_sdk.query(
             prompt=prompt, options=options
         ):
@@ -443,6 +446,9 @@ async def run_task(
     )
     kickoff: asyncio.Future | None = None
     try:
+        if isinstance(llm, ClaudeLLM):
+            llm.on_invoke = slot.invoked
+        slot.kickoff()
         kickoff = asyncio.ensure_future(crew.akickoff())
         try:
             output = await asyncio.wait_for(asyncio.shield(kickoff), deadline)

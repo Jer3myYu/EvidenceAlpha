@@ -97,6 +97,7 @@ class IndustryState(TypedDict, total=False):
     # measured case, until the graph's recursion limit stopped the run
     # short of delivery (U2-08).
     review_stalls: int
+    stage_inputs: dict[str, list[str]]
     route_log: Annotated[list[str], operator.add]
 
 

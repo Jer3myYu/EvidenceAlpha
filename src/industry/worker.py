@@ -667,6 +667,7 @@ async def run_attempt(
     # slot is held, like the timeout, so waiting for a slot is never
     # charged against the attempt's reservation.
     started = time.monotonic()
+    slot.invoked()
     # How the session failed: the error label, the usage its payload
     # carried, and whether the usage is unknown.
     failure: tuple[str, records.Usage | None, bool] | None = None

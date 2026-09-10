@@ -31,6 +31,7 @@ from industry import snapshots
 from industry import state as state_module
 from industry import tools
 from industry import trace
+from industry import timing
 from research import persist
 from research import web
 
@@ -257,7 +258,9 @@ async def main() -> None:
             payload = None
         runtime.begin(thread_id)
         show("TRACE", "")
-        state = await stream(graph, payload, config, runtime)
+        async with timing.invocation(checkpointer.conn, thread_id):
+            state = await stream(graph, payload, config, runtime)
+        show("TIMING", str(await timing.summary(checkpointer.conn, thread_id)))
     meta = state["meta"]
     delivery = state.get("delivery")
     if delivery is not None:

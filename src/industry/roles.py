@@ -26,7 +26,7 @@ from industry import report
 from industry import state as state_module
 from research import crew
 
-PROMPT_VERSION = "10.3"
+PROMPT_VERSION = "10.4"
 MODEL = "claude-sonnet-5"
 # Thinking configuration per role (``None``: the model's default). Set
 # from live measurements: see ``tmp/9-7-26/live/review-probe``.
@@ -217,12 +217,25 @@ class Analysis(records.Record):
     counterarguments: list[str] = pydantic.Field(default_factory=list)
 
 
+class BlockSpec(records.Record):
+    """An editor-declared occurrence; the host binds keys and versions."""
+
+    key: str
+    kind: records.BlockKind
+    text: str
+    prefix: str = ""
+    claim_ids: list[str]
+    container_id: str | None = None
+    depends_on: list[str] | None
+
+
 class SectionSpec(records.Record):
     """One drafted section citing claims by ``[C#]``."""
 
     id: str
     title: str
     text: str
+    blocks: list[BlockSpec] = pydantic.Field(default_factory=list)
 
 
 class Draft(records.Record):
@@ -811,10 +824,10 @@ def render_sections(
     for section in sections:
         stale = " (stale)" if section.stale else ""
         body = (
-            "\n".join(
-                f"<{block.id}> {block.text}"
-                for block in report.blocks_of(section)
-            )
+            "Rendered projection:\n"
+            + section.text
+            + "\n\nStored units:\n"
+            + report.render_blocks(section)
             if labelled
             else section.text
         )
@@ -1222,7 +1235,7 @@ def draft_description(
             render_relationships(state, confirmed_only=True),
             render_coverage(state),
             render_issues(state),
-            render_sections(state.get("sections", [])),
+            render_sections(state.get("sections", []), labelled=True),
             instructions,
             "Structure (adapt naturally, avoid many tiny chapters): "
             "executive understanding; industry and value-chain map with "
@@ -1240,7 +1253,22 @@ def draft_description(
             "scope_change may not be stated as a conclusion at all, and "
             "one whose reasoning was not audited may not carry a "
             "central conclusion. "
-            "Section ids are short slugs.",
+            "Section ids are short slugs. Return ordered blocks for every "
+            "section. Each block has a stable local key (reuse prior keys "
+            "for the same occurrence), kind, exact text, prefix separator, "
+            "claim_ids, container_id and depends_on. Concatenating each "
+            "prefix+text must equal section.text exactly. Separate sentences "
+            "when they have different premises. Table header, rule, caption "
+            "and data rows are distinct blocks sharing a container_id; "
+            "start each table after a blank line and separate its header, "
+            "rule and data rows with exactly one newline, no blank lines. "
+            "rows depend on their header, rule and caption. Every premise "
+            "is a local key or section:key (forward references allowed). "
+            "Declare repeated/embedded premises and cross-section "
+            "conclusions explicitly. [] declares no report-unit premises; "
+            "null means their scope is unknown. Do not infer independence "
+            "from missing citations. claim_ids must exactly match printed "
+            "[C#] markers. Never compute hashes or versions.",
         ]
     )
 
@@ -1360,6 +1388,25 @@ def final_review_description(state: state_module.IndustryState) -> str:
             render_findings(state, reviewed_only=True),
             render_sections(state.get("sections", []), labelled=True),
             "\n".join(frozen_appendix(state)),
+            "Detailed recheck targets: "
+            + ", ".join(
+                state["review_subject"].targets
+                if state.get("review_subject")
+                else [b.id for s in state.get("sections", []) for b in s.blocks]
+            ),
+            "For each target return one units judgment with block_id, "
+            "version copied from the label, supported, "
+            "dependencies_complete, and reason. Independently inspect "
+            "whether its declared claims support the wording and whether "
+            "all premises (including repeated, embedded, forward and "
+            "cross-section premises and table captions) are recorded. "
+            "An editor's empty list is a declaration, not proof of "
+            "independence. Reject incomplete or unknown dependency scope. "
+            "The remaining units are context with unchanged exact prior "
+            "judgments, not targets for repeated detailed review. Always "
+            "check whole-report consistency, even with no detailed "
+            "targets; flag any contextual unit whose approval should "
+            "be withdrawn. Missing target judgments approve nothing.",
             "Check the exact draft: the sections above plus the "
             "limitations and coverage blocks are what delivery "
             "publishes; every factual sentence must be "
@@ -1373,6 +1420,8 @@ def final_review_description(state: state_module.IndustryState) -> str:
             "newcomer (category wording, minor). Give the section id, and "
             "block_id: the <id> of the exact sentence, table row, or "
             "list item the problem is in, copied from the labels above. "
+            "Also copy block_version from that unit's version label; "
+            "a missing or stale version cannot identify removable wording. "
             "An unsupported or contradiction issue without a usable "
             "block_id removes the whole section, so name the unit. "
             "Where one applies, give the claim id. "

@@ -51,6 +51,7 @@ from industry import records
 from industry import roles
 from industry import state as state_module
 from industry import tools
+from industry import timing
 from industry import trace
 from industry import worker
 from research import persist
@@ -462,7 +463,8 @@ async def run(
     before: dict[str, Any] = {}
     pending: list[tuple[str, dict[str, Any]]] = []
     runtime.begin(thread_id)
-    async for mode, chunk in graph.astream(
+    async for mode, chunk in timing.stream(
+        graph,
         graph_module.initial_state(question, runtime.limits),
         persist.thread_config(thread_id),
         stream_mode=["updates", "values", "custom"],

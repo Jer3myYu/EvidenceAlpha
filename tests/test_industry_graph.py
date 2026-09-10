@@ -34,6 +34,80 @@ NOW = "2026-09-07T00:00:00+00:00"
 USAGE = records.Usage(turns=2, duration_s=1.0)
 
 
+@pytest.mark.parametrize("node", ["analyze", "write"])
+@pytest.mark.parametrize("new_step", [False, True])
+def test_repetition_guard_distinguishes_concrete_correction_from_bookkeeping(
+    tmp_path, node, new_step
+):
+    runtime, api, _, compiled = make(tmp_path)
+    state = graph_module.initial_state("fixture", runtime.limits)
+    state["brief"] = roles.default_brief("fixture")
+    calls = []
+
+    async def call(*args, **kwargs):
+        del args, kwargs
+        calls.append(node)
+        return (roles.Analysis() if node == "analyze" else roles.Draft()), USAGE
+
+    setattr(api, node, call)
+    issue = records.Issue(
+        id="I1",
+        key="first",
+        category="weak_inference",
+        severity="material",
+        target="economics",
+        requested_action="analyze",
+        text="Prices will certainly grow.",
+        description="Qualify certainty.",
+    )
+
+    def invoke(current, objection, number):
+        current = {**current, "issues": {objection.id: objection}}
+        key = f"{node}.{number}"
+        current["single_calls"] = {
+            **current.get("single_calls", {}),
+            key: records.Attempt(
+                id=key,
+                task_id=node,
+                started_at=records.now_iso(),
+                reserved=records.Reservation(
+                    turns=10, tool_calls=0, seconds=480
+                ),
+            ),
+        }
+        update = asyncio.run(compiled.nodes[node].node.steps[0].afunc(current))
+        return {**current, **update}
+
+    state = invoke(state, issue, 1)
+    cosmetic = issue.model_copy(
+        update={
+            "id": "I2",
+            "key": "renamed",
+            "description": "Avoid overcertainty.",
+        }
+    )
+    state["meta"] = state["meta"].model_copy(
+        update={"started_at": records.now_iso()}
+    )
+    first = state["single_calls"][f"{node}.1"]
+    state["single_calls"][first.id] = first.model_copy(
+        update={"observed": USAGE.model_copy(update={"duration_s": 2})}
+    )
+    state = invoke(state, cosmetic, 2)
+    assert calls == [node]
+    assert state["single_calls"][f"{node}.2"].observed.turns == 0
+    concrete = cosmetic.model_copy(
+        update=(
+            {"next_step": "Test demand separately from capacity."}
+            if new_step
+            else {"text": "Rising capacity proves stronger demand."}
+        )
+    )
+    state = invoke(state, concrete, 3)
+    assert calls == [node, node]
+    assert state["single_calls"][f"{node}.3"].observed.turns == USAGE.turns
+
+
 def version(source_id):
     return records.SourceVersion(
         id=f"v-{source_id}",
@@ -410,7 +484,21 @@ class FakeRoles:
             roles.Draft(
                 sections=[
                     roles.SectionSpec(
-                        id="intro", title="概览", text=self.draft_text
+                        id="intro",
+                        title="概览",
+                        text=self.draft_text,
+                        blocks=[
+                            roles.BlockSpec(
+                                key=f"b{number}",
+                                kind="sentence",
+                                text=text,
+                                claim_ids=report.cited_claims(text),
+                                depends_on=[],
+                            )
+                            for number, text in enumerate(
+                                report.factual_units(self.draft_text), 1
+                            )
+                        ],
                     )
                 ]
             ),
@@ -418,11 +506,23 @@ class FakeRoles:
         )
 
     async def final_review(self, state, max_turns, deadline):
-        del state, max_turns, deadline
+        del max_turns, deadline
         self.calls.append("final")
         return (
             records.DraftReview(
-                issues=list(self.final_issues), consistent=not self.final_issues
+                issues=list(self.final_issues),
+                consistent=not self.final_issues,
+                units=[
+                    records.UnitReview(
+                        block_id=b.id,
+                        version=b.version,
+                        supported=True,
+                        dependencies_complete=True,
+                        reason="fixture judgment",
+                    )
+                    for s in state.get("sections", [])
+                    for b in s.blocks
+                ],
             ),
             USAGE,
         )
@@ -2077,9 +2177,11 @@ def test_a_role_deadline_charges_its_reservation_and_the_run_delivers(
     calls = [
         c for c in state["single_calls"].values() if c.task_id == "analyze"
     ]
-    assert calls and all(c.status == "failed" for c in calls)
+    failed = [c for c in calls if c.status == "failed"]
+    assert failed
+    assert all(c.observed.turns == 0 for c in calls if c.status == "done")
     assert all(
-        budget.attempt_charge(c).turns == c.reserved.turns for c in calls
+        budget.attempt_charge(c).turns == c.reserved.turns for c in failed
     )
     assert any("RoleTimeout" in line for line in state["route_log"])
     assert state["meta"].execution_status == "completed"
@@ -2261,13 +2363,24 @@ def test_a_retention_approval_naming_no_body_section_is_recorded(tmp_path):
     runtime, api, _, compiled = make(tmp_path)
 
     async def final_review(state, max_turns, deadline):
-        del state, max_turns, deadline
+        del max_turns, deadline
         api.calls.append("final")
         return (
             records.DraftReview(
                 issues=[],
                 consistent=True,
                 retainable=["问题覆盖", "intro"],
+                units=[
+                    records.UnitReview(
+                        block_id=b.id,
+                        version=b.version,
+                        supported=True,
+                        dependencies_complete=True,
+                        reason="fixture judgment",
+                    )
+                    for s in state.get("sections", [])
+                    for b in s.blocks
+                ],
             ),
             USAGE,
         )

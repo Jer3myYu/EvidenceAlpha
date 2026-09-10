@@ -83,7 +83,8 @@ import pydantic
 # Editor, and the reserves every earlier stage keeps changed with it.
 # Resuming a v11 thread would deliver a body whose reasoning this
 # program believes was audited and was not.
-SCHEMA_VERSION = 12
+# 13: report units and their reviewed dependency scopes are stored.
+SCHEMA_VERSION = 13
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -969,6 +970,8 @@ class Attempt(Record):
     started_at: str
     duration_s: float | None = None
     queued_at: str | None = None
+    admitted_at: str | None = None
+    kickoff_at: str | None = None
     invoked_at: str | None = None
     finished_at: str | None = None
 
@@ -1061,6 +1064,11 @@ class TaskResult(Record):
     gaps: list[str] = pydantic.Field(default_factory=list)
     usage: Usage = pydantic.Field(default_factory=Usage)
     error: str | None = None
+    queued_at: str | None = None
+    admitted_at: str | None = None
+    kickoff_at: str | None = None
+    invoked_at: str | None = None
+    finished_at: str | None = None
     # Whether the evidence behind this result is good enough for what
     # the task asked, decided in Python from the records above (plan
     # D-U6). ``status`` stays execution: a session can succeed and be
@@ -1312,6 +1320,35 @@ class Coverage(Record):
     lead_status: CoverageStatus | None = None
 
 
+BlockKind = Literal[
+    "sentence", "paragraph", "list_item", "row", "header", "rule", "caption"
+]
+
+
+class Block(Record):
+    """An exact report occurrence with host-owned identity and version."""
+
+    id: str
+    kind: BlockKind
+    text: str
+    prefix: str = ""
+    sha256: str
+    version: int = 1
+    claim_ids: list[str] = pydantic.Field(default_factory=list)
+    container_id: str | None = None
+    depends_on: list[str] | None = None
+
+
+class UnitReview(Record):
+    """A verifier's explicit support and dependency-scope judgment."""
+
+    block_id: str
+    version: int
+    supported: bool
+    dependencies_complete: bool
+    reason: str
+
+
 class Section(Record):
     """One report section citing claims by ``[C#]``."""
 
@@ -1321,6 +1358,16 @@ class Section(Record):
     claim_ids: list[str] = pydantic.Field(default_factory=list)
     review_version: int = 0
     stale: bool = False
+    blocks: list[Block] = pydantic.Field(default_factory=list)
+
+    @pydantic.model_validator(mode="after")
+    def validate_projection(self) -> "Section":
+        """Reject drift between stored occurrences and rendered text."""
+        if self.blocks and self.text != "".join(
+            b.prefix + b.text for b in self.blocks
+        ):
+            raise ValueError("report blocks do not render to section text")
+        return self
 
 
 class ClaimVerdict(Record):
@@ -1421,6 +1468,7 @@ class SectionIssue(Record):
     description: str
     claim_id: str | None = None
     block_id: str | None = None
+    block_version: int | None = None
 
 
 class DraftReview(Record):
@@ -1433,6 +1481,7 @@ class DraftReview(Record):
     # are removed around them. Defaults to empty: a review that judges
     # nothing retains nothing.
     retainable: list[str] = pydantic.Field(default_factory=list)
+    units: list[UnitReview] = pydantic.Field(default_factory=list)
 
 
 DeliveryLevel = Literal["verified", "partial", "diagnostic_only"]
@@ -1473,6 +1522,8 @@ class ReviewSubject(Record):
     # the same limitations and coverage.
     appendix: list[str] = pydantic.Field(default_factory=list)
     draft_version: int = 0
+    units: dict[str, str] = pydantic.Field(default_factory=dict)
+    targets: list[str] = pydantic.Field(default_factory=list)
 
 
 class DeliveryCandidate(Record):
@@ -1745,6 +1796,8 @@ PERSISTED: tuple[type[Record], ...] = (
     Calculation,
     Finding,
     Coverage,
+    Block,
+    UnitReview,
     Section,
     ClaimVerdict,
     RelationshipVerdict,

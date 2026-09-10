@@ -32,6 +32,7 @@ charged. Routers are pure functions of state; each decision is written
 to ``route_log`` with its reason, and Studio reads the same functions.
 """
 
+import collections
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -52,6 +53,7 @@ from industry import pdf as pdf_module
 from industry import quantities
 from industry import records
 from industry import report
+from industry import report_units
 from industry import roles
 from industry import schedule
 from industry import state as state_module
@@ -464,6 +466,7 @@ def _reaching(
     if issue.severity != "material" or issue.category not in (
         "unsupported",
         "contradiction",
+        "missing_evidence",
     ):
         return []
     # Nothing locates it: the section was renamed, or renamed and
@@ -676,6 +679,7 @@ def _complete(
     state: state_module.IndustryState,
     reservation: records.Attempt,
     usage: records.Usage,
+    timing: dict[str, str] | None = None,
 ) -> dict[str, records.Attempt]:
     calls = dict(state.get("single_calls", {}))
     calls[reservation.id] = reservation.model_copy(
@@ -683,6 +687,7 @@ def _complete(
             "status": "done" if not usage.unknown else "failed",
             "observed": usage,
             "duration_s": usage.duration_s,
+            **(timing or {}),
         }
     )
     return calls
@@ -2309,9 +2314,47 @@ def build_graph(
         reservation = running_reservation(state, node)
         if reservation is None:
             return None, {"route_log": [f"{node}: skipped (no reservation)"]}
+        history = dict(state.get("stage_inputs", {}))
+        signature = None
+        if node in ("analyze", "write"):
+            actions = sorted(
+                {
+                    (
+                        i.category,
+                        i.target,
+                        i.requested_action,
+                        i.text or "",
+                        i.next_step or "",
+                    )
+                    for i in state.get("issues", {}).values()
+                    if i.status == "open"
+                }
+            )
+            signature = report_units.digest(
+                [
+                    state_module.support_signature(state),
+                    actions,
+                    [
+                        (f.id, f.inference_review, f.inference_reason)
+                        for f in state.get("findings", {}).values()
+                    ],
+                ]
+            )
+            if signature in history.get(node, []):
+                return None, {
+                    "single_calls": _release(state, node),
+                    "route_log": [
+                        f"{node}: unchanged evidence/action already attempted"
+                    ],
+                }
+            history[node] = history.get(node, []) + [signature]
         max_turns = budget.max_turns_for(reservation.reserved.turns, limits)
+        timing: dict[str, str] = {}
         try:
-            output, usage = await call(max_turns, reservation.reserved.seconds)
+            with admission_module.capture_timing() as timing:
+                output, usage = await call(
+                    max_turns, reservation.reserved.seconds
+                )
         except (crew.RoleTimeout, crew.RoleHung) as error:
             # This call's own deadline, not a program fault: the
             # reservation stays charged in full and the node degrades
@@ -2324,11 +2367,15 @@ def build_graph(
             # starts over that work.
             return None, {
                 "single_calls": _complete(
-                    state, reservation, records.Usage(unknown=True)
+                    state, reservation, records.Usage(unknown=True), timing
                 ),
                 "route_log": [f"{node}: {type(error).__name__}: {error}"],
+                "stage_inputs": history,
             }
-        return output, {"single_calls": _complete(state, reservation, usage)}
+        return output, {
+            "single_calls": _complete(state, reservation, usage, timing),
+            "stage_inputs": history,
+        }
 
     async def scope(state: state_module.IndustryState) -> dict[str, Any]:
         question = state["question"]
@@ -2561,7 +2608,9 @@ def build_graph(
                 "worker payload was not restored as a WorkerInput "
                 f"({type(work).__name__}); this thread cannot be resumed"
             )
-        result = await worker_fn(work, runtime, backend, on_event=_writer())
+        with admission_module.capture_timing() as timing:
+            result = await worker_fn(work, runtime, backend, on_event=_writer())
+        result = result.model_copy(update=timing)
         return {"task_results": [result]}
 
     async def merge_node(state: state_module.IndustryState) -> dict[str, Any]:
@@ -2754,6 +2803,21 @@ def build_graph(
         a material issue against the finding, which the router sends to
         remediation instead of to the Editor.
         """
+
+        targets = {
+            key: finding
+            for key, finding in state.get("findings", {}).items()
+            if finding.status == "current"
+            and (
+                finding.inference_review == "unreviewed"
+                or finding.inference_version != finding.version
+            )
+        }
+        if not targets:
+            return {
+                "single_calls": _release(state, "audit_findings"),
+                "route_log": ["audit_findings: no changed findings; no call"],
+            }
 
         async def call(max_turns: int, deadline: float):
             return await api.audit_findings(state, max_turns, deadline)
@@ -3366,16 +3430,25 @@ def build_graph(
                 f"{kept.level} candidate"
             )
         version = state.get("draft_version", 0) + 1
-        sections = [
-            records.Section(
-                id=s.id,
-                title=s.title,
-                text=s.text,
-                claim_ids=report.cited_claims(s.text),
-                review_version=version,
+        try:
+            sections = report_units.build(
+                draft.sections,
+                state.get("sections", []),
+                version,
+                set(state.get("claims", {})),
             )
-            for s in draft.sections
-        ]
+        except ValueError as error:
+            update["route_log"].append(f"write: invalid report units: {error}")
+            issues, _ = merge.open_issue(
+                dict(state.get("issues", {})),
+                "unsupported",
+                "material",
+                "editor_output",
+                "edit",
+                f"rejected draft has invalid units or cites: {error}",
+            )
+            update["issues"] = issues
+            return update
         issues = dict(state.get("issues", {}))
         for problem in report.check_citations(
             sections,
@@ -3418,6 +3491,12 @@ def build_graph(
         # again, which used to let the delivered limitations differ from
         # the reviewed ones with no new draft and no version change.
         subject = report.review_subject(state, state.get("coverage") or [])
+        inherited = report.accepted_units(state)
+        subject = subject.model_copy(
+            update={
+                "targets": sorted(set(subject.units) - inherited),
+            }
+        )
         reviewed = {**state, "review_subject": subject}
 
         async def call(max_turns: int, deadline: float):
@@ -3431,7 +3510,51 @@ def build_graph(
         issues = dict(state.get("issues", {}))
         version = state.get("draft_version", 0)
         if outcome is not None:
+            previous_review = state.get("final_review")
+            previous_units = previous_review.units if previous_review else []
+            fresh = {v.block_id for v in outcome.units}
+            outcome = outcome.model_copy(
+                update={
+                    "units": [
+                        v
+                        for v in previous_units
+                        if v.block_id in inherited and v.block_id not in fresh
+                    ]
+                    + outcome.units,
+                }
+            )
             flagged: set[str] = set()
+            by_id = {v.block_id: v for v in outcome.units}
+            counts = collections.Counter(v.block_id for v in outcome.units)
+            for section in state.get("sections", []):
+                for unit in section.blocks:
+                    verdict = by_id.get(unit.id)
+                    complete = (
+                        verdict is not None
+                        and counts[unit.id] == 1
+                        and verdict.version == unit.version
+                        and verdict.dependencies_complete
+                        and unit.depends_on is not None
+                    )
+                    if complete and verdict.supported:
+                        continue
+                    category = "unsupported" if complete else "missing_evidence"
+                    issues, unresolved_unit = merge.open_issue(
+                        issues,
+                        category,
+                        "material",
+                        section.id,
+                        "edit",
+                        f"[{section.id}] {unit.id}: "
+                        + (
+                            verdict.reason
+                            if verdict
+                            else "unit support/dependency judgment omitted"
+                        ),
+                        draft_version=version,
+                        text=unit.text,
+                    )
+                    flagged.add(unresolved_unit.key)
             for problem in outcome.issues:
                 action: records.RequestedAction = {
                     "unsupported": "remove",
@@ -3471,6 +3594,8 @@ def build_graph(
                     section_id,
                     problem.block_id,
                 )
+                if block is not None and problem.block_version != block.version:
+                    block = None
                 if problem.block_id and block is None:
                     update["route_log"].append(
                         f"final_review: {problem.block_id!r} names no unit "
@@ -3513,63 +3638,30 @@ def build_graph(
                         f"final_review: {problem.section_id!r} stands "
                         "against every section"
                     )
-                if block is not None and problem.category in (
-                    "unsupported",
-                    "contradiction",
-                ):
-                    # Whatever the draft draws *from* the withheld
-                    # sentence goes with it (U2-03).
-                    # Every section the removal reaches, and every
-                    # occurrence within it: the premise may be written
-                    # twice, and a retargeted objection may land in more
-                    # than one section (U2-03).
-                    for section in state.get("sections", []):
-                        if section.id != section_id and report.carries(
-                            section.text, block.text
-                        ):
-                            # The premise itself, not only what follows
-                            # from it: removing B's consequence while
-                            # leaving B's identical premise standing is
-                            # the same defect upside down (U2-03).
-                            issues, root = merge.open_issue(
-                                issues,
-                                problem.category,
-                                problem.severity,
-                                section.id,
-                                action,
-                                f"[{section.id}] carries the same wording "
-                                f"{issue.id} faulted",
-                                draft_version=version,
-                                text=block.text,
-                            )
-                            flagged.add(root.key)
-                        for dependent in report.dependents_of_text(
-                            section, block.text
-                        ):
-                            issues, extra = merge.open_issue(
-                                issues,
-                                problem.category,
-                                problem.severity,
-                                section.id,
-                                action,
-                                f"[{section.id}] depends on the withheld "
-                                f"{block.id}, which {issue.id} faulted",
-                                draft_version=version,
-                                text=dependent.text,
-                            )
-                            flagged.add(extra.key)
-                            update["route_log"].append(
-                                f"{extra.id}: {dependent.id} falls with "
-                                f"{block.id}"
-                            )
-            # A draft issue closes only when a newer draft was reviewed
-            # and this review did not flag it again.
+            # Only explicitly rechecked scopes can settle earlier issues.
+            judged = {
+                v.block_id
+                for v in outcome.units
+                if v.supported and v.dependencies_complete
+            }
+            rechecked_sections = {
+                s.id
+                for s in state.get("sections", [])
+                if s.blocks and all(b.id in judged for b in s.blocks)
+            }
             for issue in list(issues.values()):
                 if (
                     issue.status == "open"
                     and issue.draft_version is not None
                     and issue.draft_version < version
                     and issue.key not in flagged
+                    and (
+                        not subject.units
+                        or (
+                            outcome.consistent
+                            and issue.target in rechecked_sections
+                        )
+                    )
                 ):
                     issues[issue.id] = issue.model_copy(
                         update={

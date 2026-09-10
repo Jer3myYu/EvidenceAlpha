@@ -20,6 +20,7 @@ authority both model entry points consult.
 
 import asyncio
 import dataclasses
+import datetime
 import math
 import threading
 from typing import Any
@@ -28,6 +29,53 @@ from industry import admission as admission_module
 from industry import merge
 from industry import records
 from industry import state as state_module
+
+
+def invocation_timing(state: state_module.IndustryState) -> dict[str, Any]:
+    """Measure actual invocation and queue time without changing charges."""
+    attempts = list(state.get("attempts", {}).values()) + list(
+        state.get("single_calls", {}).values()
+    )
+    invoked = 0
+    seconds = 0.0
+    queue = 0.0
+    unknown = 0
+    for attempt in attempts:
+        if attempt.reserved.held:
+            continue
+        if not attempt.invoked_at:
+            if attempt.admitted_at and attempt.finished_at:
+                # The owner ended before reaching the SDK.
+                continue
+            # Released, unused reservations are not model invocations.
+            if attempt.observed is None or attempt.observed.turns:
+                unknown += 1
+            continue
+        invoked += 1
+        start = datetime.datetime.fromisoformat(attempt.invoked_at)
+        if attempt.queued_at:
+            wait = (
+                start - datetime.datetime.fromisoformat(attempt.queued_at)
+            ).total_seconds()
+            queue += max(0.0, wait)
+            unknown += int(wait < 0)
+        else:
+            unknown += 1
+        if attempt.finished_at:
+            duration = (
+                datetime.datetime.fromisoformat(attempt.finished_at) - start
+            ).total_seconds()
+            seconds += max(0.0, duration)
+            unknown += int(duration < 0)
+        else:
+            unknown += 1
+    return {
+        "invoked_sessions": invoked,
+        "invocation_session_s": round(seconds, 3),
+        "session_queue_s": round(queue, 3),
+        "unknown_session_timings": unknown,
+        "invocation_timing_complete": not unknown,
+    }
 
 
 @dataclasses.dataclass(frozen=True)

@@ -175,4 +175,4 @@ def test_the_worker_prompt_shows_valid_json_and_forbids_xml():
     assert "XML-style tags" in text
     assert '"summary"' in text and '"segments"' in text
     assert "escape every ASCII double quote" in text
-    assert roles.PROMPT_VERSION == "10.3"
+    assert roles.PROMPT_VERSION == "10.4"

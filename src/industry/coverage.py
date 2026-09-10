@@ -504,7 +504,11 @@ def delivered_claims(
     live = state.get("calculations", {})
     cited: set[str] = set()
     for section in sections:
-        cited.update(report.cited_claims(section.text))
+        cited.update(
+            section.claim_ids
+            if section.blocks
+            else report.cited_claims(section.text)
+        )
     return {
         cid: claims[cid]
         for cid in cited

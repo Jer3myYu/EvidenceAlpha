@@ -19,7 +19,9 @@ import tempfile
 from typing import Any
 
 from industry import merge
+from industry import budget
 from industry import records
+from industry import report_units
 from industry import state as state_module
 
 REPORTS_DIR = "data/reports"
@@ -53,28 +55,6 @@ class CitationProblem:
     description: str
     # The offending factual unit, when the problem is about one.
     text: str | None = None
-
-
-# Words that make a paragraph a consequence of the one before it. If
-# the premise goes, so does the conclusion drawn from it.
-_EMPHASIS = re.compile(r"^[*_>\s]+")
-_CONSEQUENCE = re.compile(
-    r"^(?:therefore|so\b|thus|hence|accordingly|consequently|"
-    r"as a result|for (?:this|that) reason|that means|this means|"
-    r"it follows|which means|meaning that|the (?:result|upshot) is|"
-    r"in consequence)"
-    r"|^(?:因此|所以|这意味着|由此|故而|从而|可见|因而|据此|于是)",
-    re.IGNORECASE,
-)
-
-
-def _is_consequence(text: str) -> bool:
-    """Whether a paragraph's own opening makes it follow from the last.
-
-    Markdown emphasis and quoting are stripped first: a bold
-    ``**Therefore**`` is the same word (U2-03).
-    """
-    return bool(_CONSEQUENCE.match(_EMPHASIS.sub("", text.strip())))
 
 
 _SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
@@ -164,163 +144,27 @@ def _data_rows(lines: list[str], block: list[int]) -> set[int]:
     return rows
 
 
-@dataclasses.dataclass(frozen=True)
-class Block:
-    """One reviewable unit of a section: a paragraph, row, or list item.
-
-    Derived from the section text, never stored beside it. A block is a
-    projection, so it cannot drift from the words it names: re-deriving
-    after an edit gives new ids and new hashes, and an issue whose block
-    no longer resolves fails closed (plan D-U12).
-    """
-
-    id: str
-    kind: str
-    text: str
-    sha256: str
-    # The block immediately before this one, when this one's own words
-    # make it a consequence of it. Removing a premise has to take the
-    # conclusion drawn from it, or a precise removal leaves "Therefore
-    # suppliers can dictate prices" standing over a sentence that was
-    # just withheld (U2-03).
-    depends_on: str | None = None
+def blocks_of(section: records.Section) -> list[records.Block]:
+    """Return stored occurrences; legacy prose has no declared units."""
+    return list(section.blocks)
 
 
-def blocks_of(section: records.Section) -> list[Block]:
-    """The reviewable units of one section, in order.
-
-    A table row is its own unit -- one bad row should cost one row --
-    and so is a list item. Everything else is a paragraph. Ids are
-    positional within the section and stable for as long as the text is,
-    which is exactly as long as a verdict about it is worth anything.
-    """
-    units: list[tuple[str, str]] = []
-    for paragraph in section.text.split("\n\n"):
-        lines = [line for line in paragraph.split("\n") if line.strip()]
-        if not lines:
-            continue
-        # Segmented by line kind, not by blank line. A table fused to
-        # the sentence above it by a single newline is not one
-        # reviewable unit: treating it as one made removing the
-        # sentence take every row of the table with it, including rows
-        # nobody objected to (U2-03).
-        prose: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            kind = (
-                "row"
-                if _is_row(line)
-                else "list_item" if _LIST_MARK.match(stripped) else "paragraph"
-            )
-            if kind == "paragraph":
-                prose.append(line)
-                continue
-            if prose:
-                units.append(("paragraph", "\n".join(prose).strip()))
-                prose = []
-            units.append((kind, stripped))
-        if prose:
-            units.append(("paragraph", "\n".join(prose).strip()))
-    blocks: list[Block] = []
-    for number, (kind, text) in enumerate(units, start=1):
-        previous = blocks[-1] if blocks else None
-        depends = (
-            previous.id
-            if previous is not None
-            and kind == "paragraph"
-            and previous.kind == "paragraph"
-            and _is_consequence(text)
-            else None
-        )
-        if depends is None and kind == "paragraph" and _is_consequence(text):
-            # A conclusion stated before its evidence -- "Therefore X",
-            # then the table that is supposed to show it -- is an
-            # ordinary way to write a report, and the link runs forward.
-            # Marked with the next block's id and resolved against that
-            # block's whole run, so removing any row of the table takes
-            # the conclusion drawn from it (U2-03).
-            depends = f"{section.id}:b{number + 1}"
-        blocks.append(
-            Block(
-                id=f"{section.id}:b{number}",
-                kind=kind,
-                text=text,
-                sha256=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
-                depends_on=depends,
-            )
-        )
-    return blocks
+def dependents_of(
+    section: records.Section, block_id: str
+) -> list[records.Block]:
+    """Return explicitly declared dependants within this section."""
+    blocks = report_units.index([section])
+    reached = report_units.closure(blocks, {block_id}) - {block_id}
+    return [b for b in section.blocks if b.id in reached]
 
 
-def dependents_of(section: records.Section, block_id: str) -> list[Block]:
-    """The blocks that fall with ``block_id``, transitively."""
-    return dependents_of_text(
-        section,
-        next((b.text for b in blocks_of(section) if b.id == block_id), ""),
-    )
-
-
-def dependents_of_text(section: records.Section, text: str) -> list[Block]:
-    """The blocks that fall with **every** occurrence of ``text``.
-
-    Removal is by text, so a premise written twice disappears twice --
-    but expansion used to start from one block id and reach only that
-    one's consequences, leaving "Therefore suppliers can dictate
-    prices" standing after both premises had gone (U2-03).
-    """
-    if not text:
-        return []
-    blocks = blocks_of(section)
-    # A block that *is* the removed text disappears under redaction, so
-    # it seeds but does not need removing again.
-    equal = {b.id for b in blocks if b.text == text}
-    doomed = set(equal)
-    if equal:
-        # The removed text is a whole block somewhere here, so a
-        # paragraph that merely quotes it is repeating the same
-        # assertion and goes whole. Redacting in place left
-        # "Therefore: [X] Prices are dictated." standing, which is an
-        # unsupported consequence with a hole in it (U2-03).
-        doomed |= {
-            b.id for b in blocks if b.text != text and carries(b.text, text)
-        }
-    if not doomed:
-        return []
-    runs = _runs(blocks)
-    changed = True
-    while changed:
-        changed = False
-        for block in blocks:
-            if block.id in doomed or block.depends_on is None:
-                continue
-            # Either the block it names, or any block in that block's
-            # run: a conclusion drawn from a table depends on the table,
-            # not on whichever row happens to be listed first.
-            if doomed & runs.get(block.depends_on, {block.depends_on}):
-                doomed.add(block.id)
-                changed = True
-    return [b for b in blocks if b.id in doomed and b.text != text]
-
-
-def _runs(blocks: list[Block]) -> dict[str, set[str]]:
-    """Each block's run of consecutive same-kind neighbours."""
-    runs: dict[str, set[str]] = {}
-    current: list[Block] = []
-    for block in blocks + [None]:  # type: ignore[list-item]
-        if (
-            block is not None
-            and current
-            and block.kind == current[-1].kind
-            and block.kind in ("row", "list_item")
-        ):
-            current.append(block)
-            continue
-        if current:
-            ids = {b.id for b in current}
-            for one in current:
-                runs[one.id] = ids
-        current = [block] if block is not None else []
-    return runs
+def dependents_of_text(
+    section: records.Section, text: str
+) -> list[records.Block]:
+    """Bind exact identical occurrences, then traverse explicit edges."""
+    seeds = {b.id for b in section.blocks if b.text == text}
+    reached = report_units.closure(report_units.index([section]), seeds)
+    return [b for b in section.blocks if b.id in reached - seeds]
 
 
 def resolve_section(sections: list[records.Section], target: str) -> str:
@@ -342,7 +186,7 @@ def resolve_section(sections: list[records.Section], target: str) -> str:
 
 def resolve_block(
     sections: list[records.Section], section_id: str, block_id: str | None
-) -> Block | None:
+) -> records.Block | None:
     """The block an issue names, or None when it names nothing usable.
 
     None is not a soft failure. `blocking_issues` treats an issue with
@@ -367,6 +211,11 @@ def render_blocks(section: records.Section) -> str:
     lines = [f"[{section.id}] {section.title}"]
     for block in blocks_of(section):
         lines.append(f"  <{block.id}> {block.text}")
+        lines.append(
+            f"    version={block.version}; kind={block.kind}; "
+            f"claims={block.claim_ids}; premises={block.depends_on}; "
+            f"container={block.container_id}"
+        )
     return "\n".join(lines)
 
 
@@ -647,49 +496,59 @@ def check_citations(
     problems: list[CitationProblem] = []
     names = [e for e in (entities or []) if len(e) >= 2]
     for section in sections:
-        for cid in cited_claims(section.text):
-            claim = claims.get(cid)
-            if claim is None:
-                problems.append(
-                    CitationProblem(section.id, f"cites unknown claim {cid}")
+        for block in section.blocks or [None]:
+            problems.extend(
+                _citation_problems(section, block, claims, names, live)
+            )
+    return problems
+
+
+def _citation_problems(section, block, claims, names, calculations):
+    text = block.text if block else section.text
+    target = block.text if block else None
+    problems = []
+    for cid in cited_claims(text):
+        claim = claims.get(cid)
+        if claim is None:
+            problems.append(
+                CitationProblem(
+                    section.id, f"cites unknown claim {cid}", target
                 )
-            elif not merge.citable(claim, claims, live):
-                if not claim.is_reviewed():
-                    detail = (
-                        "qualified without its qualification on record"
-                        if claim.review == "qualified"
-                        else f"reviewed {claim.review}"
-                    )
-                else:
-                    detail = (
-                        "whose calculation "
-                        f"{claim.calculation_id} is not current"
-                    )
-                problems.append(
-                    CitationProblem(
-                        section.id, f"cites {cid}, {detail}, as fact"
-                    )
+            )
+        elif not merge.citable(claim, claims, calculations):
+            if not claim.is_reviewed():
+                detail = (
+                    "qualified without its qualification on record"
+                    if claim.review == "qualified"
+                    else f"reviewed {claim.review}"
                 )
-        for stripped in factual_units(section.text):
-            if _CITATION.search(stripped):
-                continue
-            if _DIGITS.search(stripped):
-                problems.append(
-                    CitationProblem(
-                        section.id,
-                        "uncited sentence with a number: " f"{stripped[:80]}",
-                        stripped,
-                    )
+            else:
+                detail = (
+                    f"whose calculation {claim.calculation_id} is not current"
                 )
-            elif any(name in stripped for name in names):
-                problems.append(
-                    CitationProblem(
-                        section.id,
-                        "uncited sentence naming an entity: "
-                        f"{stripped[:80]}",
-                        stripped,
-                    )
+            problems.append(
+                CitationProblem(
+                    section.id, f"cites {cid}, {detail}, as fact", target
                 )
+            )
+    # Structural labels are interpreted with their rows by the semantic
+    # review. Citation markers in them still require valid claims above.
+    if block and block.kind in ("header", "rule"):
+        return problems
+    for stripped in factual_units(text):
+        if _CITATION.search(stripped):
+            continue
+        reason = None
+        if _DIGITS.search(stripped):
+            reason = "uncited sentence with a number"
+        elif any(name in stripped for name in names):
+            reason = "uncited sentence naming an entity"
+        if reason:
+            problems.append(
+                CitationProblem(
+                    section.id, f"{reason}: {stripped[:80]}", target or stripped
+                )
+            )
     return problems
 
 
@@ -779,7 +638,9 @@ def _source_index(
     order: dict[str, int] = {}
     lines: list[str] = []
     for section in sections:
-        for cid in cited_claims(section.text):
+        for cid in (
+            section.claim_ids if section.blocks else cited_claims(section.text)
+        ):
             claim = claims.get(cid)
             if claim is None:
                 continue
@@ -984,6 +845,7 @@ def audit_record(
             else None
         ),
         "delivery": delivery.model_dump(),
+        "session_timing": budget.invocation_timing(state),
         "coverage": [item.model_dump() for item in coverage],
         "issues": [issue.model_dump() for issue in issues],
         "resolved": sum(1 for i in issues if i.status == "resolved"),
@@ -1090,9 +952,118 @@ def section_digest(
     state: state_module.IndustryState, section: records.Section
 ) -> str:
     """The identity of one section: its exact text and its support."""
+    if section.blocks:
+        identities = unit_digests(state)
+        return report_units.digest(
+            [
+                section.id,
+                section.title,
+                section.text,
+                [identities.get(b.id, "missing") for b in section.blocks],
+            ]
+        )
     parts = [section.id, section.title, section.text]
     parts += _support_context(state, cited_claims(section.text))
     return hashlib.sha256(_UNIT.join(parts).encode("utf-8")).hexdigest()
+
+
+def unit_digests(state: state_module.IndustryState) -> dict[str, str]:
+    """Bind each occurrence to its transitive premises and actual support."""
+    sections = state.get("sections", [])
+    blocks = report_units.index(sections)
+    owners = {b.id: [s.id, s.title] for s in sections for b in s.blocks}
+    claims = state.get("claims", {})
+    evidence = state.get("evidence", {})
+    calculations = state.get("calculations", {})
+    meta = state.get("meta")
+    policy = [
+        getattr(meta, "prompt_version", "10.4"),
+        getattr(meta, "models", {}),
+    ]
+    identities = {}
+    for key in blocks:
+        scope = report_units.ancestors(blocks, {key})
+        refs = sorted(
+            {c for k in scope if k in blocks for c in blocks[k].claim_ids}
+        )
+        support = []
+        for cid in refs:
+            claim = claims.get(cid)
+            if claim is None:
+                support.append([cid, "missing"])
+                continue
+            ev = [
+                (
+                    evidence[e].model_dump(mode="json")
+                    if e in evidence
+                    else [e, "missing"]
+                )
+                for e in claim.evidence_ids
+            ]
+            contexts = [
+                state.get("context", {}).get(e, []) for e in claim.evidence_ids
+            ]
+            contexts = [
+                [c.model_dump(mode="json") for c in group] for group in contexts
+            ]
+            versions = []
+            for eid in claim.evidence_ids:
+                item = evidence.get(eid)
+                source = state.get("source_versions", {}).get(
+                    item.source_version_id if item else None
+                )
+                versions.append(
+                    source.model_dump(mode="json") if source else None
+                )
+            calc = calculations.get(claim.calculation_id)
+            support.append(
+                [
+                    claim.model_dump(mode="json"),
+                    ev,
+                    calc.model_dump(mode="json") if calc else None,
+                    contexts,
+                    versions,
+                ]
+            )
+        identities[key] = report_units.digest(
+            [
+                policy,
+                [
+                    (
+                        [k, blocks[k].model_dump(mode="json"), owners[k]]
+                        if k in blocks
+                        else [k, "missing"]
+                    )
+                    for k in sorted(scope)
+                ],
+                support,
+            ]
+        )
+    return identities
+
+
+def accepted_units(state: state_module.IndustryState) -> set[str]:
+    """Units with an applicable, explicit semantic dependency judgment."""
+    subject = state.get("review_subject")
+    review = state.get("final_review")
+    if subject is None or review is None:
+        return set()
+    blocks = report_units.index(state.get("sections", []))
+    identities = unit_digests(state)
+    counts: dict[str, int] = {}
+    for verdict in review.units:
+        counts[verdict.block_id] = counts.get(verdict.block_id, 0) + 1
+    return {
+        verdict.block_id
+        for verdict in review.units
+        if verdict.block_id in blocks
+        and counts[verdict.block_id] == 1
+        and verdict.version == blocks[verdict.block_id].version
+        and verdict.supported
+        and verdict.dependencies_complete
+        and blocks[verdict.block_id].depends_on is not None
+        and subject.units.get(verdict.block_id) == identities[verdict.block_id]
+    }
 
 
 def review_subject(
@@ -1134,6 +1105,8 @@ def review_subject(
         section_ids=[s.id for s in sections],
         appendix=appendix,
         draft_version=state.get("draft_version", 0),
+        units=unit_digests(state),
+        targets=sorted(unit_digests(state)),
     )
 
 
@@ -1279,6 +1252,8 @@ def plan_delivery(state: state_module.IndustryState, note: str) -> DeliveryPlan:
       them, whether anything changed after the review, what was removed
       and why.
     """
+    if any(s.blocks for s in state.get("sections", [])):
+        return _structured_delivery(state, note)
     review = state.get("final_review")
     # A certificate bound to this body means the reviewer read these
     # exact words. That alone makes a section eligible: a review that
@@ -1342,6 +1317,127 @@ def plan_delivery(state: state_module.IndustryState, note: str) -> DeliveryPlan:
         kept.append(section.model_copy(update={"text": text}))
     return DeliveryPlan(
         kept, covered, certified, consistent, changed, removed, reasons
+    )
+
+
+def _structured_delivery(
+    state: state_module.IndustryState, note: str
+) -> DeliveryPlan:
+    """Compute removal once on the selected candidate's validated graph."""
+    sections = state.get("sections", [])
+    covered = certificate_applies(state)
+    review = state.get("final_review")
+    consistent = review is not None and review.consistent
+    try:
+        report_units.validate(sections, set(state.get("claims", {})))
+    except ValueError as error:
+        return DeliveryPlan(
+            [],
+            False,
+            False,
+            False,
+            True,
+            [s.id for s in sections],
+            [str(error)],
+        )
+    blocks = report_units.index(sections)
+    accepted = accepted_units(state)
+    claims = state.get("claims", {})
+    doomed = {
+        b.id
+        for b in blocks.values()
+        if any(
+            not merge.citable(claims[c], claims, state.get("calculations", {}))
+            for c in b.claim_ids
+        )
+    }
+    withheld: set[str] = set()
+    reasons: list[str] = []
+    for issue in state.get("issues", {}).values():
+        if (
+            issue.status not in records.UNRESOLVED_ISSUE_STATUSES
+            or issue.severity != "material"
+            or (
+                issue.category not in ("unsupported", "contradiction")
+                and not (
+                    issue.category == "missing_evidence"
+                    and issue.requested_action == "edit"
+                    and issue.draft_version is not None
+                )
+            )
+        ):
+            continue
+        owner = next((s for s in sections if s.id == issue.target), None)
+        if owner is None:
+            if issue.draft_version is not None:
+                withheld.update(s.id for s in sections)
+                reasons.append(f"unresolved whole-draft objection {issue.id}")
+            continue
+        matched = {b.id for b in owner.blocks if b.text == issue.text}
+        if issue.category == "missing_evidence" or not matched:
+            withheld.add(owner.id)
+            reasons.append(f"{owner.id}: unresolved objection scope {issue.id}")
+        else:
+            # Exact identical occurrences share an objection, not an
+            # inferred semantic edge. Embedded repeats need declarations.
+            doomed.update(b.id for b in blocks.values() if b.text == issue.text)
+    for section in sections:
+        if any(
+            set(cited_claims(b.text)) != set(b.claim_ids)
+            for b in section.blocks
+        ):
+            withheld.add(section.id)
+            reasons.append(f"{section.id}: citation declaration mismatch")
+    while True:
+        before = (set(doomed), set(withheld))
+        doomed.update(
+            b.id for s in sections if s.id in withheld for b in s.blocks
+        )
+        doomed = report_units.closure(blocks, doomed)
+        for section in sections:
+            surviving = [b for b in section.blocks if b.id not in doomed]
+            if any(b.id not in accepted for b in surviving):
+                withheld.add(section.id)
+                reason = f"{section.id}: unresolved support/dependency scope"
+                if reason not in reasons:
+                    reasons.append(reason)
+            containers = {
+                b.container_id for b in section.blocks if b.kind == "row"
+            }
+            for container in containers:
+                if not any(
+                    b.kind == "row" and b.container_id == container
+                    for b in surviving
+                ):
+                    doomed.update(
+                        b.id
+                        for b in section.blocks
+                        if b.container_id == container
+                    )
+                    if not any(b.id not in doomed for b in section.blocks):
+                        withheld.add(section.id)
+        if before == (doomed, withheld):
+            break
+    kept = [
+        (
+            report_units.remove(s, doomed, note)
+            if any(b.id in doomed for b in s.blocks)
+            else s
+        )
+        for s in sections
+        if s.id not in withheld
+    ]
+    if doomed:
+        reasons.append("unsupported units and explicit dependants removed")
+    changed = bool(doomed or withheld)
+    return DeliveryPlan(
+        kept,
+        covered,
+        covered and consistent and not changed,
+        consistent,
+        changed,
+        [s.id for s in sections if s.id in withheld],
+        reasons,
     )
 
 

@@ -452,7 +452,8 @@ def test_validate_records_rejects_a_field_degraded_to_a_dictionary():
     assert not persist.validate_records({"review": None, "cycle": 2})
 
 
-def test_a_thread_of_another_record_schema_is_refused(tmp_path):
+@pytest.mark.parametrize("schema", [11, 12, 999])
+def test_a_thread_of_another_record_schema_is_refused(tmp_path, schema):
     # C1 round 1, finding 2: only the workflow version was compared, so
     # a checkpoint written by another record schema resumed on records
     # the serializer had silently stripped.
@@ -466,7 +467,7 @@ def test_a_thread_of_another_record_schema_is_refused(tmp_path):
             async def start(_):
                 return {
                     "meta": sample_meta().model_copy(
-                        update={"schema_version": 999}
+                        update={"schema_version": schema}
                     )
                 }
 
@@ -475,7 +476,11 @@ def test_a_thread_of_another_record_schema_is_refused(tmp_path):
             graph.add_edge("start", END)
             compiled = graph.compile(checkpointer=saver)
             await compiled.ainvoke({"question": "q"}, config)
-            with pytest.raises(persist.LegacyThreadError, match="schema 999"):
+            replay = await persist.load_state(compiled, "t")
+            assert replay.values["meta"].schema_version == schema
+            with pytest.raises(
+                persist.LegacyThreadError, match=f"schema {schema}"
+            ):
                 await persist.load_industry_state(
                     compiled, "t", state_module.WORKFLOW_VERSION
                 )
@@ -1033,7 +1038,7 @@ def test_a25_a_schema_11_thread_replays_but_is_refused_for_resume(tmp_path):
     do is carry it into a graph with a mandatory pre-draft audit the
     thread never ran.
     """
-    assert records.SCHEMA_VERSION == 12
+    assert records.SCHEMA_VERSION == 13
     # A v11 record loads, and the new fields read as what they are:
     # unknown provenance, no route recorded, nothing invented.
     claim = records.Claim.model_validate(

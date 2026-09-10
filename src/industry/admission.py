@@ -25,9 +25,31 @@ always was; two processes are outside its reach.
 """
 
 import asyncio
+import contextlib
+import contextvars
+import datetime
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
+
+_TIMING: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "industry_session_timing", default=None
+)
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+@contextlib.contextmanager
+def capture_timing() -> Iterator[dict[str, str]]:
+    """Capture a single owner's actual queue and execution boundaries."""
+    timing: dict[str, str] = {}
+    token = _TIMING.set(timing)
+    try:
+        yield timing
+    finally:
+        _TIMING.reset(token)
 
 
 def when_all(*pending: asyncio.Future | None) -> asyncio.Future | None:
@@ -94,6 +116,19 @@ class Slot:
         self.survivor = False
         self._describe = describe
         self.held = True
+        self._timing = _TIMING.get()
+        if self._timing is not None:
+            self._timing["admitted_at"] = _now()
+
+    def kickoff(self) -> None:
+        """Record orchestration entry, which may never reach the SDK."""
+        if self._timing is not None:
+            self._timing["kickoff_at"] = _now()
+
+    def invoked(self) -> None:
+        """Record when the owner is about to invoke its model session."""
+        if self._timing is not None:
+            self._timing.setdefault("invoked_at", _now())
 
     def describe(self) -> str:
         """The slot in one phrase, with what is still running if known."""
@@ -107,6 +142,8 @@ class Slot:
         if not self.held:
             return
         self.held = False
+        if self._timing is not None:
+            self._timing["finished_at"] = _now()
         self._authority.forget(self)
 
     def settle(self, pending: Any) -> None:
@@ -184,6 +221,9 @@ class Admission:
         waiter is woken, and each raises ``Blocked`` instead of taking
         its place. Cancellation while waiting takes nothing.
         """
+        timing = _TIMING.get()
+        if timing is not None:
+            timing["queued_at"] = _now()
         while True:
             self.check()
             if self.concurrency is None or len(self._held) < self.concurrency:

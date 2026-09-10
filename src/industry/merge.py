@@ -20,6 +20,7 @@ from typing import Any
 
 from industry import quantities
 from industry import records
+from industry import report_units
 from industry import schedule
 from industry import state as state_module
 
@@ -1282,6 +1283,11 @@ def merge_results(
             update={
                 "status": result.status,
                 "observed": observed,
+                "queued_at": result.queued_at,
+                "admitted_at": result.admitted_at,
+                "kickoff_at": result.kickoff_at,
+                "invoked_at": result.invoked_at,
+                "finished_at": result.finished_at,
                 "duration_s": (
                     result.usage.duration_s if observed is not None else None
                 ),
@@ -1753,6 +1759,15 @@ def cascade_changes(
         relationships, claims
     )
     log.extend(revoked)
+    blocks = report_units.index(state.get("sections", []))
+    affected = report_units.closure(
+        blocks,
+        {
+            key
+            for key, block in blocks.items()
+            if set(block.claim_ids) & touched
+        },
+    )
     return {
         "claims": claims,
         "calculations": calculations,
@@ -1762,6 +1777,7 @@ def cascade_changes(
             (
                 section.model_copy(update={"stale": True})
                 if set(section.claim_ids) & touched
+                or any(b.id in affected for b in section.blocks)
                 else section
             )
             for section in state.get("sections", [])

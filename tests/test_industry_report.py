@@ -11,6 +11,7 @@ fails closed.
 import dataclasses
 import json
 import pathlib
+import re
 
 import quantity_support as support
 
@@ -18,6 +19,7 @@ from industry import coverage as coverage_module
 from industry import merge
 from industry import records
 from industry import report
+from industry import report_units
 
 from industry import roles
 
@@ -850,12 +852,58 @@ def test_delivery_reports_what_it_could_not_strengthen():
     assert not report.repair_lines(state)
 
 
-def _section(text: str) -> records.Section:
-    return records.Section(id="economics", title="Economics", text=text)
+def _declared_section(text: str, dependencies=None, section_id="economics"):
+    """Declare fixture units; semantic edges are supplied by each case."""
+    parts = re.split(r"(\n\n|\n(?=\|))", text)
+    items = []
+    prefix = ""
+    table = None
+    headers = []
+    for part in parts:
+        if not part:
+            continue
+        if not part.strip():
+            prefix += part
+            if "\n\n" in part:
+                table = None
+                headers = []
+            continue
+        key = f"b{len(items) + 1}"
+        kind = "paragraph"
+        if part.startswith("|"):
+            if table is None:
+                table = key
+                kind = "header"
+                headers = [key]
+            elif part.startswith("|---") or part.startswith("| ---"):
+                kind = "rule"
+                headers.append(key)
+            else:
+                kind = "row"
+        deps = (dependencies or {}).get(len(items) + 1, [])
+        declared = None if deps is None else [f"b{n}" for n in deps]
+        if kind == "row" and declared is not None:
+            declared += headers
+        items.append(
+            roles.BlockSpec(
+                key=key,
+                kind=kind,
+                text=part,
+                prefix=prefix,
+                claim_ids=report.cited_claims(part),
+                container_id=table if kind != "paragraph" else None,
+                depends_on=declared,
+            )
+        )
+        prefix = ""
+    spec = roles.SectionSpec(
+        id=section_id, title="Economics", text=text, blocks=items
+    )
+    return report_units.build([spec], [], 1, set(report.cited_claims(text)))[0]
 
 
-def test_a14_blocks_are_derived_from_the_text_they_name():
-    section = _section(
+def test_a14_stored_blocks_render_to_the_text_they_name():
+    section = _declared_section(
         "Mask blanks are concentrated [C1].\n\n"
         "This compresses margins.\n\n"
         "| vendor | share |\n| --- | --- |\n| HOYA | 60% |"
@@ -865,18 +913,18 @@ def test_a14_blocks_are_derived_from_the_text_they_name():
     assert [b.kind for b in blocks] == [
         "paragraph",
         "paragraph",
-        "row",
-        "row",
+        "header",
+        "rule",
         "row",
     ]
-    # A projection cannot drift from its text: editing re-derives.
-    edited = _section(section.text.replace("compresses", "widens"))
+    # Stored declarations bind the exact text; drift is rejected.
+    edited = _declared_section(section.text.replace("compresses", "widens"))
     assert report.blocks_of(edited)[1].sha256 != blocks[1].sha256
     assert report.blocks_of(edited)[1].id == blocks[1].id
 
 
-def test_a14_a_resolving_block_removes_one_unit_not_the_section():
-    section = _section(
+def test_a14_a_resolving_block_removes_one_unit_not_the_declared_section():
+    section = _declared_section(
         "Mask blanks are concentrated [C1].\n\nThis compresses margins."
     )
     block = report.resolve_block([section], "economics", "economics:b2")
@@ -899,7 +947,7 @@ def test_a14_a_resolving_block_removes_one_unit_not_the_section():
 
 def test_a20_an_unresolvable_block_falls_back_to_whole_section_removal():
     """U0-04: this delta may only make removal more precise, never weaker."""
-    section = _section("Mask blanks are concentrated [C1].")
+    section = _declared_section("Mask blanks are concentrated [C1].")
     for block_id in (None, "", "economics:b99", "barriers:b1"):
         assert report.resolve_block([section], "economics", block_id) is None
     # An issue with no text is exactly what run 7's model-authored issues
@@ -918,7 +966,7 @@ def test_a20_an_unresolvable_block_falls_back_to_whole_section_removal():
 
 def test_a20_a_stale_block_text_cannot_certify_a_patch():
     """A block resolved against an older draft names nothing in this one."""
-    section = _section("The current wording is different.")
+    section = _declared_section("The current wording is different.")
     issue = records.Issue(
         id="I1",
         key="k",
@@ -931,9 +979,11 @@ def test_a20_a_stale_block_text_cannot_certify_a_patch():
     assert report.blocking_issues([issue], section) == [issue]
 
 
-def test_a14_removing_a_block_that_empties_a_table_still_takes_the_section():
+def test_a14_removing_a_block_that_empties_a_table_still_takes_the_declared_section():
     """U0 recheck (c): resolving an id does not make removal safe."""
-    section = _section("| vendor | share |\n| --- | --- |\n| HOYA | 60% |")
+    section = _declared_section(
+        "| vendor | share |\n| --- | --- |\n| HOYA | 60% |"
+    )
     blocks = report.blocks_of(section)
     only_row = blocks[-1]
     issue = records.Issue(
@@ -950,7 +1000,7 @@ def test_a14_removing_a_block_that_empties_a_table_still_takes_the_section():
 
 
 def test_the_reviewer_is_shown_the_block_ids_it_must_name():
-    section = _section("One.\n\nTwo.")
+    section = _declared_section("One.\n\nTwo.")
     labelled = roles.render_sections([section], labelled=True)
     assert "<economics:b1> One." in labelled
     assert "<economics:b2> Two." in labelled
@@ -1057,11 +1107,11 @@ def test_u2_03_removal_never_corrupts_a_paragraph_that_quotes_its_premise():
         f"Therefore: {premise} Prices are dictated.\n\n"
         "**Accordingly** margins expand."
     )
-    section = records.Section(id="intro", title="I", text=text)
+    section = _declared_section(text, {2: [1], 3: [2]}, "intro")
     blocks = report.blocks_of(section)
     # Emphasis and ordinary consequence phrasing are both recognised.
-    assert blocks[1].depends_on == blocks[0].id
-    assert blocks[2].depends_on == blocks[1].id
+    assert blocks[1].depends_on == [blocks[0].id]
+    assert blocks[2].depends_on == [blocks[1].id]
     # b2 quotes the premise, so it repeats the same assertion and goes
     # whole rather than being redacted in place; b3 falls behind it.
     assert [b.id for b in report.dependents_of(section, blocks[0].id)] == [
@@ -1088,7 +1138,7 @@ def test_u2_03_removal_never_corrupts_a_paragraph_that_quotes_its_premise():
     assert "margins expand" in out
 
 
-def test_u2_03_ordinary_consequence_phrasings_are_recognised():
+def test_u2_03_declared_edges_do_not_depend_on_consequence_phrasings():
     for opener in (
         "Accordingly",
         "For this reason",
@@ -1097,14 +1147,14 @@ def test_u2_03_ordinary_consequence_phrasings_are_recognised():
         "因此",
         "据此",
     ):
-        section = records.Section(
-            id="s", title="T", text=f"A premise.\n\n{opener}, B follows."
+        section = _declared_section(
+            f"A premise.\n\n{opener}, B follows.", {2: [1]}, "s"
         )
         blocks = report.blocks_of(section)
-        assert blocks[1].depends_on == blocks[0].id, opener
+        assert blocks[1].depends_on == [blocks[0].id], opener
     # And an unrelated paragraph does not depend on the one before it.
-    plain = records.Section(
-        id="s", title="T", text="A premise.\n\nSeparately, C is true."
+    plain = _declared_section(
+        "A premise.\n\nSeparately, C is true.", {2: None}, "s"
     )
     assert report.blocks_of(plain)[1].depends_on is None
 
@@ -1113,13 +1163,11 @@ def test_u2_03_a_premise_written_twice_takes_its_consequence():
     """Expansion started from one block id and reached only that one's
     consequences, leaving the conclusion after both premises had gone."""
     premise = "This market has no competing suppliers."
-    section = records.Section(
-        id="s",
-        title="T",
-        text=(
-            f"{premise}\n\nAn unrelated paragraph.\n\n{premise}\n\n"
-            "Therefore suppliers can dictate prices."
-        ),
+    section = _declared_section(
+        f"{premise}\n\nAn unrelated paragraph.\n\n{premise}\n\n"
+        "Therefore suppliers can dictate prices.",
+        {4: [3]},
+        "s",
     )
     falling = report.dependents_of_text(section, premise)
     assert [b.text for b in falling] == [
@@ -1147,13 +1195,11 @@ def test_u2_03_a_dependent_that_quotes_its_premise_goes_whole():
     """Redacting in place left "Therefore: [X] Prices are dictated."
     standing -- an unsupported consequence with a hole in it (U2-03)."""
     premise = "This market has no competing suppliers."
-    section = records.Section(
-        id="s",
-        title="T",
-        text=(
-            f"{premise}\n\nTherefore: {premise} Prices are dictated."
-            "\n\nAccordingly margins expand."
-        ),
+    section = _declared_section(
+        f"{premise}\n\nTherefore: {premise} Prices are dictated."
+        "\n\nAccordingly margins expand.",
+        {2: [1], 3: [2]},
+        "s",
     )
     falling = report.dependents_of_text(section, premise)
     assert [b.text[:20] for b in falling] == [
@@ -1211,7 +1257,7 @@ def test_u2_03_a_dependent_table_row_is_deleted_not_rewritten():
         f"| {premise} | Suppliers can dictate prices. |\n"
         "| Contract terms | Payment is due on acceptance. |"
     )
-    section = records.Section(id="s", title="T", text=text)
+    section = _declared_section(text, {4: [1]}, "s")
     falling = report.dependents_of_text(section, premise)
     assert [b.kind for b in falling] == ["row"]
     issues = [
@@ -1239,7 +1285,7 @@ def test_u2_03_the_single_data_row_variant_still_fails_closed():
         f"{premise}\n\n| Basis | Implication |\n|---|---|\n"
         f"| {premise} | Suppliers can dictate prices. |"
     )
-    section = records.Section(id="s", title="T", text=text)
+    section = _declared_section(text, {4: [1]}, "s")
     falling = report.dependents_of_text(section, premise)
     issue = records.Issue(
         id="I2",
@@ -1265,7 +1311,7 @@ def test_u2_03_removal_is_one_pass_over_the_original_text():
         "| Contract terms | Payment is due on acceptance. |"
     )
     text = f"Therefore suppliers can dictate prices.\n{table}\n\n{table}"
-    section = records.Section(id="s", title="T", text=text)
+    section = _declared_section(text, {1: [4]}, "s")
     row = next(
         b
         for b in report.blocks_of(section)
@@ -1313,9 +1359,13 @@ def test_u2_03_a_table_fused_to_a_sentence_is_not_one_unit():
         "| Contract terms | Payment is due on acceptance. |"
     )
     text = f"Therefore suppliers can dictate prices.\n{first}\n\n{second}"
-    section = records.Section(id="s", title="T", text=text)
+    section = _declared_section(text, {1: [4]}, "s")
     kinds = [b.kind for b in report.blocks_of(section)]
-    assert kinds[0] == "paragraph" and set(kinds[1:]) == {"row"}
+    assert kinds[0] == "paragraph" and set(kinds[1:]) == {
+        "row",
+        "header",
+        "rule",
+    }
     row = next(
         b
         for b in report.blocks_of(section)
