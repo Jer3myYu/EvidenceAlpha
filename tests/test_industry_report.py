@@ -1104,3 +1104,37 @@ def test_u2_03_ordinary_consequence_phrasings_are_recognised():
         id="s", title="T", text="A premise.\n\nSeparately, C is true."
     )
     assert report.blocks_of(plain)[1].depends_on is None
+
+
+def test_u2_03_a_premise_written_twice_takes_its_consequence():
+    """Expansion started from one block id and reached only that one's
+    consequences, leaving the conclusion after both premises had gone."""
+    premise = "This market has no competing suppliers."
+    section = records.Section(
+        id="s",
+        title="T",
+        text=(
+            f"{premise}\n\nAn unrelated paragraph.\n\n{premise}\n\n"
+            "Therefore suppliers can dictate prices."
+        ),
+    )
+    falling = report.dependents_of_text(section, premise)
+    assert [b.text for b in falling] == [
+        "Therefore suppliers can dictate prices."
+    ]
+    issues = [
+        records.Issue(
+            id=f"I{n}",
+            key=f"k{n}",
+            category="unsupported",
+            severity="material",
+            target="s",
+            requested_action="remove",
+            text=text,
+        )
+        for n, text in enumerate([premise] + [b.text for b in falling], start=1)
+    ]
+    out = report.redact(section.text, issues, "s", "[X]")
+    assert "competing suppliers" not in out
+    assert "dictate prices" not in out
+    assert "An unrelated paragraph." in out

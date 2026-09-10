@@ -4327,3 +4327,131 @@ def test_u2_05_a_declared_cross_metric_comparison_is_its_own_obligation():
     # Two metrics, one declared comparison: per-metric grouping alone
     # made two singletons and returned nothing (U2-05).
     assert graph_module.uncomputed_comparison(finding, claims, {}) == "C1, C2"
+
+
+def test_u2_01_a_later_clean_draft_cannot_clear_a_retained_body():
+    """Draft 3 omits the sentence, reviews clean, and its resolution used
+    to authorise the sentence still standing in draft 1 (U2-01)."""
+    retained = records.Section(
+        id="intro", title="I", text="This market has no competing suppliers."
+    )
+    candidate = records.DeliveryCandidate(
+        draft_version=1,
+        sections=[retained],
+        subject=records.ReviewSubject(digest="d"),
+        issues={},
+    )
+    settled_elsewhere = records.Issue(
+        id="I1",
+        key="unsupported:new_intro",
+        category="unsupported",
+        severity="material",
+        target="new_intro",
+        requested_action="remove",
+        description="unsupported",
+        draft_version=3,
+        status="resolved",
+        resolution="draft 3 reviewed clean",
+        text="This market has no competing suppliers.",
+    )
+    applies = graph_module.issues_for_candidate(
+        candidate, {"I1": settled_elsewhere}
+    )
+    assert applies["I1"].status == "open"
+    assert applies["I1"].target == "intro"
+    # And it therefore still removes the sentence from this body.
+    assert (
+        report.redact(retained.text, list(applies.values()), "intro", "[X]")
+        == "[X]"
+    )
+
+
+def test_u2_r2_01_a_row_objection_does_not_spread_by_substring():
+    """`| A | 1 |` does not occur inside `| A | 1 | estimate |`."""
+    a = records.Section(
+        id="a", title="A", text="| v | n |\n| --- | --- |\n| A | 1 |\n| B | 2 |"
+    )
+    b = records.Section(
+        id="b",
+        title="B",
+        text="| v | n | note |\n| --- | --- | --- |\n| A | 1 | estimate |",
+    )
+    row = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="a",
+        requested_action="remove",
+        text="| A | 1 |",
+        draft_version=2,
+    )
+    candidate = records.DeliveryCandidate(
+        draft_version=1,
+        sections=[a, b],
+        subject=records.ReviewSubject(digest="d"),
+        issues={},
+    )
+    applies = graph_module.issues_for_candidate(candidate, {"I1": row})
+    assert [i.target for i in applies.values()] == ["a"], "b does not hold it"
+    # Section B survives, and A gives up its row.
+    assert report.blocking_issues(list(applies.values()), b) == []
+    assert "| A | 1 |" not in report.redact(
+        a.text, list(applies.values()), "a", "[X]"
+    )
+
+
+def test_u2_05_a_metric_literally_named_declared_does_not_collide():
+    def numeric(cid, value, metric):
+        return records.Claim(
+            id=cid,
+            statement=cid,
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension=metric,
+            quantity=_quantity(value),
+        )
+
+    claims = {
+        "C1": numeric("C1", 52.0, "declared"),
+        "C2": numeric("C2", 40.0, "declared"),
+        "C8": numeric("C8", 3.0, "capex"),
+        "C9": numeric("C9", 2.0, "capex"),
+    }
+    capex = records.Calculation(
+        id="K1",
+        kind="ratio",
+        label="capex",
+        formula="C8 / C9",
+        inputs=[
+            records.CalcInput(
+                claim_id=cid, claim_version=1, quantity=_quantity(1.0)
+            )
+            for cid in ("C8", "C9")
+        ],
+        status="ok",
+        result=1.5,
+    )
+    claims["C3"] = records.Claim(
+        id="C3",
+        statement="r",
+        kind="derived",
+        calculation_id="K1",
+        calculation_version=1,
+        evidence_ids=["E1"],
+    )
+    finding = records.Finding(
+        id="F1",
+        conclusion="A is twice B",
+        claim_ids=["C1", "C2", "C8", "C9", "C3"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        compares=["C1", "C2", "C8", "C9"],
+    )
+    assert (
+        graph_module.uncomputed_comparison(finding, claims, {"K1": capex})
+        == "C1, C2"
+    )

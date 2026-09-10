@@ -397,6 +397,45 @@ def stored_rank(candidate: records.DeliveryCandidate) -> tuple[int, int]:
     return (level_rank(candidate.level), _STATUS_RANK.get(candidate.status, 0))
 
 
+def _carries(section: records.Section, unit: str) -> bool:
+    """Whether the section holds this exact factual unit.
+
+    A table row is matched as a whole line, the way
+    ``report.unremovable_units`` matches it. Substring matching made
+    ``| A | 1 |`` "occur" inside ``| A | 1 | estimate |``, so an
+    objection spread into a section that could not give the row up and
+    took that whole section with it (U2-R2-01).
+    """
+    if unit.strip().startswith("|"):
+        return any(
+            line.strip() == unit.strip() for line in section.text.split("\n")
+        )
+    return unit in section.text
+
+
+def _as_of_this_body(issue: records.Issue, draft_version: int) -> records.Issue:
+    """An imported objection, with the status that applies to this body.
+
+    A resolution is always about the draft that was reviewed. A third
+    draft that simply omits the disputed wording reviews clean and
+    resolves the objection -- and importing that resolution authorised
+    the very sentence still standing in the retained body (U2-01).
+    A resolution recorded against another draft does not travel.
+    """
+    if (
+        issue.status == "resolved"
+        and issue.draft_version is not None
+        and issue.draft_version != draft_version
+    ):
+        return issue.model_copy(
+            update={
+                "status": "open",
+                "resolution": None,
+            }
+        )
+    return issue
+
+
 def _reaching(
     issue: records.Issue,
     sections: list[records.Section],
@@ -417,7 +456,7 @@ def _reaching(
       because we cannot tell which one holds what it faulted, and the
       whole point of retaining a body is that it was already reviewed.
     """
-    holding = [s for s in sections if issue.text and issue.text in s.text]
+    holding = [s for s in sections if issue.text and _carries(s, issue.text)]
     if holding:
         return [issue.model_copy(update={"target": s.id}) for s in holding]
     if issue.target in ids:
@@ -460,7 +499,10 @@ def issues_for_candidate(
     ids = {section.id for section in sections}
     for issue_id, issue in current.items():
         if issue_id not in applies:
-            reaching = _reaching(issue, sections, ids)
+            reaching = [
+                _as_of_this_body(one, candidate.draft_version)
+                for one in _reaching(issue, sections, ids)
+            ]
             for retargeted in reaching:
                 # One retarget keeps the issue's own id; only a
                 # spread across several sections needs distinct keys.
@@ -1411,7 +1453,10 @@ def uncomputed_comparison(
         and claims[cid].quantity is not None
     }
     if len(declared) >= 2:
-        groups["declared"] = declared
+        # A key no `dimension` can produce: a claim whose metric is
+        # literally "declared" overwrote the declared group, and its own
+        # comparison then escaped the check (U2-05).
+        groups["\x00declared"] = declared
     computed = [
         {item.claim_id for item in calculation.inputs}
         for cid in finding.claim_ids
@@ -3476,28 +3521,30 @@ def build_graph(
                 ):
                     # Whatever the draft draws *from* the withheld
                     # sentence goes with it (U2-03).
-                    section = next(
-                        s
-                        for s in state.get("sections", [])
-                        if s.id == section_id
-                    )
-                    for dependent in report.dependents_of(section, block.id):
-                        issues, extra = merge.open_issue(
-                            issues,
-                            problem.category,
-                            problem.severity,
-                            section_id,
-                            action,
-                            f"[{section_id}] depends on the withheld "
-                            f"{block.id}, which {issue.id} faulted",
-                            draft_version=version,
-                            text=dependent.text,
-                        )
-                        flagged.add(extra.key)
-                        update["route_log"].append(
-                            f"{extra.id}: {dependent.id} falls with "
-                            f"{block.id}"
-                        )
+                    # Every section the removal reaches, and every
+                    # occurrence within it: the premise may be written
+                    # twice, and a retargeted objection may land in more
+                    # than one section (U2-03).
+                    for section in state.get("sections", []):
+                        for dependent in report.dependents_of_text(
+                            section, block.text
+                        ):
+                            issues, extra = merge.open_issue(
+                                issues,
+                                problem.category,
+                                problem.severity,
+                                section.id,
+                                action,
+                                f"[{section.id}] depends on the withheld "
+                                f"{block.id}, which {issue.id} faulted",
+                                draft_version=version,
+                                text=dependent.text,
+                            )
+                            flagged.add(extra.key)
+                            update["route_log"].append(
+                                f"{extra.id}: {dependent.id} falls with "
+                                f"{block.id}"
+                            )
             # A draft issue closes only when a newer draft was reviewed
             # and this review did not flag it again.
             for issue in list(issues.values()):

@@ -185,12 +185,30 @@ def blocks_of(section: records.Section) -> list[Block]:
 
 def dependents_of(section: records.Section, block_id: str) -> list[Block]:
     """The blocks that fall with ``block_id``, transitively."""
+    return dependents_of_text(
+        section,
+        next((b.text for b in blocks_of(section) if b.id == block_id), ""),
+    )
+
+
+def dependents_of_text(section: records.Section, text: str) -> list[Block]:
+    """The blocks that fall with **every** occurrence of ``text``.
+
+    Removal is by text, so a premise written twice disappears twice --
+    but expansion used to start from one block id and reach only that
+    one's consequences, leaving "Therefore suppliers can dictate
+    prices" standing after both premises had gone (U2-03).
+    """
+    if not text:
+        return []
     blocks = blocks_of(section)
-    doomed = {block_id}
+    doomed = {b.id for b in blocks if b.text == text}
+    if not doomed:
+        return []
     for block in blocks:
         if block.depends_on in doomed:
             doomed.add(block.id)
-    return [b for b in blocks if b.id in doomed and b.id != block_id]
+    return [b for b in blocks if b.id in doomed and b.text != text]
 
 
 def resolve_section(sections: list[records.Section], target: str) -> str:
