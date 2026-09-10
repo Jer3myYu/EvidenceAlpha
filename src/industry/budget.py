@@ -337,6 +337,24 @@ def call_timeout(node: str, limits: records.Limits) -> float:
     )
 
 
+def downstream_calls(
+    state: state_module.IndustryState, stage: str
+) -> tuple[str, ...]:
+    """The single calls that must still run after ``stage`` on this route.
+
+    Route S makes no coverage call, so reserving one refused research
+    the route could in fact afford -- 480 s held for a session that
+    never happens, and a 900 s worker turned away for it (U2-10). The
+    route comes from the thread's own ``meta``, so a resumed thread
+    reserves for the pipeline it is actually running.
+    """
+    calls = DOWNSTREAM_CALLS.get(stage, ())
+    meta = state.get("meta")
+    if getattr(meta, "route", "C") == "S":
+        return tuple(call for call in calls if call != "assess_coverage")
+    return calls
+
+
 def pipeline_reserve(
     state: state_module.IndustryState, limits: records.Limits, stage: str
 ) -> tuple[float, int]:
@@ -349,7 +367,7 @@ def pipeline_reserve(
     review batches and then had nothing left for analysis, which is
     what this reservation prevents.
     """
-    downstream = DOWNSTREAM_CALLS.get(stage, ())
+    downstream = downstream_calls(state, stage)
     batches = (
         review_batches(state, limits) if stage in ("research", "review") else 0
     )

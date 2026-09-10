@@ -416,7 +416,9 @@ def _usage(
         duration_s=round(time.monotonic() - started, 3),
         unknown=unknown,
         **records.provider_usage(
-            exposed, result.total_cost_usd if result else None
+            exposed,
+            result.total_cost_usd if result else None,
+            getattr(result, "model_usage", None) if result else None,
         ),
     )
     return usage
@@ -639,7 +641,7 @@ async def run_attempt(
             work,
             collector,
             "unknown",
-            records.Usage(unknown=True),
+            records.Usage(unknown=True, complete=False),
             error="replayed attempt not admitted in this invocation",
         )
     outstanding = tools.Outstanding()

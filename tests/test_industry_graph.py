@@ -4017,3 +4017,217 @@ def test_d_u16_route_s_shares_every_authority_and_saves_two_calls(tmp_path):
     assert len(state["coverage"]) == 8
     assert state["delivery"] is not None
     assert (tmp_path / "reports" / "s1.md").exists()
+
+
+def test_u2_08_a_verifier_that_settles_nothing_stops_being_asked(tmp_path):
+    """One measured case reached 143 identical batches and no delivery."""
+    runtime, api, worker, compiled = make(
+        tmp_path, records.Limits(wall_clock_s=9000.0)
+    )
+
+    async def empty_review(state, claim_ids, max_turns, deadline):
+        del state, claim_ids, max_turns, deadline
+        api.calls.append("review")
+        return records.ClaimReview(claims=[], relationships=[]), USAGE
+
+    api.review_claims = empty_review
+    config = persist.thread_config("stall1")
+    runtime.begin("stall1")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    reviews = sum(1 for c in api.calls if c == "review")
+    # It asks a few times and then advances, rather than forever.
+    # A handful of stalled rounds per review phase, not 143.
+    assert reviews <= 2 * (graph_module.REVIEW_STALLS + 1), reviews
+    assert state["review_stalls"] >= graph_module.REVIEW_STALLS
+    assert any("settled nothing" in line for line in state["route_log"])
+    # And the run still reaches a delivery decision.
+    assert state["meta"].execution_status == "completed"
+    assert state["delivery"] is not None
+
+
+def test_u2_01_a_coarse_objection_reaches_the_retained_body():
+    """A body retained from an earlier draft was published with the
+    sentence a later review had faulted (U2-01)."""
+    section = records.Section(
+        id="intro", title="I", text="This market has one supplier [C1]."
+    )
+    candidate = records.DeliveryCandidate(
+        draft_version=1,
+        sections=[section],
+        subject=records.ReviewSubject(
+            digest="d", sections={"intro": "s"}, section_ids=["intro"]
+        ),
+        issues={},
+    )
+    coarse = records.Issue(
+        id="I1",
+        key="unsupported:intro",
+        category="unsupported",
+        severity="material",
+        target="intro",
+        requested_action="remove",
+        description="the monopoly assertion is unsupported",
+        draft_version=2,
+        text=None,
+    )
+    applies = graph_module.issues_for_candidate(candidate, {"I1": coarse})
+    assert "I1" in applies, "a coarse objection must reach the retained body"
+    # And it still blocks that section, which is the whole point.
+    assert report.blocking_issues([applies["I1"]], section) == [applies["I1"]]
+
+
+def test_u2_02_a_section_target_is_never_read_as_a_claim():
+    """A section named `C1` is a section (U2-02)."""
+    section = records.Section(id="C1", title="Economics", text="text [C2].")
+    claim = records.Claim(
+        id="C1", statement="s", kind="fact", review="supported"
+    )
+    issue = records.Issue(
+        id="I1",
+        key="unsupported:C1",
+        category="unsupported",
+        severity="material",
+        target="C1",
+        requested_action="remove",
+        description="unsupported wording",
+        draft_version=1,
+    )
+    state = {
+        "sections": [section],
+        "claims": {"C1": claim},
+        "issues": {"I1": issue},
+        "findings": {},
+        "coverage": [],
+        "evidence": {},
+    }
+    after = graph_module.resolve_issues(state)["issues"]["I1"]
+    assert after.status == "open", "a supported claim cannot clear a section"
+    # And a mistyped section id still identifies its section.
+    assert report.resolve_section([section], " c1 ") == "C1"
+    assert report.resolve_section([section], "nowhere") == "nowhere"
+
+
+def test_u2_05_a_calculation_answers_one_comparison_not_every_one():
+    """Pooling every compared operand let a capex calculation discharge a
+    revenue comparison in the same finding (U2-05)."""
+
+    def numeric(cid, value, metric):
+        return records.Claim(
+            id=cid,
+            statement=cid,
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension=metric,
+            quantity=_quantity(value),
+        )
+
+    claims = {
+        "C1": numeric("C1", 52.0, "revenue"),
+        "C2": numeric("C2", 40.0, "revenue"),
+        "C8": numeric("C8", 3.0, "capex"),
+        "C9": numeric("C9", 2.0, "capex"),
+    }
+    capex_ratio = records.Calculation(
+        id="K1",
+        kind="ratio",
+        label="capex ratio",
+        formula="C8 / C9",
+        inputs=[
+            records.CalcInput(
+                claim_id=cid, claim_version=1, quantity=_quantity(1.0)
+            )
+            for cid in ("C8", "C9")
+        ],
+        status="ok",
+        result=1.5,
+    )
+    claims["C3"] = records.Claim(
+        id="C3",
+        statement="ratio",
+        kind="derived",
+        calculation_id="K1",
+        calculation_version=1,
+        evidence_ids=["E1"],
+    )
+    finding = records.Finding(
+        id="F1",
+        conclusion="A earns twice what B does",
+        claim_ids=["C1", "C2", "C8", "C9", "C3"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        compares=["C1", "C2", "C8", "C9"],
+    )
+    # The revenue comparison is still outstanding.
+    assert (
+        graph_module.uncomputed_comparison(finding, claims, {"K1": capex_ratio})
+        == "C1, C2"
+    )
+    # Its own calculation discharges it.
+    revenue_ratio = capex_ratio.model_copy(
+        update={
+            "id": "K2",
+            "inputs": [
+                records.CalcInput(
+                    claim_id=cid, claim_version=1, quantity=_quantity(1.0)
+                )
+                for cid in ("C1", "C2")
+            ],
+        }
+    )
+    claims["C4"] = claims["C3"].model_copy(
+        update={"id": "C4", "calculation_id": "K2"}
+    )
+    both = finding.model_copy(update={"claim_ids": finding.claim_ids + ["C4"]})
+    assert (
+        graph_module.uncomputed_comparison(
+            both, claims, {"K1": capex_ratio, "K2": revenue_ratio}
+        )
+        is None
+    )
+
+
+def test_u2_10_route_s_does_not_reserve_the_call_it_skips():
+    limits = records.Limits()
+    meta_s = records.RunMeta(
+        workflow_version="industry-v1",
+        route="S",
+        prompt_version="x",
+        models={},
+        limits=limits,
+        started_at="2026-09-10T00:00:00+00:00",
+    )
+    base = {"attempts": {}, "single_calls": {}, "claims": {}}
+    c_state = {**base, "meta": meta_s.model_copy(update={"route": "C"})}
+    s_state = {**base, "meta": meta_s}
+    assert "assess_coverage" in budget.downstream_calls(c_state, "research")
+    assert "assess_coverage" not in budget.downstream_calls(s_state, "research")
+    c_seconds, _ = budget.pipeline_reserve(c_state, limits, "research")
+    s_seconds, _ = budget.pipeline_reserve(s_state, limits, "research")
+    assert c_seconds - s_seconds == limits.single_call_timeout_s
+    # Which is the difference between admitting a worker and refusing one.
+    assert budget.dispatchable(s_state, limits, False) >= budget.dispatchable(
+        c_state, limits, False
+    )
+
+
+def test_u2_11_the_sdk_per_model_record_fills_the_cache_categories():
+    filled = records.provider_usage(
+        {"input_tokens": 10},
+        0.5,
+        {
+            "claude-sonnet-5": {
+                "outputTokens": 200,
+                "cacheReadInputTokens": 1000,
+                "cacheCreationInputTokens": 500,
+            }
+        },
+    )
+    assert filled["cache_read_input_tokens"] == 1000
+    assert filled["per_model"] == {"claude-sonnet-5": 200}
+    assert filled["complete"]
+    # One category alone is not a cache report.
+    half = records.provider_usage({"cache_read_input_tokens": 7}, None)
+    assert half["complete"] is False

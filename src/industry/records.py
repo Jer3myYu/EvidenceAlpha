@@ -881,7 +881,11 @@ def _merge_counts(
     return merged
 
 
-def provider_usage(usage: dict[str, Any], cost: float | None) -> dict[str, Any]:
+def provider_usage(
+    usage: dict[str, Any],
+    cost: float | None,
+    model_usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The provider-exposed counts, including what run 7 never captured.
 
     ``input_tokens`` alone summed to 144 across run 7's whole archive
@@ -890,23 +894,36 @@ def provider_usage(usage: dict[str, Any], cost: float | None) -> dict[str, Any]:
     that exposed no cache figures at all is recorded ``complete=False``:
     zero and unmeasured are different, and only one of them is a fact.
     """
-    cached = (
-        "cache_read_input_tokens" in usage
-        or "cache_creation_input_tokens" in usage
-    )
+    # The SDK reports per-model figures separately from the flat usage
+    # dictionary, in its own camelCase shape. Looking only at a
+    # ``per_model`` key inside ``usage`` found nothing there (U2-11).
     per_model = {
-        name: int(count)
-        for name, count in (usage.get("per_model") or {}).items()
+        name: int(entry.get("outputTokens", 0) or 0)
+        for name, entry in (model_usage or {}).items()
+        if isinstance(entry, dict)
     }
+    reads = usage.get("cache_read_input_tokens")
+    writes = usage.get("cache_creation_input_tokens")
+    if reads is None and model_usage:
+        reads = sum(
+            int(e.get("cacheReadInputTokens", 0) or 0)
+            for e in model_usage.values()
+            if isinstance(e, dict)
+        )
+        writes = sum(
+            int(e.get("cacheCreationInputTokens", 0) or 0)
+            for e in model_usage.values()
+            if isinstance(e, dict)
+        )
+    # Both categories, not either: a payload carrying one of them has
+    # not reported cache usage, and saying it had let a half-measured
+    # call claim completeness (U2-11).
+    cached = reads is not None and writes is not None
     return {
         "input_tokens": int(usage.get("input_tokens", 0) or 0),
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
-        "cache_creation_input_tokens": int(
-            usage.get("cache_creation_input_tokens", 0) or 0
-        ),
-        "cache_read_input_tokens": int(
-            usage.get("cache_read_input_tokens", 0) or 0
-        ),
+        "cache_creation_input_tokens": int(writes or 0),
+        "cache_read_input_tokens": int(reads or 0),
         "cost_usd": cost,
         "cost_basis": "sdk_total_cost_usd" if cost is not None else "",
         "per_model": per_model,

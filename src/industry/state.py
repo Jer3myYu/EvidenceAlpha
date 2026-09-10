@@ -88,6 +88,15 @@ class IndustryState(TypedDict, total=False):
     final_review_version: int
     return_to: str
     last_signature: str
+    # The evidence behind the last editorial correction, so rewording
+    # the objection cannot buy another one (U2-09).
+    last_support: str
+    # How many consecutive review rounds settled nothing. A verifier
+    # that returns an empty result leaves the batch exactly as it was,
+    # so the router asks for it again -- 143 identical batches in one
+    # measured case, until the graph's recursion limit stopped the run
+    # short of delivery (U2-08).
+    review_stalls: int
     route_log: Annotated[list[str], operator.add]
 
 
@@ -142,6 +151,34 @@ NoneType = type(None)
 
 def _is_record(hint: Any) -> bool:
     return isinstance(hint, type) and issubclass(hint, records.Record)
+
+
+def support_signature(state: IndustryState) -> str:
+    """A digest of the evidence a conclusion could rest on.
+
+    Deliberately blind to issues. ``registry_signature`` counts an open
+    issue's identity as change, which is right for remediation -- a new
+    problem is news -- and wrong for the one editorial correction
+    allowed over *unchanged evidence*: rewording an unsupported sentence
+    mints a new issue id, changed the signature, and bought another
+    rewrite. Three of them, over evidence that never moved (U2-09).
+    """
+    parts = [
+        ",".join(sorted(state.get("evidence", {}))),
+        ",".join(
+            f"{claim.id}:{claim.version}:{claim.review}"
+            for claim in sorted(
+                state.get("claims", {}).values(), key=lambda c: c.id
+            )
+        ),
+        ",".join(
+            f"{calc.id}:{calc.version}:{calc.status}"
+            for calc in sorted(
+                state.get("calculations", {}).values(), key=lambda c: c.id
+            )
+        ),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def registry_signature(state: IndustryState) -> str:

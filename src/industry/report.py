@@ -55,6 +55,14 @@ class CitationProblem:
     text: str | None = None
 
 
+# Words that make a paragraph a consequence of the one before it. If
+# the premise goes, so does the conclusion drawn from it.
+_CONSEQUENCE = re.compile(
+    r"^(?:therefore|so\b|thus|hence|as a result|consequently|that means|"
+    r"this means|it follows)"
+    r"|^(?:因此|所以|这意味着|由此|故而|从而|可见)",
+    re.IGNORECASE,
+)
 _SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
 _LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 
@@ -111,6 +119,12 @@ class Block:
     kind: str
     text: str
     sha256: str
+    # The block immediately before this one, when this one's own words
+    # make it a consequence of it. Removing a premise has to take the
+    # conclusion drawn from it, or a precise removal leaves "Therefore
+    # suppliers can dictate prices" standing over a sentence that was
+    # just withheld (U2-03).
+    depends_on: str | None = None
 
 
 def blocks_of(section: records.Section) -> list[Block]:
@@ -132,15 +146,54 @@ def blocks_of(section: records.Section) -> list[Block]:
             units.extend(("list_item", line.strip()) for line in lines)
         else:
             units.append(("paragraph", paragraph.strip()))
-    return [
-        Block(
-            id=f"{section.id}:b{number}",
-            kind=kind,
-            text=text,
-            sha256=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+    blocks: list[Block] = []
+    for number, (kind, text) in enumerate(units, start=1):
+        previous = blocks[-1] if blocks else None
+        depends = (
+            previous.id
+            if previous is not None
+            and kind == "paragraph"
+            and previous.kind == "paragraph"
+            and _CONSEQUENCE.match(text.strip())
+            else None
         )
-        for number, (kind, text) in enumerate(units, start=1)
-    ]
+        blocks.append(
+            Block(
+                id=f"{section.id}:b{number}",
+                kind=kind,
+                text=text,
+                sha256=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+                depends_on=depends,
+            )
+        )
+    return blocks
+
+
+def dependents_of(section: records.Section, block_id: str) -> list[Block]:
+    """The blocks that fall with ``block_id``, transitively."""
+    blocks = blocks_of(section)
+    doomed = {block_id}
+    for block in blocks:
+        if block.depends_on in doomed:
+            doomed.add(block.id)
+    return [b for b in blocks if b.id in doomed and b.id != block_id]
+
+
+def resolve_section(sections: list[records.Section], target: str) -> str:
+    """The section id a reviewer meant, or the target unchanged.
+
+    A reviewer that writes ``Intro`` for ``intro`` has identified the
+    section; requiring an exact match left the objection open against a
+    target no removal scope matched, and the disputed sentence stayed
+    (U2-02). Case and surrounding whitespace are forgiven. Anything else
+    is returned as written, so it names no section and the issue fails
+    closed against the whole draft.
+    """
+    wanted = target.strip().casefold()
+    for section in sections:
+        if section.id.strip().casefold() == wanted:
+            return section.id
+    return target
 
 
 def resolve_block(

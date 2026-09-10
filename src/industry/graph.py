@@ -155,7 +155,9 @@ def _usage_of(llm: crew.ClaudeLLM, started: float) -> records.Usage:
         turns=int(last.get("turns") or 0),
         duration_s=round(time.monotonic() - started, 3),
         unknown=not last,
-        **records.provider_usage(usage, last.get("cost_usd")),
+        **records.provider_usage(
+            usage, last.get("cost_usd"), last.get("model_usage")
+        ),
     )
 
 
@@ -403,14 +405,24 @@ def issues_for_candidate(
 
     A later draft's clean review can resolve wording that still stands
     in the retained one, so a resolution recorded against another
-    ``draft_version`` does not clear it here. An issue raised since is
-    applied only when its exact unit is actually in this body.
+    ``draft_version`` does not clear it here. An issue raised since
+    applies when its exact unit is in this body -- or when it names a
+    section this body still contains and identifies no unit at all.
+
+    That second case is the one that mattered: a coarse objection
+    carries no text, so requiring text dropped it, and a body retained
+    from an earlier draft was published with the disputed sentence that
+    the later draft's review had faulted (U2-01).
     """
     applies = dict(candidate.issues)
     body = "\n".join(section.text for section in candidate.sections)
+    sections = {section.id for section in candidate.sections}
     for issue_id, issue in current.items():
         if issue_id not in applies:
-            if issue.text and issue.text in body:
+            reaches = (
+                issue.text in body if issue.text else issue.target in sections
+            )
+            if reaches:
                 applies[issue_id] = issue
             continue
         if (
@@ -1327,29 +1339,37 @@ def uncomputed_comparison(
     carry an admitted quantity and no live calculation among the
     finding's citations actually consumed them.
     """
-    numeric = sorted(
+    compared = {
         cid
         for cid in _compared_claims(finding, claims)
         if cid in claims and claims[cid].quantity is not None
-    )
-    if len(numeric) < 2:
+    }
+    # One obligation per metric, because one calculation answers one
+    # comparison. Pooling every compared operand let a calculation over
+    # two capex claims discharge a revenue comparison that shared the
+    # same finding (U2-05).
+    groups: dict[str, set[str]] = {}
+    for cid in compared:
+        claim = claims[cid]
+        metric = " ".join((claim.dimension or "").split()).casefold()
+        groups.setdefault(metric, set()).add(cid)
+    computed = [
+        {item.claim_id for item in calculation.inputs}
+        for cid in finding.claim_ids
+        for calculation in [
+            calculations.get(getattr(claims.get(cid), "calculation_id", None))
+        ]
+        if calculation is not None and calculation.status == "ok"
+    ]
+    outstanding = [
+        operands
+        for operands in groups.values()
+        if len(operands) >= 2
+        and not any(len(operands & consumed) >= 2 for consumed in computed)
+    ]
+    if not outstanding:
         return None
-    wanted = set(numeric)
-    for cid in finding.claim_ids:
-        claim = claims.get(cid)
-        if claim is None or claim.calculation_id is None:
-            continue
-        calculation = calculations.get(claim.calculation_id)
-        if calculation is None or calculation.status != "ok":
-            continue
-        # The calculation must have consumed *the operands this
-        # conclusion compares*, together. An A/C calculation used to
-        # discharge an A/B comparison by removing A and leaving one
-        # operand outstanding, which the count then accepted (U1-12).
-        consumed = {item.claim_id for item in calculation.inputs}
-        if len(wanted & consumed) >= 2:
-            return None
-    return ", ".join(numeric)
+    return ", ".join(sorted(min(outstanding, key=sorted)))
 
 
 def _compared_claims(
@@ -1521,6 +1541,10 @@ _COMPARATIVE = re.compile(
     r"|倍|超过|高于|低于|多于|少于|相当于|百分点",
     re.IGNORECASE,
 )
+# How many consecutive review rounds may settle nothing before the run
+# stops asking. Two is a transport hiccup; three is a verifier that is
+# not going to answer this batch.
+REVIEW_STALLS = 3
 ARITHMETIC_ISSUE = "arithmetic"
 INFERENCE_ISSUE = "inference"
 
@@ -1549,7 +1573,10 @@ def acquisition_blocked(
     if budget.dispatchable(state, limits, False):
         return ""
     if budget.admit_repair_pair(state, limits) and any(
-        request.status in ("pending", "admitted")
+        # A deferred request is one the scheduler may still admit when a
+        # pair becomes affordable; treating only pending and admitted
+        # ones as reachable stranded exactly that transition (U2-06).
+        request.status in ("pending", "admitted", "deferred")
         for request in state.get("repairs", {}).values()
     ):
         # A repair pair is admitted on its own earmark, not out of
@@ -2066,9 +2093,17 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
             continue
         resolved = None
         target = issue.target
+        drafted = {section.id for section in state.get("sections", [])}
         if target.startswith("Q") and target[1:].isdigit():
             if coverage.get(int(target[1:])) == "covered":
                 resolved = "question covered"
+        elif target in drafted:
+            # A section named `C1` is a section, not claim C1. Reading it
+            # as one resolved a section's unsupported-wording objection
+            # because an unrelated claim happened to be supported
+            # (U2-02). A draft target closes only on a clean later
+            # review, which the branch below already does.
+            resolved = None
         elif target in claims:
             claim = claims[target]
             if issue.category == "contradiction" and claim.is_reviewed():
@@ -2263,16 +2298,6 @@ def build_graph(
             t.kind == "acquisition" for t in ready
         )
         slots = budget.dispatchable(state, limits, keep_slot)
-        # A repair pair is admitted on its own terms (plan revision 39
-        # §4.46.2). It must not then wait for an ordinary 900-second
-        # slot: at every recorded decision boundary there were none,
-        # which would leave the pair admitted and unable to start.
-        repairs_first = [
-            task
-            for task in ready
-            if task.kind == "acquisition" and task.target is not None
-        ]
-        ordinary = [task for task in ready if task not in repairs_first]
         attempts = dict(state.get("attempts", {}))
         # Acquisition attempts are capped for the run: beyond the cap a
         # ready acquisition task is skipped, never dispatched.
@@ -2330,6 +2355,22 @@ def build_graph(
                 acquisitions += 1
             admitted.append(task)
         ready = admitted
+        # Built from the tasks that survived the filters, never from the
+        # tasks that arrived. Computing these first and using them after
+        # meant a repair skipped for the acquisition cap, for an
+        # unaffordable pair, or for a stale target still started an
+        # attempt and still held its paired review (U2-07).
+        #
+        # A repair pair is admitted on its own terms (plan revision 39
+        # §4.46.2). It must not then wait for an ordinary 900-second
+        # slot: at every recorded decision boundary there were none,
+        # which would leave the pair admitted and unable to start.
+        repairs_first = [
+            task
+            for task in admitted
+            if task.kind == "acquisition" and task.target is not None
+        ]
+        ordinary = [task for task in admitted if task not in repairs_first]
         meter = runtime.meter_for(thread_id) or runtime.new_meter(
             thread_id, state
         )
@@ -3052,6 +3093,21 @@ def build_graph(
         update["issues"] = issues
         if created:
             update["phase"] = "acquisition"
+        settled = sum(
+            1
+            for cid in pending
+            if cid in reviewed_claims
+            and not reviewed_claims[cid].needs_review()
+            and state.get("claims", {}).get(cid) is not None
+            and state["claims"][cid].needs_review()
+        )
+        stalls = 0 if settled else state.get("review_stalls", 0) + 1
+        update["review_stalls"] = stalls
+        if not settled:
+            update["route_log"].append(
+                f"review: the batch settled nothing (stall {stalls} of "
+                f"{REVIEW_STALLS})"
+            )
         remaining = review_remaining({**state, **update})
         update["route_log"].append(
             f"review: {len(outcome.claims)} verdicts, {len(newly_bad)} "
@@ -3092,6 +3148,12 @@ def build_graph(
             pending_review(state, limits.review_batch)
             and last is None
             and budget.admit_single_call(state, limits, "review") > 0
+            # A verifier that settles nothing leaves the batch exactly
+            # as it was, so asking again asks the same question. After
+            # `REVIEW_STALLS` of those the claims stay unreviewed --
+            # visibly, as deferred obligations -- and the run advances
+            # instead of spending its whole budget on one batch (U2-08).
+            and state.get("review_stalls", 0) < REVIEW_STALLS
         ):
             # The router asks for the batch the node will actually take,
             # never for a count computed another way: a round that the
@@ -3110,6 +3172,15 @@ def build_graph(
         stage = issue_stage(open_material) or "write"
         cycle = state.get("cycle", 0) + 1
         blocked = acquisition_blocked(state, limits)
+        if stage == "write" and blocked and not _evidence_moved(state):
+            # The one editorial correction over unchanged evidence has
+            # been taken. Rewording the objection is not new evidence,
+            # however many new issue ids it mints (U2-09).
+            log.append(
+                "remediate: the editorial correction over this evidence is "
+                "spent; delivering what stands"
+            )
+            stage = "deliver"
         if stage in ("research", "analyze") and blocked:
             # No evidence-changing action can run, so re-analysing the
             # same evidence is not remediation -- it is the loop run 7
@@ -3128,6 +3199,7 @@ def build_graph(
             "phase": "remediation",
             "return_to": stage,
             "last_signature": state_module.registry_signature(state),
+            "last_support": state_module.support_signature(state),
             "route_log": log
             + [
                 f"remediate: cycle {cycle} -> {stage} "
@@ -3135,8 +3207,15 @@ def build_graph(
             ],
         }
 
+    def _evidence_moved(state: state_module.IndustryState) -> bool:
+        """Whether the evidence has changed since the last correction."""
+        previous = state.get("last_support")
+        return not previous or state_module.support_signature(state) != previous
+
     def after_remediate(state: state_module.IndustryState) -> str:
         stage = state.get("return_to", "write")
+        if stage == "deliver":
+            return "deliver"
         if stage == "write" and budget.admit_pair(state, limits) <= 0:
             return "deliver"
         return {
@@ -3252,9 +3331,23 @@ def build_graph(
                 # removal; one that does not buys nothing worse than
                 # before -- `blocking_issues` still takes the section
                 # (plan D-U12, U0-04).
+                section_id = report.resolve_section(
+                    state.get("sections", []), problem.section_id
+                )
+                if section_id != problem.section_id:
+                    update["route_log"].append(
+                        f"final_review: section {problem.section_id!r} "
+                        + (
+                            f"read as {section_id!r}"
+                            if section_id
+                            in {s.id for s in state.get("sections", [])}
+                            else "names no section of this draft; the issue "
+                            "stands against the whole draft"
+                        )
+                    )
                 block = report.resolve_block(
                     state.get("sections", []),
-                    problem.section_id,
+                    section_id,
                     problem.block_id,
                 )
                 if problem.block_id and block is None:
@@ -3267,13 +3360,41 @@ def build_graph(
                     issues,
                     problem.category,
                     problem.severity,
-                    problem.section_id,
+                    section_id,
                     action,
                     f"[{problem.section_id}] {problem.description}{claim_note}",
                     draft_version=version,
                     text=block.text if block is not None else None,
                 )
                 flagged.add(issue.key)
+                if block is not None and problem.category in (
+                    "unsupported",
+                    "contradiction",
+                ):
+                    # Whatever the draft draws *from* the withheld
+                    # sentence goes with it (U2-03).
+                    section = next(
+                        s
+                        for s in state.get("sections", [])
+                        if s.id == section_id
+                    )
+                    for dependent in report.dependents_of(section, block.id):
+                        issues, extra = merge.open_issue(
+                            issues,
+                            problem.category,
+                            problem.severity,
+                            section_id,
+                            action,
+                            f"[{section_id}] depends on the withheld "
+                            f"{block.id}, which {issue.id} faulted",
+                            draft_version=version,
+                            text=dependent.text,
+                        )
+                        flagged.add(extra.key)
+                        update["route_log"].append(
+                            f"{extra.id}: {dependent.id} falls with "
+                            f"{block.id}"
+                        )
             # A draft issue closes only when a newer draft was reviewed
             # and this review did not flag it again.
             for issue in list(issues.values()):

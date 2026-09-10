@@ -247,6 +247,11 @@ class ClaudeLLM(crewai.BaseLLM):
                 # structured-output attempt the CLI made.
                 "exchanges": exchanges,
                 "usage": result.usage,
+                # The SDK reports per-model figures, including the cache
+                # categories, separately from the flat usage dictionary.
+                # Dropping them here is why every recorded run's cache
+                # accounting was empty (plan D-U15, U2-11).
+                "model_usage": getattr(result, "model_usage", None),
                 "cost_usd": result.total_cost_usd,
                 "duration_ms": result.duration_ms,
                 "is_error": result.is_error,
