@@ -20,6 +20,7 @@ from industry import graph as graph_module
 from industry import pdf as pdf_module
 from industry import merge
 from industry import report
+from industry import quantities
 from industry import records
 from industry import roles
 from industry import schedule
@@ -274,6 +275,7 @@ class FakeRoles:
 
     def __init__(self):
         self.calls: list[str] = []
+        self.audit_verdict = "supported"
         self.scope_failures = 0
         # The first allocation admits one ordinary industry task, which
         # owns the map; the handoff after its merge plans company work
@@ -362,6 +364,25 @@ class FakeRoles:
         ]
         return (
             records.ClaimReview(claims=verdicts, relationships=relationships),
+            USAGE,
+        )
+
+    async def audit_findings(self, state, max_turns, deadline):
+        del max_turns, deadline
+        self.calls.append("audit")
+        # Clean by default: the audit's own routing is tested directly,
+        # and every other case should reach the Editor as it always did.
+        return (
+            records.FindingAudit(
+                judgements=[
+                    records.FindingJudgement(
+                        finding_id=fid,
+                        verdict=self.audit_verdict,
+                        reason="the mechanism follows from the premises",
+                    )
+                    for fid in state.get("findings", {})
+                ]
+            ),
             USAGE,
         )
 
@@ -464,6 +485,8 @@ def test_happy_path_delivers_a_report(tmp_path):
         "assess_coverage": "done",
         "analyze": "done",
         "review": "done",
+        # The analysis is judged before any prose is written (D-U11).
+        "audit_findings": "done",
         "write": "done",
         "final_review": "done",
     }
@@ -491,6 +514,8 @@ def test_happy_path_delivers_a_report(tmp_path):
         "plan:the first re",
         "analyze",
         "assess",
+        # The reasoning is judged before the prose, not after it.
+        "audit",
         "write:full",
         "final",
     ]
@@ -3029,16 +3054,33 @@ def test_a18_a_required_comparison_gets_a_task_or_a_recorded_failure():
     assert issue.category == "missing_evidence"
     assert "the plan filled 2 slot(s)" in issue.description
 
-    # A company task satisfies it; so does a brief that does not ask.
+    # A company task naming the participant satisfies it; an untargeted
+    # one does not -- it assigns nobody (U1-09).
     with_company = {
         **industry_only,
         "T2": records.Task(
-            id="T2", kind="research", role="company", objective="o"
+            id="T2",
+            kind="research",
+            role="company",
+            objective="o",
+            targets=["清溢光电"],
         ),
     }
     assert graph_module.company_obligation(state, with_company, {}, "r") == (
         {},
         [],
+    )
+    untargeted = {
+        **industry_only,
+        "T2": records.Task(
+            id="T2", kind="research", role="company", objective="o"
+        ),
+    }
+    open_issues, log = graph_module.company_obligation(
+        state, untargeted, {}, "r"
+    )
+    assert (
+        log and "name no target" in next(iter(open_issues.values())).description
     )
     narrow = {**state, "brief": records.Brief(industry="x", required_ids=[1])}
     assert graph_module.company_obligation(narrow, industry_only, {}, "r") == (
@@ -3222,9 +3264,14 @@ def test_u1_09_a_company_task_covers_only_the_companies_it_names():
     }
     issues2, log2 = graph_module.company_obligation(state, failed, {}, "r")
     assert log2 and "清溢" in next(iter(issues2.values())).description
-    # An untargeted company task is a general assignment.
+    # A short name covers the participant it abbreviates.
+    short = {"T1": tasks["T1"].model_copy(update={"targets": ["清溢"]})}
+    issues3, _ = graph_module.company_obligation(state, short, {}, "r")
+    assert "清溢" not in next(iter(issues3.values())).description
+    # And an untargeted task assigns nobody, rather than everybody.
     general = {"T1": tasks["T1"].model_copy(update={"targets": []})}
-    assert graph_module.company_obligation(state, general, {}, "r") == ({}, [])
+    issues4, log4 = graph_module.company_obligation(state, general, {}, "r")
+    assert log4 and "清溢" in next(iter(issues4.values())).description
 
 
 def test_u1_10_grouping_reorders_the_batch_but_never_reselects_it():
@@ -3260,3 +3307,233 @@ def test_u1_10_grouping_reorders_the_batch_but_never_reselects_it():
         ordered
     ), "grouping must not change membership"
     assert grouped == ["C1", "C3", "C2"]
+
+
+def _quantity(value: float, unit_text: str = "亿元"):
+    parsed = quantities.parse_declaration(unit_text)
+    return records.Quantity(
+        value=value,
+        unit=parsed,
+        binding=records.EvidenceBinding(
+            evidence_id="E1",
+            excerpt_sha256="0" * 64,
+            number_start=0,
+            number_end=1,
+            expression_start=0,
+            expression_end=1,
+            as_written="1",
+        ),
+    )
+
+
+def test_u1_12_a_qualitative_conclusion_is_not_an_arithmetic_obligation():
+    """The escape hatch has to be real, or the issue blocks delivery."""
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="a",
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(52.0),
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="b",
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(40.0),
+        ),
+    }
+    base = dict(
+        id="F1",
+        conclusion="Both suppliers have commercial sales; monitor retention.",
+        claim_ids=["C1", "C2"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+    )
+    qualitative = records.Finding(**base)
+    assert graph_module.uncomputed_comparison(qualitative, claims, {}) is None
+    quantitative = records.Finding(**base, compares=["C1", "C2"])
+    assert (
+        graph_module.uncomputed_comparison(quantitative, claims, {}) == "C1, C2"
+    )
+
+
+def test_u1_12_the_obligation_closes_when_the_comparison_is_calculated():
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="a",
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(52.0),
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="b",
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(40.0),
+        ),
+    }
+    finding = records.Finding(
+        id="F1",
+        conclusion="A is larger than B",
+        claim_ids=["C1", "C2", "C3"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        compares=["C1", "C2"],
+    )
+    inputs = [
+        records.CalcInput(
+            claim_id=cid, claim_version=1, quantity=_quantity(1.0)
+        )
+        for cid in ("C1", "C2")
+    ]
+    calculation = records.Calculation(
+        id="K1",
+        kind="ratio",
+        label="A over B",
+        formula="C1 / C2",
+        inputs=inputs,
+        status="ok",
+        result=1.3,
+    )
+    claims["C3"] = records.Claim(
+        id="C3",
+        statement="ratio",
+        kind="derived",
+        calculation_id="K1",
+        calculation_version=1,
+        evidence_ids=["E1"],
+    )
+    assert (
+        graph_module.uncomputed_comparison(finding, claims, {"K1": calculation})
+        is None
+    )
+    # An unrelated calculation discharges nothing.
+    other = calculation.model_copy(
+        update={
+            "id": "K2",
+            "inputs": [
+                records.CalcInput(
+                    claim_id="C9", claim_version=1, quantity=_quantity(1.0)
+                )
+            ],
+        }
+    )
+    claims["C3"] = claims["C3"].model_copy(update={"calculation_id": "K2"})
+    assert (
+        graph_module.uncomputed_comparison(finding, claims, {"K2": other})
+        == "C1, C2"
+    )
+
+
+def test_u1_08_a_dependant_waits_for_every_part_of_a_split_task():
+    limits = records.Limits(tools_per_attempt=6, tools_per_target=3)
+    plan = roles.TaskPlan(
+        tasks=[
+            roles.TaskSpec(
+                key="companies",
+                role="company",
+                objective="Profile A, B, C, D",
+                targets=["A", "B", "C", "D"],
+            ),
+            roles.TaskSpec(
+                key="synth",
+                role="industry",
+                objective="Compare them",
+                depends_on=["companies"],
+            ),
+        ]
+    )
+    tasks, _, _ = graph_module._tasks_from_plan(
+        {"tasks": {}, "issues": {}, "evidence": {}},
+        plan,
+        4,
+        "research",
+        limits,
+    )
+    dependant = next(t for t in tasks.values() if t.objective == "Compare them")
+    parts = sorted(t.id for t in tasks.values() if t.role == "company")
+    assert len(parts) == 2
+    assert sorted(dependant.depends_on) == parts
+    # And it is not ready while a part is unfinished.
+    done_first = {
+        **tasks,
+        parts[0]: tasks[parts[0]].model_copy(update={"status": "done"}),
+    }
+    _, ready = schedule.ready(schedule.validate(done_first))
+    assert dependant.id not in [t.id for t in ready]
+
+
+def test_u1_07_a_repaired_evidence_obligation_can_close():
+    claim = records.Claim(
+        id="C1",
+        statement="revenue was 1.2bn",
+        kind="fact",
+        evidence_ids=["E1", "E2"],
+        review="supported",
+        material=True,
+    )
+    finding = records.Finding(
+        id="F1",
+        conclusion="c",
+        claim_ids=["C1"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+    )
+    issue = records.Issue(
+        id="I1",
+        key="missing_evidence:C1",
+        category="missing_evidence",
+        severity="material",
+        target="C1",
+        requested_action="acquire",
+        description="the original context has not been read",
+    )
+    snippet = records.Evidence(
+        id="E1",
+        source_id="S1",
+        excerpt="x",
+        locator="search snippet",
+        kind="snippet",
+        extraction="search_snippet",
+        task_id="T1",
+        retrieved_at="2026-09-10T00:00:00+00:00",
+    )
+    state = {
+        "claims": {"C1": claim},
+        "findings": {"F1": finding},
+        "issues": {"I1": issue},
+        "coverage": [],
+        "evidence": {"E1": snippet},
+    }
+    # Supported, but still only a snippet: the obligation stands.
+    assert graph_module.resolve_issues(state)["issues"]["I1"].status == "open"
+    passage = snippet.model_copy(
+        update={
+            "id": "E2",
+            "kind": "passage",
+            "source_version_id": "v1",
+            "locator": "page 12",
+        }
+    )
+    repaired = {**state, "evidence": {"E1": snippet, "E2": passage}}
+    closed = graph_module.resolve_issues(repaired)["issues"]["I1"]
+    assert (
+        closed.status == "resolved" and "original context" in closed.resolution
+    )

@@ -126,6 +126,8 @@ def description_for(
         return roles.draft_description(
             before, graph_module.write_instructions(before)
         )
+    if node == "audit_findings":
+        return roles.audit_description(before)
     if node == "final_review":
         return roles.final_review_description(before)
     raise ValueError(f"{node} makes no single call")

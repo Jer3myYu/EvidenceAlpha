@@ -27,6 +27,7 @@ SINGLE_CALL_NODES = (
     "assess_coverage",
     "analyze",
     "review",
+    "audit_findings",
     "write",
     "final_review",
 )

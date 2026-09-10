@@ -1103,6 +1103,44 @@ class Calculation(Record):
     version: int = 1
 
 
+# How a principal analytical finding stands up, judged on its own terms
+# rather than by the literal-statement test a fact gets (plan D-U11). A
+# reasonable conditional inference need not appear verbatim in a source;
+# unsupported certainty, a contradicted premise and an unacknowledged
+# scope change must fail.
+InferenceVerdict = Literal[
+    "supported",
+    "qualified",
+    "unsupported_certainty",
+    "contradicted_premise",
+    "scope_change",
+    "unreviewed",
+]
+FAILED_INFERENCE = (
+    "unsupported_certainty",
+    "contradicted_premise",
+    "scope_change",
+)
+
+
+class FindingJudgement(Record):
+    """The auditor's verdict on one principal analytical finding."""
+
+    finding_id: str
+    verdict: InferenceVerdict
+    reason: str
+    # The observable test the auditor would accept as settling it, when
+    # the finding's own monitor is not one.
+    observable_test: str = ""
+
+
+class FindingAudit(Record):
+    """The pre-draft audit of the analysis, before any prose exists."""
+
+    judgements: list[FindingJudgement] = pydantic.Field(default_factory=list)
+    summary: str = ""
+
+
 class Finding(Record):
     """An analytical conclusion with mechanism and observable test."""
 
@@ -1118,6 +1156,19 @@ class Finding(Record):
     questions: list[int] = pydantic.Field(default_factory=list)
     entity: str | None = None
     status: FindingStatus = "current"
+    # What the pre-draft audit made of the reasoning, judged before any
+    # prose was written (plan D-U11). Separate from the factual verdicts
+    # on the claims it cites: supported premises do not make a
+    # conclusion follow from them.
+    # The claims this conclusion compares numerically, as the Analyst
+    # named them; empty for a conclusion that compares no numbers.
+    compares: list[str] = pydantic.Field(default_factory=list)
+    inference_review: InferenceVerdict = "unreviewed"
+    inference_reason: str | None = None
+    # The audit's version of the finding, so a rewritten conclusion is
+    # not delivered under an approval of the old one.
+    inference_version: int = 0
+    version: int = 1
 
 
 class Coverage(Record):
@@ -1509,6 +1560,8 @@ PERSISTED: tuple[type[Record], ...] = (
     UnitExpr,
     EvidenceBinding,
     ContextBinding,
+    FindingJudgement,
+    FindingAudit,
     Quantity,
     QuantityDraft,
     TableCell,

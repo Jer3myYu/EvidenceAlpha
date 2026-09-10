@@ -125,6 +125,11 @@ class RolesApi(Protocol):
     ) -> tuple[roles.Draft, records.Usage]:
         """The draft."""
 
+    async def audit_findings(
+        self, state: state_module.IndustryState, max_turns: int, deadline: float
+    ) -> tuple[records.FindingAudit, records.Usage]:
+        """The pre-draft audit of the analysis."""
+
     async def final_review(
         self, state: state_module.IndustryState, max_turns: int, deadline: float
     ) -> tuple[records.DraftReview, records.Usage]:
@@ -208,6 +213,14 @@ class LiveRoles:
             max_turns,
             deadline,
             admission=self.admission,
+        )
+        return out, _usage_of(llm, started)
+
+    async def audit_findings(self, state, max_turns, deadline):
+        llm = roles.llm_for("verifier", max_turns)
+        started = time.monotonic()
+        out = await roles.audit_findings(
+            state, llm, max_turns, deadline, admission=self.admission
         )
         return out, _usage_of(llm, started)
 
@@ -631,11 +644,7 @@ def reviewable(
     claims = state.get("claims", {})
     calculations = state.get("calculations", {})
     relationships = state.get("relationships", {})
-    return [
-        c
-        for c in merge.outstanding_review(claims, relationships)
-        if merge.producer_chain_intact(c, claims, calculations)
-    ]
+    return merge.outstanding_review(claims, relationships, calculations)
 
 
 def repair_key(request: records.RepairRequest) -> tuple[str, str, str]:
@@ -1275,30 +1284,40 @@ def uncomputed_comparison(
     claims: dict[str, records.Claim],
     calculations: dict[str, records.Calculation],
 ) -> str | None:
-    """The metric a finding compares without arithmetic, if any.
+    """The comparison a finding claims to make without arithmetic.
 
-    Deterministic and narrow on purpose: two or more cited claims that
-    carry an admitted quantity for the *same* metric, and no derived
-    claim among the citations to have compared them. That is a
-    comparison whether the prose says "twice", "higher", or nothing at
-    all, and it is the case ``calc`` exists to settle (plan D-U10).
+    The Analyst says which claims a conclusion compares numerically.
+    Inferring it from the prose flagged conclusions that compared
+    nothing and gave no way to say so, and a permanently open material
+    issue blocks delivery (U1-12). An empty ``compares`` is the honest
+    answer for a qualitative conclusion, and it is the escape.
+
+    A comparison is outstanding when it names two or more claims that
+    carry an admitted quantity and no live calculation among the
+    finding's citations actually consumed them.
     """
-    by_metric: dict[str, set[str]] = {}
+    numeric = [
+        cid
+        for cid in finding.compares
+        if cid in claims and claims[cid].quantity is not None
+    ]
+    if len(numeric) < 2:
+        return None
+    computed: set[str] = set()
     for cid in finding.claim_ids:
         claim = claims.get(cid)
-        if claim is None or claim.quantity is None:
+        if claim is None or claim.calculation_id is None:
             continue
-        if claim.kind == "derived" and claim.calculation_id in calculations:
-            # The comparison was computed; this is its result.
-            return None
-        if not claim.dimension:
+        calculation = calculations.get(claim.calculation_id)
+        if calculation is None or calculation.status != "ok":
             continue
-        metric = " ".join(claim.dimension.split()).casefold()
-        by_metric.setdefault(metric, set()).add(claim.id)
-    for metric, cited in sorted(by_metric.items()):
-        if len(cited) >= 2:
-            return metric
-    return None
+        # The calculation must have consumed the claims this conclusion
+        # says it compares; an unrelated one discharges nothing.
+        computed.update(item.claim_id for item in calculation.inputs)
+    outstanding = [cid for cid in numeric if cid not in computed]
+    if len(outstanding) < 2:
+        return None
+    return ", ".join(sorted(outstanding))
 
 
 def review_remaining(state: state_module.IndustryState) -> int:
@@ -1478,6 +1497,9 @@ def _tasks_from_plan(
     evidence = state.get("evidence", {})
     log: list[str] = []
     key_to_id: dict[str, str] = {}
+    # Every task id one plan key became, so a dependant of a decomposed
+    # key waits for all of them.
+    parts_of: dict[str, list[str]] = {}
     accepted: list[tuple[str, roles.TaskSpec]] = []
     next_number = schedule.task_number(merge.next_id("T", tasks))
     for spec in plan.tasks:
@@ -1542,18 +1564,25 @@ def _tasks_from_plan(
                 }
             )
             key = spec.key if index == 0 else f"{spec.key}#{index + 1}"
-            key_to_id[key] = f"T{next_number}"
+            task_id = f"T{next_number}"
+            key_to_id[key] = task_id
+            parts_of.setdefault(spec.key, []).append(task_id)
             next_number += 1
             accepted.append((key, part))
     for key, spec in accepted:
         task_id = key_to_id[key]
         depends = []
         for dep in spec.depends_on:
-            resolved = key_to_id.get(dep, dep if dep in tasks else None)
-            if resolved is None:
+            # Every part of a decomposed prerequisite, not just its
+            # first: depending on the first part let company work start
+            # with two thirds of its evidence missing, and survive a
+            # failed part (U1-08).
+            resolved = parts_of.get(dep) or ([dep] if dep in tasks else [])
+            if not resolved:
                 log.append(f"{task_id}: dependency {dep!r} unknown; dropped")
-            elif resolved != task_id:
-                depends.append(resolved)
+            for one in resolved:
+                if one != task_id and one not in depends:
+                    depends.append(one)
         references = [r for r in spec.references if r in evidence]
         issue_id = spec.issue_id if spec.issue_id in issues else None
         tasks[task_id] = records.Task(
@@ -1576,6 +1605,23 @@ def _tasks_from_plan(
             "beyond the budget were not created"
         )
     return tasks, issues, log
+
+
+def _same_company(participant: str, target: str) -> str | bool:
+    """Whether a task target names this participant.
+
+    Exact after normalisation, or one being a prefix of the other, so a
+    task targeting 清溢 covers the participant 清溢光电 -- an alias gap
+    that otherwise raised a material obligation for a company that was
+    in fact assigned (U1-09). It is deliberately narrow: a prefix is
+    the shape a Chinese company short name actually takes, and anything
+    looser would silently cover a genuinely different company.
+    """
+    left = "".join(participant.split()).casefold()
+    right = "".join(target.split()).casefold()
+    if not left or not right:
+        return False
+    return left == right or left.startswith(right) or right.startswith(left)
 
 
 def _scoped(objective: str, chunk: list[str], index: int, chunks: list) -> str:
@@ -1632,25 +1678,35 @@ def company_obligation(
     # Every company a company task actually owns, whatever its status:
     # a role-bearing task is not an assignment for companies it never
     # named, and a failed task leaves its own targets unmet (U1-09).
-    assigned: set[str] = set()
+    assigned: list[str] = []
+    untargeted = 0
     for task in tasks.values():
         if task.role != "company" or task.status in ("failed", "skipped"):
             continue
-        assigned.update(name.casefold() for name in task.targets)
-        if not task.targets:
-            # An untargeted company task is a general assignment; it
-            # covers the comparison as a whole.
-            return issues, []
+        if task.targets:
+            assigned.extend(task.targets)
+        else:
+            # An untargeted company task is doing *some* company work,
+            # but it is not an assignment for any named company and may
+            # not stand in for one. Treating it as universal coverage
+            # let one "research A only" task suppress B's obligation
+            # entirely (U1-09).
+            untargeted += 1
     unassigned = [
         part.name
         for part in industry_map.participants
-        if part.name.casefold() not in assigned
+        if not any(_same_company(part.name, name) for name in assigned)
     ]
     if not unassigned:
         return issues, []
     named = ", ".join(sorted(unassigned)[:6])
     if len(unassigned) > 6:
         named += f", and {len(unassigned) - 6} more"
+    if untargeted:
+        reason = (
+            f"{reason} {untargeted} company task(s) name no target, so "
+            "they assign nobody."
+        )
     key = "q7:no-company-task"
     updated = dict(issues)
     for issue in updated.values():
@@ -1720,6 +1776,18 @@ def _close_followup_issues(
     return updated, log
 
 
+def _has_original_context(
+    claim: records.Claim, state: state_module.IndustryState
+) -> bool:
+    """Whether the claim now rests on more than a search snippet."""
+    evidence = state.get("evidence", {})
+    return any(
+        evidence[eid].kind in ("passage", "table")
+        for eid in claim.evidence_ids
+        if eid in evidence
+    )
+
+
 def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
     """Close issues the registry has answered; pure.
 
@@ -1767,6 +1835,33 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
                     if target not in cited
                     else f"claim reviewed {claim.review}"
                 )
+            elif issue.category == "missing_evidence":
+                # The obligation was "the original context has not been
+                # read". It is met when the claim rests on something
+                # better than a snippet and a verifier has since
+                # accepted it -- without this branch a successful repair
+                # could never clear the blocker it was sent to clear
+                # (U1-07).
+                if target not in cited:
+                    resolved = "claim no longer cited"
+                elif claim.is_reviewed() and _has_original_context(
+                    claim, state
+                ):
+                    resolved = (
+                        f"original context read; claim reviewed "
+                        f"{claim.review}"
+                    )
+        elif target in state.get("findings", {}):
+            finding = state["findings"][target]
+            if finding.status != "current":
+                resolved = "the finding was withdrawn"
+            elif issue.category == "weak_inference" and (
+                uncomputed_comparison(
+                    finding, claims, state.get("calculations", {})
+                )
+                is None
+            ):
+                resolved = "the comparison was calculated"
         elif issue.draft_version is not None:
             resolved = None  # closed only by a clean later final review
         if resolved:
@@ -2192,6 +2287,96 @@ def build_graph(
     def after_assess(state: state_module.IndustryState) -> str:
         if state.get("phase") == "coverage_followup":
             return "follow_up"
+        return "audit"
+
+    async def audit_findings(
+        state: state_module.IndustryState,
+    ) -> dict[str, Any]:
+        """Judge the reasoning before prose is written (plan D-U11).
+
+        The claims were reviewed for what they state. Whether the
+        conclusions drawn from them follow is a different question, and
+        run 7 asked it only after a multi-minute draft had already
+        turned a weak inference into prose. A failed verdict here opens
+        a material issue against the finding, which the router sends to
+        remediation instead of to the Editor.
+        """
+
+        async def call(max_turns: int, deadline: float):
+            return await api.audit_findings(state, max_turns, deadline)
+
+        outcome, update = await call_with_reservation(
+            state, "audit_findings", call
+        )
+        update.setdefault("route_log", [])
+        if outcome is None:
+            update["route_log"].append(
+                "audit_findings: no audit; the analysis is unjudged"
+            )
+            return update
+        findings = dict(state.get("findings", {}))
+        issues = dict(state.get("issues", {}))
+        failed = 0
+        for judgement in outcome.judgements:
+            finding = findings.get(judgement.finding_id)
+            if finding is None:
+                update["route_log"].append(
+                    f"audit_findings: {judgement.finding_id} is not a "
+                    "finding of this run; verdict dropped"
+                )
+                continue
+            findings[finding.id] = finding.model_copy(
+                update={
+                    "inference_review": judgement.verdict,
+                    "inference_reason": judgement.reason,
+                    "inference_version": finding.version,
+                }
+            )
+            if judgement.verdict not in records.FAILED_INFERENCE:
+                continue
+            failed += 1
+            issues, issue = merge.open_issue(
+                issues,
+                "weak_inference",
+                "material" if finding.material else "minor",
+                finding.id,
+                "analyze",
+                f"[{finding.id}] {judgement.verdict}: {judgement.reason}",
+                next_step=judgement.observable_test or None,
+            )
+            update["route_log"].append(
+                f"{issue.id}: {finding.id} {judgement.verdict}"
+            )
+        update["findings"] = findings
+        update["issues"] = issues
+        judged = len(outcome.judgements)
+        update["route_log"].append(
+            f"audit_findings: {judged} finding(s) judged, {failed} failed "
+            "before any prose was written"
+        )
+        return update
+
+    def after_audit(state: state_module.IndustryState) -> str:
+        """Remediate a failed inference; otherwise draft.
+
+        A finding whose reasoning did not stand up is worth one bounded
+        correction over the same evidence -- that is cheaper and better
+        than writing it out and unpicking it afterwards -- but only when
+        the budget can still pay for the draft and its review.
+        """
+        failed = [
+            f
+            for f in state.get("findings", {}).values()
+            if f.status == "current"
+            and f.inference_review in records.FAILED_INFERENCE
+        ]
+        if (
+            failed
+            and state.get("analysis_rounds", 0) <= 1
+            and budget.admit_single_call(state, limits, "analyze") > 0
+            and budget.admit_pair(state, limits) > 0
+        ):
+            return "reanalyze"
         return "write"
 
     async def analyze(state: state_module.IndustryState) -> dict[str, Any]:
@@ -2251,9 +2436,6 @@ def build_graph(
                         for item in result.inputs
                         if item.claim_id in claims
                     )
-                    fits = merge.admit_material(
-                        claims, limits, "q4", state.get("relationships", {})
-                    )
                     claims[claim_id] = records.Claim(
                         id=claim_id,
                         kind="derived",
@@ -2262,10 +2444,7 @@ def build_graph(
                         questions=[4],
                         question_mapping="declared",
                         review_disposition=(
-                            "pending" if not material or fits else "deferred"
-                        ),
-                        review_deferred_reason=(
-                            None if not material or fits else "q4 at capacity"
+                            "admitted" if material else "unnecessary"
                         ),
                         origin=calc_id,
                         **calc.derived_fields(result, claims),
@@ -2323,6 +2502,7 @@ def build_graph(
                 material=spec.material,
                 questions=spec.questions,
                 entity=spec.entity,
+                compares=[c for c in spec.compares if c in claims],
             )
         issues = dict(state.get("issues", {}))
         for fid, finding in findings.items():
@@ -2341,8 +2521,8 @@ def build_graph(
                 "material",
                 fid,
                 "analyze",
-                f"[{fid}] the conclusion compares {gap} without a "
-                "calculation behind it",
+                f"[{fid}] the conclusion compares {gap} numerically "
+                "with no calculation behind it",
                 next_step=(
                     "Request the calculation, or state the comparison "
                     "qualitatively."
@@ -2427,6 +2607,7 @@ def build_graph(
             limits,
             state.get("brief"),
             applied["relationships"],
+            state.get("calculations", {}),
         )
         applied["claims"] = promoted
         update.setdefault("route_log", []).extend(
@@ -2957,6 +3138,7 @@ def build_graph(
     graph.add_node("prepare_tasks", prepare_tasks)
     graph.add_node("assess_coverage", assess_coverage)
     graph.add_node("analyze", analyze)
+    graph.add_node("audit_findings", audit_findings)
     graph.add_node("review", review)
     graph.add_node("remediate", remediate)
     graph.add_node("write", write)
@@ -2992,7 +3174,15 @@ def build_graph(
     graph.add_conditional_edges(
         "assess_coverage",
         after_assess,
-        {"follow_up": "reserve_prepare_tasks", "write": "reserve_write"},
+        {
+            "follow_up": "reserve_prepare_tasks",
+            "audit": "reserve_audit_findings",
+        },
+    )
+    graph.add_conditional_edges(
+        "audit_findings",
+        after_audit,
+        {"reanalyze": "reserve_analyze", "write": "reserve_write"},
     )
     graph.add_conditional_edges(
         "remediate",

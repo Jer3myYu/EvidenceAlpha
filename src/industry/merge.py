@@ -1918,6 +1918,7 @@ def admit_material(
     limits: records.Limits,
     partition: str,
     relationships: dict[str, records.Relationship] | None = None,
+    calculations: dict[str, records.Calculation] | None = None,
 ) -> bool:
     """The one authority admitting a material claim to a partition.
 
@@ -1937,7 +1938,7 @@ def admit_material(
     (``Claim.partition``), so a full map never starves an economics
     question and a repeat that adds questions never moves a claim.
     """
-    used = outstanding_in(claims, partition, relationships or {})
+    used = outstanding_in(claims, partition, relationships or {}, calculations)
     return used < partition_cap(partition, limits)
 
 
@@ -1945,21 +1946,44 @@ def outstanding_in(
     claims: dict[str, records.Claim],
     partition: str,
     relationships: dict[str, records.Relationship],
+    calculations: dict[str, records.Calculation] | None = None,
 ) -> int:
     """Material claims in ``partition`` the review still owes a verdict."""
     return sum(
         1
         for c in claims.values()
-        if c.material
-        and c.review_disposition in ("pending", "admitted")
-        and material_partition(c) == partition
-        and claim_needs_attention(c, relationships)
+        if material_partition(c) == partition
+        and settleable(c, claims, relationships, calculations)
+    )
+
+
+def settleable(
+    claim: records.Claim,
+    claims: dict[str, records.Claim],
+    relationships: dict[str, records.Relationship],
+    calculations: dict[str, records.Calculation] | None = None,
+) -> bool:
+    """Whether a verifier verdict could actually settle this claim.
+
+    Producer-aware: a derived claim whose calculation errored or whose
+    inputs moved is not settleable by review, only by recomputation.
+    Promotion, selection and the reserve all ask this one question, or
+    they disagree -- promotion used to admit such a claim into a
+    partition slot that ``pending_review`` would then refuse to fill
+    (U1-01).
+    """
+    return (
+        claim.material
+        and claim.review_disposition in ("pending", "admitted")
+        and claim_needs_attention(claim, relationships)
+        and producer_chain_intact(claim, claims, calculations or {})
     )
 
 
 def outstanding_review(
     claims: dict[str, records.Claim],
     relationships: dict[str, records.Relationship],
+    calculations: dict[str, records.Calculation] | None = None,
 ) -> list[records.Claim]:
     """The one definition of selectable review work (plan D-U2).
 
@@ -1972,9 +1996,7 @@ def outstanding_review(
     return [
         c
         for c in claims.values()
-        if c.material
-        and c.review_disposition in ("pending", "admitted")
-        and claim_needs_attention(c, relationships)
+        if settleable(c, claims, relationships, calculations)
     ]
 
 
@@ -1983,6 +2005,7 @@ def reconsider_deferred(
     limits: records.Limits,
     brief: records.Brief | None = None,
     relationships: dict[str, records.Relationship] | None = None,
+    calculations: dict[str, records.Calculation] | None = None,
 ) -> tuple[dict[str, records.Claim], list[str]]:
     """Promote deferred claims into slots that have since freed.
 
@@ -1995,7 +2018,10 @@ def reconsider_deferred(
     deferred = [
         c
         for c in claims.values()
-        if c.material and c.review_disposition == "deferred"
+        if c.material
+        and c.review_disposition == "deferred"
+        and claim_needs_attention(c, relationships)
+        and producer_chain_intact(c, claims, calculations or {})
     ]
     if not deferred:
         return claims, []
@@ -2011,7 +2037,9 @@ def reconsider_deferred(
     log: list[str] = []
     for claim in deferred:
         partition = material_partition(claim)
-        if not admit_material(updated, limits, partition, relationships):
+        if not admit_material(
+            updated, limits, partition, relationships, calculations
+        ):
             continue
         updated[claim.id] = claim.model_copy(
             update={

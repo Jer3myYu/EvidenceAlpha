@@ -558,7 +558,11 @@ def assess_evidence(
             if _label(ref) in kind_of
         }
         if kinds and kinds <= {"snippet"}:
-            unmet.append(finding.statement[:120])
+            # The whole statement: merge matches it against the claim
+            # this finding became, and a truncation matched nothing, so
+            # the obligation landed on the task instead of the claim
+            # (U1-07).
+            unmet.append(finding.statement)
     if not unmet:
         return {"evidence_acceptance": "accepted", "unmet": []}
     acceptance = "insufficient" if len(unmet) == len(findings) else "partial"

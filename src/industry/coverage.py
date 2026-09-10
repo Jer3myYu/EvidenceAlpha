@@ -674,12 +674,6 @@ def report_status(
     by_question = {c.question: c for c in coverage}
     if sorted(by_question) != sorted(records.REQUIRED_QUESTIONS):
         return "incomplete"
-    if report.deferred_review(state):
-        # A material claim the review never reached is an unmet
-        # obligation, not an absence. Before D-U2 it was written
-        # non-material and vanished; now it is visible, and a report
-        # that leaves one outstanding is not complete (U1-01).
-        return "complete_with_limitations"
     claims = state.get("claims", {})
     findings = state.get("findings", {})
     issues = [
@@ -689,7 +683,14 @@ def report_status(
         and i.severity == "material"
     ]
     if all(c.status == "covered" for c in coverage) and not issues:
-        return "complete" if verified else "complete_with_limitations"
+        # A material claim the review never reached is an unmet
+        # obligation, so it caps `complete`. It is only ever a
+        # downgrade: applying it before the checks below let one
+        # deferred claim turn an uncovered required question into
+        # `complete_with_limitations` (U1-N01).
+        if verified and not report.deferred_review(state):
+            return "complete"
+        return "complete_with_limitations"
     # An open unsupported/contradiction issue the renderer cannot
     # actually remove -- no exact unit, a unit no longer in the draft,
     # or a row whose removal would empty its table -- would leave the

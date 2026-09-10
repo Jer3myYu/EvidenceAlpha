@@ -502,3 +502,48 @@ def test_a_legacy_brief_keeps_the_schema_11_required_set():
     assert legacy.required_ids == []
     state = {"brief": legacy, "claims": {}, "findings": {}, "issues": {}}
     assert coverage.report_status(rows, state) == "complete_with_limitations"
+
+
+def test_u1_n01_the_deferral_cap_downgrades_but_never_rescues():
+    """A status cap may lower `complete`; it must preserve `incomplete`."""
+    base = {
+        "brief": records.Brief(industry="x"),
+        "claims": {},
+        "findings": {},
+        "issues": {},
+    }
+    deferred = {
+        "C1": records.Claim(
+            id="C1",
+            statement="a",
+            kind="fact",
+            material=True,
+            partition="q4",
+            review_disposition="deferred",
+            review_deferred_reason="q4 at capacity",
+        )
+    }
+    uncovered = [
+        records.Coverage(question=q, status="uncovered", note="n")
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    covered = [
+        records.Coverage(question=q, status="covered", note="n")
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    assert (
+        coverage.report_status(uncovered, base, verified=True) == "incomplete"
+    )
+    assert (
+        coverage.report_status(
+            uncovered, {**base, "claims": deferred}, verified=True
+        )
+        == "incomplete"
+    )
+    assert coverage.report_status(covered, base, verified=True) == "complete"
+    assert (
+        coverage.report_status(
+            covered, {**base, "claims": deferred}, verified=True
+        )
+        == "complete_with_limitations"
+    )

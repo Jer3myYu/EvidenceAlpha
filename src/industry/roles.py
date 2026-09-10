@@ -175,6 +175,11 @@ class FindingSpec(records.Record):
     material: bool = False
     questions: list[int] = pydantic.Field(default_factory=list)
     entity: str | None = None
+    # The claims this conclusion compares *numerically*, if any. Naming
+    # them is what makes the arithmetic obligation checkable, and
+    # leaving the list empty is the honest answer for a conclusion that
+    # draws no quantitative comparison (plan D-U10, U1-12).
+    compares: list[str] = pydantic.Field(default_factory=list)
 
 
 class IssueSpec(records.Record):
@@ -321,6 +326,7 @@ EXPECTED = {
     "review": "The structured claim review.",
     "write": "The structured draft.",
     "final_review": "The structured draft review.",
+    "audit_findings": "The structured audit of the analysis.",
 }
 ROLE_FOR = {
     "scope": crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, BriefOutput),
@@ -334,6 +340,9 @@ ROLE_FOR = {
     "final_review": crew.Role(
         VERIFIER.name, VERIFIER.goal, VERIFIER.backstory, records.DraftReview
     ),
+    "audit_findings": crew.Role(
+        VERIFIER.name, VERIFIER.goal, VERIFIER.backstory, records.FindingAudit
+    ),
 }
 ROLE_KEY = {
     "scope": "lead",
@@ -343,6 +352,7 @@ ROLE_KEY = {
     "review": "verifier",
     "write": "editor",
     "final_review": "verifier",
+    "audit_findings": "verifier",
 }
 
 
@@ -1003,7 +1013,13 @@ def analysis_description(
             "the same claim twice. Request missing "
             "evidence as issues with category missing_evidence, the "
             "target (a question like Q4 or a claim id), and a concrete "
-            "next step. Do not restate claims as findings.",
+            "next step. Do not restate claims as findings. Where a "
+            "conclusion compares numbers across companies, periods, or "
+            "segments, list those claim ids in `compares` and request "
+            "the calculation: a comparison stated without the "
+            "arithmetic behind it is an unmet obligation. Leave "
+            "`compares` empty for a conclusion that draws no "
+            "quantitative comparison.",
         ]
     )
 
@@ -1147,6 +1163,77 @@ def frozen_appendix(state: state_module.IndustryState) -> list[str]:
     if subject is not None:
         return list(subject.appendix)
     return report.appendices(state, state.get("coverage") or [])
+
+
+async def audit_findings(
+    state: state_module.IndustryState,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+    admission: Any = None,
+) -> records.FindingAudit:
+    """The Verifier's judgement of the analysis, before any prose."""
+    return await crew.run_task(
+        ROLE_FOR["audit_findings"],
+        audit_description(state),
+        EXPECTED["audit_findings"],
+        llm or llm_for("verifier", max_turns),
+        deadline,
+        admission=admission,
+    )
+
+
+def audit_description(state: state_module.IndustryState) -> str:
+    """The Verifier's pre-draft audit task text (pure).
+
+    The claims were judged for what they state. This asks the separate
+    question -- whether the conclusions drawn from them follow -- and it
+    asks it before a multi-minute draft turns a weak inference into
+    prose somebody then has to unpick (plan D-U11).
+    """
+    findings = [
+        f for f in state.get("findings", {}).values() if f.status == "current"
+    ]
+    lines = [render_brief(state["brief"])]
+    lines.append(
+        render_claims(
+            state,
+            reviewed_claim_ids(state),
+            True,
+            MAX_CONTEXT_CHARS["verifier"],
+        )
+    )
+    lines.append(comparison.render(comparison.project(state)))
+    lines.append(render_calculations(state))
+    body = ["Principal findings to judge:"]
+    for finding in findings:
+        cites = ", ".join(finding.claim_ids) or "nothing"
+        body.append(
+            f"[{finding.id}] conclusion: {finding.conclusion}\n"
+            f"  cites: {cites}\n"
+            f"  mechanism: {finding.mechanism}\n"
+            f"  implication: {finding.implication}\n"
+            f"  assumptions and uncertainty: {finding.uncertainty}\n"
+            f"  counterargument: {finding.counterargument}\n"
+            f"  observable test: {finding.monitor}"
+        )
+    lines.append("\n".join(body) if findings else "No findings yet.")
+    lines.append(
+        "Judge each finding's reasoning, not its wording, and give one "
+        "verdict per finding id. A conditional inference does not need "
+        "to appear verbatim in a source: if the premises are supported, "
+        "the mechanism is stated, and the conclusion is held with "
+        "matching confidence, it is supported. Use qualified when it "
+        "holds only under a restriction the finding does not state -- "
+        "say which. Use unsupported_certainty when it is asserted more "
+        "firmly than its premises allow; contradicted_premise when a "
+        "cited claim is qualified or contradicted in a way that "
+        "undercuts it; scope_change when the conclusion silently widens "
+        "the entity, period, geography, or product scope of what it "
+        "cites. Where the finding's own observable test would not "
+        "settle it, give one that would."
+    )
+    return "\n\n".join(lines)
 
 
 def final_review_description(state: state_module.IndustryState) -> str:

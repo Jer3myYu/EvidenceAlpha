@@ -167,7 +167,11 @@ def review_batches(
     """
     relationships = state.get("relationships", {})
     unreviewed = len(
-        merge.outstanding_review(state.get("claims", {}), relationships)
+        merge.outstanding_review(
+            state.get("claims", {}),
+            relationships,
+            state.get("calculations", {}),
+        )
     )
     return -(-unreviewed // limits.review_batch)
 
