@@ -528,7 +528,11 @@ def test_happy_path_delivers_a_report(tmp_path):
 
 def test_worker_crash_keeps_siblings_and_resumes_with_a_new_attempt(tmp_path):
     saver = MemorySaver()
-    runtime, api, worker, compiled = make(tmp_path, saver=saver)
+    # Wall clock raised so the handoff can plan the two siblings this
+    # case needs; it is about crash recovery, not about the budget.
+    runtime, api, worker, compiled = make(
+        tmp_path, records.Limits(wall_clock_s=9000.0), saver=saver
+    )
     api.plans = [
         roles.TaskPlan(
             tasks=[
@@ -749,7 +753,11 @@ def test_resume_updates_apply_admission_and_reserve_only_what_fits():
 
 
 def test_forward_dependencies_and_duplicate_keys_in_a_plan(tmp_path):
-    runtime, api, worker, compiled = make(tmp_path)
+    # Wall clock raised so the handoff has room for two tasks: this case
+    # is about dependency resolution, not about what the budget affords.
+    runtime, api, worker, compiled = make(
+        tmp_path, records.Limits(wall_clock_s=9000.0)
+    )
     api.plans = [
         # The first allocation admits the map owner; forward
         # dependencies and duplicate keys are a planning concern of the
@@ -2697,7 +2705,10 @@ def test_the_completed_review_reaches_the_repair_decision():
     # between admitting a repair and refusing one on all four saved
     # runs (plan revision 39 §4.46.0).
     limits = records.Limits()
-    state = charged(repair_state(pending=1), 2600)
+    # 2,420 s charged rather than 2,600: the pre-draft audit reserves
+    # 180 s of the pipeline, and this case is about the stale ledger,
+    # not about where the boundary sits.
+    state = charged(repair_state(pending=1), 2420)
     running = records.Attempt(
         id="review.1",
         task_id="review",
@@ -3537,3 +3548,271 @@ def test_u1_07_a_repaired_evidence_obligation_can_close():
     assert (
         closed.status == "resolved" and "original context" in closed.resolution
     )
+
+
+def test_u1_n02_arithmetic_absence_never_clears_an_inference_verdict():
+    """The two obligations are both weak_inference on a finding and are
+    not the same problem (U1-N02)."""
+    finding = records.Finding(
+        id="F1",
+        conclusion="the barrier is insurmountable",
+        claim_ids=[],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        inference_review="unsupported_certainty",
+        inference_reason="asserted more firmly than the premises allow",
+        inference_version=1,
+        version=1,
+    )
+    issues = {}
+    issues, audit_issue = merge.open_issue(
+        issues,
+        "weak_inference",
+        "material",
+        "F1",
+        "analyze",
+        "the reasoning does not hold",
+        kind=graph_module.INFERENCE_ISSUE,
+    )
+    issues, arithmetic = merge.open_issue(
+        issues,
+        "weak_inference",
+        "material",
+        "F1",
+        "analyze",
+        "the comparison has no calculation",
+        kind=graph_module.ARITHMETIC_ISSUE,
+    )
+    # Two obligations, not one folded record.
+    assert audit_issue.id != arithmetic.id
+    assert audit_issue.key != arithmetic.key
+    state = {
+        "findings": {"F1": finding},
+        "issues": issues,
+        "claims": {},
+        "calculations": {},
+        "coverage": [],
+    }
+    after = graph_module.resolve_issues(state)["issues"]
+    # No arithmetic gap exists, so the arithmetic obligation closes and
+    # the audit's verdict stands.
+    assert after[arithmetic.id].status == "resolved"
+    assert after[audit_issue.id].status == "open"
+    # It closes only when the reasoning is re-audited on the current
+    # version and accepted.
+    repaired = finding.model_copy(
+        update={
+            "version": 2,
+            "inference_review": "supported",
+            "inference_version": 2,
+        }
+    )
+    reaudited = graph_module.resolve_issues(
+        {**state, "findings": {"F1": repaired}}
+    )["issues"]
+    assert reaudited[audit_issue.id].status == "resolved"
+
+
+def test_u1_09_prefix_matching_never_covers_a_different_company():
+    """丰田通商 must not discharge 丰田's obligation (U1-09)."""
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="mid",
+                stage="midstream",
+                description="d",
+                claim_id="C1",
+            )
+        ],
+        participants=[
+            records.Participant(
+                id="P1",
+                name="丰田",
+                segment_id="G1",
+                role="customer",
+                selection_rationale="r",
+                claim_id="C2",
+            )
+        ],
+    )
+    state = {
+        "brief": records.Brief(industry="x", required_ids=[7], priority=[7]),
+        "map": industry_map,
+    }
+    tasks = {
+        "T1": records.Task(
+            id="T1",
+            kind="research",
+            role="company",
+            objective="o",
+            targets=["丰田通商"],
+        )
+    }
+    issues, log = graph_module.company_obligation(state, tasks, {}, "r")
+    assert log and "丰田" in next(iter(issues.values())).description
+    # An alias is resolved once, at task creation, against the map.
+    resolved, notes = graph_module.canonical_targets(["丰田"], industry_map)
+    assert resolved == ["丰田"] and notes == []
+    longer = records.IndustryMap(
+        segments=industry_map.segments,
+        participants=[
+            industry_map.participants[0].model_copy(update={"name": "清溢光电"})
+        ],
+    )
+    resolved, notes = graph_module.canonical_targets(["清溢"], longer)
+    assert resolved == ["清溢光电"] and notes
+
+
+def test_u1_12_an_unrelated_calculation_discharges_nothing():
+    claims = {
+        cid: records.Claim(
+            id=cid,
+            statement=cid,
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(value),
+        )
+        for cid, value in (("C1", 52.0), ("C2", 40.0), ("C9", 7.0))
+    }
+    finding = records.Finding(
+        id="F1",
+        conclusion="A is twice B",
+        claim_ids=["C1", "C2", "C3"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        compares=["C1", "C2"],
+    )
+    # A calculation over C1 and C9 touches one compared operand only.
+    calculation = records.Calculation(
+        id="K1",
+        kind="ratio",
+        label="A over an unrelated figure",
+        formula="C1 / C9",
+        inputs=[
+            records.CalcInput(
+                claim_id=cid, claim_version=1, quantity=_quantity(1.0)
+            )
+            for cid in ("C1", "C9")
+        ],
+        status="ok",
+        result=7.4,
+    )
+    claims["C3"] = records.Claim(
+        id="C3",
+        statement="ratio",
+        kind="derived",
+        calculation_id="K1",
+        calculation_version=1,
+        evidence_ids=["E1"],
+    )
+    assert (
+        graph_module.uncomputed_comparison(finding, claims, {"K1": calculation})
+        == "C1, C2"
+    )
+
+
+def test_u1_12_an_explicit_comparison_is_caught_without_a_declaration():
+    """A declaration alone cannot carry a delivery obligation (U1-12)."""
+    claims = {
+        cid: records.Claim(
+            id=cid,
+            statement=cid,
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(value),
+        )
+        for cid, value in (("C1", 52.0), ("C2", 40.0))
+    }
+    base = dict(
+        id="F1",
+        claim_ids=["C1", "C2"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+    )
+    stated = records.Finding(conclusion="A 的营收是 B 的两倍", **base)
+    assert graph_module.uncomputed_comparison(stated, claims, {}) == "C1, C2"
+    english = records.Finding(conclusion="A earns twice what B does", **base)
+    assert graph_module.uncomputed_comparison(english, claims, {}) == "C1, C2"
+    quiet = records.Finding(
+        conclusion="Both suppliers sell commercially; watch retention.",
+        **base,
+    )
+    assert graph_module.uncomputed_comparison(quiet, claims, {}) is None
+
+
+def test_u1_08_a_partly_admitted_prerequisite_is_not_met():
+    limits = records.Limits(tools_per_attempt=6, tools_per_target=3)
+    plan = roles.TaskPlan(
+        tasks=[
+            roles.TaskSpec(
+                key="synth",
+                role="industry",
+                objective="Compare them",
+                depends_on=["companies"],
+            ),
+            roles.TaskSpec(
+                key="companies",
+                role="company",
+                objective="Profile A, B, C, D",
+                targets=["A", "B", "C", "D"],
+            ),
+        ]
+    )
+    tasks, issues, log = graph_module._tasks_from_plan(
+        {
+            "tasks": {},
+            "issues": {},
+            "evidence": {},
+            "map": records.IndustryMap(),
+        },
+        plan,
+        2,
+        "research",
+        limits,
+    )
+    dependant = next(t for t in tasks.values() if t.objective == "Compare them")
+    assert any("has no slot" in line for line in log)
+    # It says the prerequisite is incomplete, in the task and as an issue.
+    assert "prerequisite" in dependant.scope
+    unmet = [i for i in issues.values() if i.target == dependant.id]
+    assert unmet and unmet[0].severity == "material"
+    assert "only partly admitted" in unmet[0].description
+
+
+def test_u1_n03_an_unjudged_finding_keeps_its_own_limitation():
+    """Unjudged reasoning is not audited reasoning (U1-N03)."""
+    finding = records.Finding(
+        id="F1",
+        conclusion="c",
+        claim_ids=[],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+    )
+    assert finding.inference_review == "unreviewed"
+    note = roles._inference_note(finding)
+    assert "not audited" in note
+    qualified = finding.model_copy(
+        update={
+            "inference_review": "qualified",
+            "inference_reason": "only while export licences remain available",
+        }
+    )
+    # The restriction reaches the writer, not just the audit record.
+    assert "export licences" in roles._inference_note(qualified)
+    state = {"findings": {"F1": qualified}, "claims": {}}
+    assert "export licences" in roles.render_findings(state)

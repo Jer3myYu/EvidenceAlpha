@@ -38,11 +38,25 @@ class Ledger:
       turns: Model turns (observed, or reserved while unknown).
       tool_calls: Admitted tool executions (observed or reserved).
       task_executions: Attempts created.
-      wall_clock_s: Sum of completed durations and reserved seconds.
+      wall_clock_s: **Charged** seconds: observed where an execution
+        reported, reserved where it did not. This is what admission
+        spends against ``Limits.wall_clock_s`` and it is neither elapsed
+        time nor a sum of observed durations -- an uninvoked held
+        final-review reservation contributes its full allowance here
+        with no execution behind it (plan D-U15).
+      observed_session_s: The sum of durations executions actually
+        reported. Accumulated session time, not elapsed launch time:
+        with two concurrent workers it exceeds the wall clock, and with
+        held reservations it is smaller than ``wall_clock_s``.
       unknown_attempts: Attempts charged their reservation.
       cost_usd: Observed cost where the SDK exposed it, else ``None``.
-      input_tokens: Observed input tokens.
+      cost_complete: Whether every counted execution exposed a cost. A
+        missing cost is unknown, and ``cost_usd`` under a false flag is
+        a subtotal rather than a total.
+      input_tokens: Observed ordinary input tokens; not context volume.
       output_tokens: Observed output tokens.
+      cache_creation_input_tokens: Observed cache writes.
+      cache_read_input_tokens: Observed cache reads.
     """
 
     turns: int
@@ -53,6 +67,10 @@ class Ledger:
     cost_usd: float | None
     input_tokens: int
     output_tokens: int
+    observed_session_s: float = 0.0
+    cost_complete: bool = True
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -96,20 +114,33 @@ def attempt_charge(attempt: records.Attempt) -> records.Usage:
 
 
 def ledger(state: state_module.IndustryState) -> Ledger:
-    """Sum every attempt (once) and every single-call usage event."""
+    """Sum every attempt (once) and every single-call usage event.
+
+    Two different measures come out of the same walk: what the run is
+    *charged* (``wall_clock_s``, which admission spends) and what it was
+    *observed* to consume (``observed_session_s``). Conflating them is
+    what let 5,038 elapsed seconds, 5,014.607 accumulated session
+    seconds and a field named ``wall_clock_s`` all read as one number.
+    """
     total = records.Usage()
     unknown = 0
+    observed_seconds = 0.0
+    costed = counted = 0
     attempts = state.get("attempts", {})
-    for attempt in attempts.values():
-        charge = attempt_charge(attempt)
+    executions = list(attempts.values()) + list(
+        state.get("single_calls", {}).values()
+    )
+    for execution in executions:
+        charge = attempt_charge(execution)
         if charge.unknown:
             unknown += 1
         total = total + charge
-    for call in state.get("single_calls", {}).values():
-        charge = attempt_charge(call)
-        if charge.unknown:
-            unknown += 1
-        total = total + charge
+        observed = execution.observed
+        if observed is not None and not observed.unknown:
+            observed_seconds += observed.duration_s
+            counted += 1
+            if observed.cost_usd is not None:
+                costed += 1
     return Ledger(
         turns=total.turns,
         tool_calls=total.tool_calls,
@@ -119,6 +150,13 @@ def ledger(state: state_module.IndustryState) -> Ledger:
         cost_usd=total.cost_usd,
         input_tokens=total.input_tokens,
         output_tokens=total.output_tokens,
+        observed_session_s=round(observed_seconds, 3),
+        # A run with an unobserved execution has no complete cost, and
+        # a subtotal presented as a total is how "50% cheaper" gets
+        # claimed from an incomplete measurement.
+        cost_complete=unknown == 0 and costed == counted,
+        cache_creation_input_tokens=total.cache_creation_input_tokens,
+        cache_read_input_tokens=total.cache_read_input_tokens,
     )
 
 
@@ -147,12 +185,22 @@ def reservation_for(limits: records.Limits) -> records.Reservation:
 # The intermediate single calls that must still run after each stage,
 # in pipeline order; ``write`` and ``final_review`` live in the reserves.
 DOWNSTREAM_CALLS = {
-    "scope": ("prepare_tasks", "analyze", "assess_coverage"),
-    "prepare_tasks": ("analyze", "assess_coverage"),
-    "research": ("analyze", "assess_coverage"),
-    "review": ("analyze", "assess_coverage"),
-    "analyze": ("assess_coverage",),
-    "assess_coverage": (),
+    "scope": (
+        "prepare_tasks",
+        "analyze",
+        "assess_coverage",
+        "audit_findings",
+    ),
+    "prepare_tasks": ("analyze", "assess_coverage", "audit_findings"),
+    "research": ("analyze", "assess_coverage", "audit_findings"),
+    "review": ("analyze", "assess_coverage", "audit_findings"),
+    "analyze": ("assess_coverage", "audit_findings"),
+    # The pre-draft audit is a stage every route must still reach, so
+    # every earlier stage keeps room for it. Without this, assessment
+    # could take the last discretionary call and the analysis would go
+    # to the Editor unjudged (U1-N03).
+    "assess_coverage": ("audit_findings",),
+    "audit_findings": (),
 }
 
 
@@ -264,6 +312,19 @@ def repair_shortfall(
     return "priority"
 
 
+def call_timeout(node: str, limits: records.Limits) -> float:
+    """What one single call of ``node`` is allowed, and reserved.
+
+    Every node takes ``single_call_timeout_s`` except the pre-draft
+    audit, which reads a compact outline rather than the registry.
+    """
+    return (
+        limits.audit_timeout_s
+        if node == "audit_findings"
+        else limits.single_call_timeout_s
+    )
+
+
 def pipeline_reserve(
     state: state_module.IndustryState, limits: records.Limits, stage: str
 ) -> tuple[float, int]:
@@ -276,16 +337,16 @@ def pipeline_reserve(
     review batches and then had nothing left for analysis, which is
     what this reservation prevents.
     """
-    calls = len(DOWNSTREAM_CALLS.get(stage, ()))
+    downstream = DOWNSTREAM_CALLS.get(stage, ())
     batches = (
         review_batches(state, limits) if stage in ("research", "review") else 0
     )
     if stage == "review" and batches:
         batches -= 1  # the batch being admitted is reserved by itself
-    seconds = (
-        batches * limits.review_batch_s + calls * limits.single_call_timeout_s
+    seconds = batches * limits.review_batch_s + sum(
+        call_timeout(node, limits) for node in downstream
     )
-    turns = (batches + calls) * limits.single_call_reserved()
+    turns = (batches + len(downstream)) * limits.single_call_reserved()
     if stage in ("research", "review"):
         # One repair pair is earmarked while the window is open, so the
         # discretionary work of these stages cannot spend it.
@@ -341,8 +402,8 @@ def admit_single_call(
 ) -> int:
     """Return the ``num_turns`` a single-call node may reserve now, or 0.
 
-    Every call reserves a full call's worst case (``num_turns`` and
-    ``single_call_timeout_s`` seconds) or is skipped: intermediate
+    Every call reserves a full call's worst case (``num_turns`` and its
+    own ``call_timeout``) or is skipped: intermediate
     nodes must fit after the reserves and after what their downstream
     stages need (``pipeline_reserve``), the reserved nodes (``write``,
     ``final_review``) may spend the reserves, which hold exactly two
@@ -359,7 +420,7 @@ def admit_single_call(
         keep_s, keep_turns = pipeline_reserve(state, limits, node)
         fits = (
             left.seconds - limits.time_reserve_s - keep_s
-            >= limits.single_call_timeout_s
+            >= call_timeout(node, limits)
             and left.turns - limits.model_call_reserve - keep_turns >= full
         )
     return full if fits else 0

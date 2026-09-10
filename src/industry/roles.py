@@ -671,6 +671,22 @@ def render_relationships(
     return "\n".join(lines)
 
 
+def _inference_note(finding: records.Finding) -> str:
+    """The audit's restriction on a conclusion, carried to the writer.
+
+    A ``qualified`` verdict says the conclusion holds only under a
+    restriction the finding does not state. Auditing it and then not
+    telling the Editor is how the restriction disappears between the
+    audit and the page (U1-N03).
+    """
+    if finding.inference_review == "unreviewed":
+        return " [reasoning not audited]"
+    if finding.inference_review == "supported":
+        return ""
+    reason = finding.inference_reason or "no reason recorded"
+    return f" [audit {finding.inference_review}: {reason}]"
+
+
 def render_findings(
     state: state_module.IndustryState, reviewed_only: bool = False
 ) -> str:
@@ -693,7 +709,8 @@ def render_findings(
         flag = "material " if finding.material else ""
         cited = ", ".join(finding.claim_ids)
         lines.append(
-            f"  [{finding.id}] {flag}{finding.conclusion} (claims {cited})\n"
+            f"  [{finding.id}] {flag}{finding.conclusion} "
+            f"(claims {cited}){_inference_note(finding)}\n"
             f"    mechanism: {finding.mechanism}\n"
             f"    implication: {finding.implication}\n"
             f"    counterargument: {finding.counterargument}\n"
@@ -1131,6 +1148,12 @@ def draft_description(
             "are the reviewed ones). A claim marked qualified may be "
             "cited only with its qualification= restriction stated in "
             "the same sentence; never state it as the unqualified claim. "
+            "A finding whose audit note says qualified may be written "
+            "only with that restriction stated; one marked "
+            "unsupported_certainty, contradicted_premise or "
+            "scope_change may not be stated as a conclusion at all, and "
+            "one whose reasoning was not audited may not carry a "
+            "central conclusion. "
             "Section ids are short slugs.",
         ]
     )

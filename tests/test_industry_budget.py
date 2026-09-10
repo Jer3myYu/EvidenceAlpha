@@ -80,10 +80,10 @@ def test_dispatchable_respects_every_limit_and_reserve():
         concurrency=2,
     )
     empty = {"attempts": {}, "single_calls": {}}
-    # executions 12; turns (200-20-20)//34 = 4 (an attempt reserves the
-    # SDK's worst case: 2*12 + 2*5 num_turns; analyze and assess keep
-    # 20); tools 150//24 = 6; time (5400-960-960)//1200 = 2 full
-    # reservations after the two downstream calls. Time binds.
+    # executions 12; tools 150//24 = 6; time
+    # (5400-960-2*480-180)//1200 = 2 full reservations after the three
+    # downstream calls -- analyze, assess, and the pre-draft audit,
+    # which reserves 180 s because it reads an outline. Time binds.
     assert limits.attempt_turns() == 34
     assert budget.dispatchable(empty, limits, keep_acquisition_slot=False) == 2
     assert budget.dispatchable(empty, limits, keep_acquisition_slot=True) == 2
@@ -371,18 +371,28 @@ def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
         "claims": claims,
         "repair_window": "closed",
     }
-    # 25 unreviewed material claims = 3 batches; analyze + assess follow.
+    # 25 unreviewed material claims = 3 batches; analyze, assess and the
+    # pre-draft audit follow.
     seconds, turns = budget.pipeline_reserve(state, limits, "research")
-    assert seconds == 3 * 240 + 2 * 480
-    assert turns == 5 * limits.single_call_reserved()
+    assert seconds == 3 * 240 + 2 * 480 + 180
+    assert turns == 6 * limits.single_call_reserved()
     seconds, _ = budget.pipeline_reserve(state, limits, "review")
-    assert seconds == 2 * 240 + 2 * 480  # the batch being admitted excluded
-    assert budget.pipeline_reserve(state, limits, "analyze") == (480, 10)
-    assert budget.pipeline_reserve(state, limits, "assess_coverage") == (0, 0)
+    assert seconds == 2 * 240 + 2 * 480 + 180  # admitted batch excluded
+    assert budget.pipeline_reserve(state, limits, "analyze") == (
+        480 + 180,
+        20,
+    )
+    # Assessment can no longer take the last discretionary call: the
+    # audit still has to run after it (U1-N03).
+    assert budget.pipeline_reserve(state, limits, "assess_coverage") == (
+        180,
+        10,
+    )
+    assert budget.pipeline_reserve(state, limits, "audit_findings") == (0, 0)
     # Research dispatch keeps that time: with 5400 s and the 960 s
-    # reserve, 5400 - 960 - 1680 = 2760 s admits 3 attempts of 900 s,
+    # reserve, 5400 - 960 - 1860 = 2580 s admits 2 attempts of 900 s,
     # not the 4 that fit without the pipeline reserve.
-    assert budget.dispatchable(state, limits, False) == 3
+    assert budget.dispatchable(state, limits, False) == 2
     empty = {
         "attempts": {},
         "single_calls": {},
@@ -400,7 +410,7 @@ def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
         assert now == (was[0] + held_s, was[1] + held_turns)
     assert budget.pipeline_reserve(
         {**state, "repair_window": "open"}, limits, "analyze"
-    ) == (480, 10)
+    ) == (480 + 180, 20)
 
 
 def test_review_is_refused_when_analysis_could_not_follow():
@@ -414,7 +424,9 @@ def test_review_is_refused_when_analysis_could_not_follow():
         started_at="2026-09-07T00:00:00+00:00",
     )
     state = {"attempts": {"T1.1": spent}, "single_calls": {}, "claims": {}}
-    # Exactly analyze + assess fit after the reserve: no review batch.
+    # Exactly analyze + assess + audit fit after the reserve: no review
+    # batch.
     assert budget.admit_single_call(state, limits, "review") == 0
-    assert budget.admit_single_call(state, limits, "analyze") == 10
+    assert budget.admit_single_call(state, limits, "analyze") == 0
     assert budget.admit_single_call(state, limits, "assess_coverage") == 10
+    assert budget.admit_single_call(state, limits, "audit_findings") == 10

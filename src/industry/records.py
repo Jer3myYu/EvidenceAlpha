@@ -787,14 +787,34 @@ class Task(Record):
 
 
 class Usage(Record):
-    """What one execution consumed, or a conservative unknown."""
+    """What one execution consumed, or a conservative unknown.
+
+    ``input_tokens`` is the provider's ordinary input count and is not
+    the context volume: run 7's whole archive sums to 144 because the
+    cache categories were never captured. They are separate fields now,
+    because a cache read and a cache write are priced differently from
+    an ordinary input token and adding them together would misstate all
+    three (plan D-U15).
+    """
 
     turns: int = 0
     tool_calls: int = 0
     denied_tool_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Cache categories, as the provider exposes them. Zero means the
+    # provider reported zero; ``complete`` says whether it reported.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     cost_usd: float | None = None
+    # What ``cost_usd`` is: the SDK's cumulative estimate for the query,
+    # not an invoice. Recorded so a comparison cannot mistake two
+    # different bases for one measurement.
+    cost_basis: str = ""
+    # Whether the provider exposed a full usage record for this call. A
+    # missing cost is unknown, and unknown is never zero.
+    complete: bool = True
+    per_model: dict[str, int] = pydantic.Field(default_factory=dict)
     web_searches: int = 0
     fetches: int = 0
     duration_s: float = 0.0
@@ -811,12 +831,32 @@ class Usage(Record):
             denied_tool_calls=self.denied_tool_calls + other.denied_tool_calls,
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cache_creation_input_tokens=(
+                self.cache_creation_input_tokens
+                + other.cache_creation_input_tokens
+            ),
+            cache_read_input_tokens=(
+                self.cache_read_input_tokens + other.cache_read_input_tokens
+            ),
             cost_usd=cost,
+            cost_basis=self.cost_basis or other.cost_basis,
+            complete=self.complete and other.complete,
+            per_model=_merge_counts(self.per_model, other.per_model),
             web_searches=self.web_searches + other.web_searches,
             fetches=self.fetches + other.fetches,
             duration_s=self.duration_s + other.duration_s,
             unknown=self.unknown or other.unknown,
         )
+
+
+def _merge_counts(
+    left: dict[str, int], right: dict[str, int]
+) -> dict[str, int]:
+    """Per-model counts added key by key, never overwritten."""
+    merged = dict(left)
+    for name, count in right.items():
+        merged[name] = merged.get(name, 0) + count
+    return merged
 
 
 class Reservation(Record):
@@ -838,7 +878,16 @@ class Reservation(Record):
 
 
 class Attempt(Record):
-    """One execution of a task: reserved before it starts, then observed."""
+    """One execution of a task: reserved before it starts, then observed.
+
+    ``started_at`` is stamped when the reservation is taken, which is
+    not when the session begins: a held review reservation can carry a
+    ``started_at`` from minutes before it is activated, and reading it
+    as an invocation time would report work as concurrent that never
+    overlapped. The three fields below record the distinct moments
+    (plan D-U15, A23); ``started_at`` keeps its historical meaning and
+    is never reinterpreted.
+    """
 
     id: str
     task_id: str
@@ -847,6 +896,9 @@ class Attempt(Record):
     observed: Usage | None = None
     started_at: str
     duration_s: float | None = None
+    queued_at: str | None = None
+    invoked_at: str | None = None
+    finished_at: str | None = None
 
 
 class RelationshipDraft(Record):
@@ -1418,6 +1470,12 @@ class Limits(Record):
     # 31-670 s per attempt (map attempts 484-550 s), so 900 s bounds them.
     task_timeout_s: float = pydantic.Field(default=900.0, gt=0)
     single_call_timeout_s: float = pydantic.Field(default=480.0, gt=0)
+    # The pre-draft audit reads a compact outline of the principal
+    # findings and the claims they cite, not the registry, and it writes
+    # one verdict per finding. Reserving a full single call for it took
+    # 480 s out of every earlier stage's allowance and halved research
+    # capacity in a 90-minute run, which is not what D-U11 is worth.
+    audit_timeout_s: float = pydantic.Field(default=180.0, gt=0)
     single_call_turns: int = pydantic.Field(default=5, gt=0)
     task_attempts: int = pydantic.Field(default=2, gt=0)
     turns_per_exchange: int = pydantic.Field(default=2, gt=0)

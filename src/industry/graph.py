@@ -32,6 +32,7 @@ charged. Routers are pure functions of state; each decision is written
 to ``route_log`` with its reason, and Studio reads the same functions.
 """
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
@@ -315,7 +316,7 @@ def _reservation(
         reserved=records.Reservation(
             turns=turns,
             tool_calls=0,
-            seconds=limits.single_call_timeout_s,
+            seconds=budget.call_timeout(node, limits),
         ),
         started_at=records.now_iso(),
     )
@@ -1112,13 +1113,13 @@ def repaired_awaiting_review(state: state_module.IndustryState) -> list[str]:
         if request.status != "done":
             continue
         claim = claims.get(request.claim_id)
-        if (
-            claim is None
-            or claim.id in ordered
-            or not claim.material
-            or not merge.claim_needs_attention(claim, relationships)
-            or not merge.producer_chain_intact(claim, claims, calculations)
-        ):
+        if claim is None or claim.id in ordered:
+            continue
+        # The same membership `pending_review` selects from and
+        # `budget.review_batches` reserves for. Inserting a claim that
+        # is outside it -- a deferred one, say -- made the batch and the
+        # reserve disagree (U1-01).
+        if not merge.settleable(claim, claims, relationships, calculations):
             continue
         ordered.append(claim.id)
     return ordered
@@ -1296,14 +1297,14 @@ def uncomputed_comparison(
     carry an admitted quantity and no live calculation among the
     finding's citations actually consumed them.
     """
-    numeric = [
+    numeric = sorted(
         cid
-        for cid in finding.compares
+        for cid in _compared_claims(finding, claims)
         if cid in claims and claims[cid].quantity is not None
-    ]
+    )
     if len(numeric) < 2:
         return None
-    computed: set[str] = set()
+    wanted = set(numeric)
     for cid in finding.claim_ids:
         claim = claims.get(cid)
         if claim is None or claim.calculation_id is None:
@@ -1311,13 +1312,46 @@ def uncomputed_comparison(
         calculation = calculations.get(claim.calculation_id)
         if calculation is None or calculation.status != "ok":
             continue
-        # The calculation must have consumed the claims this conclusion
-        # says it compares; an unrelated one discharges nothing.
-        computed.update(item.claim_id for item in calculation.inputs)
-    outstanding = [cid for cid in numeric if cid not in computed]
-    if len(outstanding) < 2:
-        return None
-    return ", ".join(sorted(outstanding))
+        # The calculation must have consumed *the operands this
+        # conclusion compares*, together. An A/C calculation used to
+        # discharge an A/B comparison by removing A and leaving one
+        # operand outstanding, which the count then accepted (U1-12).
+        consumed = {item.claim_id for item in calculation.inputs}
+        if len(wanted & consumed) >= 2:
+            return None
+    return ", ".join(numeric)
+
+
+def _compared_claims(
+    finding: records.Finding, claims: dict[str, records.Claim]
+) -> set[str]:
+    """The claims a conclusion compares: declared, or plainly stated.
+
+    The Analyst declares them in ``compares``, and an empty list is the
+    honest answer for a qualitative conclusion. A declaration alone
+    cannot carry a delivery obligation, though -- an Analyst that never
+    fills the field would escape it entirely -- so a narrow
+    deterministic cross-check backs it up: a conclusion whose own words
+    make an explicit comparison, over two or more cited claims that
+    carry a quantity for the same metric, is compared whatever the
+    field says (U1-12).
+    """
+    declared = {cid for cid in finding.compares if cid in claims}
+    if declared:
+        return declared
+    if not _COMPARATIVE.search(finding.conclusion):
+        return set()
+    by_metric: dict[str, set[str]] = {}
+    for cid in finding.claim_ids:
+        claim = claims.get(cid)
+        if claim is None or claim.quantity is None or not claim.dimension:
+            continue
+        metric = " ".join(claim.dimension.split()).casefold()
+        by_metric.setdefault(metric, set()).add(cid)
+    for cited in by_metric.values():
+        if len(cited) >= 2:
+            return cited
+    return set()
 
 
 def review_remaining(state: state_module.IndustryState) -> int:
@@ -1421,6 +1455,71 @@ def planning_slots(
     return slots
 
 
+# The two obligations that are both ``weak_inference`` on a finding and
+# are not the same problem: the arithmetic behind a stated comparison,
+# and the pre-draft audit's verdict on the reasoning. Distinguished in
+# the issue key so neither one's resolution closes the other (U1-N02).
+# Words whose presence in a conclusion makes a numerical comparison
+# explicit. Narrow on purpose: this only *adds* an obligation the
+# Analyst did not declare, and a false positive costs one issue and one
+# calculation request, while a false negative ships an uncomputed
+# comparison as fact.
+_COMPARATIVE = re.compile(
+    r"\b(?:twice|double|triple|half|times|more than|less than|higher"
+    r"|lower|larger|smaller|greater|exceeds?|outpaces?|per cent|percent"
+    r"|percentage points?)\b"
+    r"|[0-9]\s*(?:x|×)\b"
+    r"|倍|超过|高于|低于|多于|少于|相当于|百分点",
+    re.IGNORECASE,
+)
+ARITHMETIC_ISSUE = "arithmetic"
+INFERENCE_ISSUE = "inference"
+
+
+def acquisition_blocked(
+    state: state_module.IndustryState, limits: records.Limits
+) -> str:
+    """Why no evidence-changing action can run, or "" if one can.
+
+    Three separate things have to be exhausted before re-analysis is
+    genuinely pointless: the run's acquisition ceiling, the budget for
+    another research session, and the per-issue follow-up allowance.
+    Any one of them still open means new evidence is reachable and
+    remediation is worth another round (plan D-U14).
+    """
+    executions = sum(
+        1
+        for task in state.get("tasks", {}).values()
+        if task.kind == "acquisition"
+    )
+    if executions < limits.acquisition_executions and budget.dispatchable(
+        state, limits, True
+    ):
+        return ""
+    if budget.dispatchable(state, limits, False):
+        return ""
+    workable = [
+        issue
+        for issue in state.get("issues", {}).values()
+        if issue.status == "open"
+        and issue.requested_action in ("research", "acquire")
+        and not followups_exhausted(issue, limits)
+    ]
+    if workable and budget.dispatchable(state, limits, True):
+        return ""
+    reasons = []
+    if executions >= limits.acquisition_executions:
+        reasons.append(
+            f"{executions} of {limits.acquisition_executions} acquisitions "
+            "used"
+        )
+    if not budget.dispatchable(state, limits, False):
+        reasons.append("no research session is affordable")
+    if not workable:
+        reasons.append("every evidence issue is out of follow-ups")
+    return "; ".join(reasons) or "no evidence-changing action is available"
+
+
 def issue_stage(issues: list[records.Issue]) -> str | None:
     """The earliest stage the open material issues need, or ``None``.
 
@@ -1500,6 +1599,11 @@ def _tasks_from_plan(
     # Every task id one plan key became, so a dependant of a decomposed
     # key waits for all of them.
     parts_of: dict[str, list[str]] = {}
+    # Plan keys whose parts were not all admitted. A dependant of one of
+    # these cannot have its prerequisite met by the parts that did run,
+    # and saying so is the point of an explicit partial plan (U1-08).
+    incomplete: set[str] = set()
+    unmet: list[tuple[str, str]] = []
     accepted: list[tuple[str, roles.TaskSpec]] = []
     next_number = schedule.task_number(merge.next_id("T", tasks))
     for spec in plan.tasks:
@@ -1551,16 +1655,27 @@ def _tasks_from_plan(
                     f"{len(chunks)} ({named}) has no slot; recorded as an "
                     "explicit partial plan"
                 )
+                incomplete.add(spec.key)
                 continue
             # Scoping the record without scoping the contract would
             # multiply the infeasible task rather than split it: the
             # worker prompt renders objective, scope and acceptance,
             # so a part says what it alone must cover (U1-08).
+            named_targets = chunk
+            if spec.role == "company" and chunk:
+                named_targets, notes = canonical_targets(
+                    chunk, state.get("map", records.IndustryMap())
+                )
+                log.extend(f"prepare_tasks: {note}" for note in notes)
             part = spec.model_copy(
                 update={
-                    "targets": chunk,
-                    "objective": _scoped(spec.objective, chunk, index, chunks),
-                    "scope": _scoped_note(spec.scope, chunk, index, chunks),
+                    "targets": named_targets,
+                    "objective": _scoped(
+                        spec.objective, named_targets, index, chunks
+                    ),
+                    "scope": _scoped_note(
+                        spec.scope, named_targets, index, chunks
+                    ),
                 }
             )
             key = spec.key if index == 0 else f"{spec.key}#{index + 1}"
@@ -1580,6 +1695,11 @@ def _tasks_from_plan(
             resolved = parts_of.get(dep) or ([dep] if dep in tasks else [])
             if not resolved:
                 log.append(f"{task_id}: dependency {dep!r} unknown; dropped")
+            if dep in incomplete:
+                # Some part of the prerequisite never got a slot, so
+                # completing the parts that did run does not establish
+                # what this task depends on (U1-08).
+                unmet.append((task_id, dep))
             for one in resolved:
                 if one != task_id and one not in depends:
                     depends.append(one)
@@ -1599,6 +1719,30 @@ def _tasks_from_plan(
             issue_id=issue_id,
         )
         log.append(f"{task_id} ({spec.role}): {spec.objective[:80]}")
+    for dependant, dep in unmet:
+        task = tasks[dependant]
+        gap = (
+            f"Part of its prerequisite {dep!r} had no slot, so the "
+            "evidence it depends on is incomplete; work with what the "
+            "admitted parts return and state the gap."
+        )
+        tasks[dependant] = task.model_copy(
+            update={"scope": f"{task.scope} {gap}".strip()}
+        )
+        issues, issue = merge.open_issue(
+            issues,
+            "missing_evidence",
+            "material",
+            dependant,
+            "research",
+            f"[{dependant}] depends on {dep!r}, which was only partly "
+            "admitted; the prerequisite evidence is incomplete",
+            next_step=f"Admit the remaining parts of {dep!r}.",
+        )
+        log.append(
+            f"{issue.id}: {dependant} depends on the partly-admitted "
+            f"{dep!r}; its prerequisite is not met"
+        )
     if len(plan.tasks) > slots:
         log.append(
             f"prepare_tasks: {len(plan.tasks) - slots} proposed tasks "
@@ -1607,21 +1751,63 @@ def _tasks_from_plan(
     return tasks, issues, log
 
 
-def _same_company(participant: str, target: str) -> str | bool:
+def _normalised(name: str) -> str:
+    """A company name with whitespace and case removed."""
+    return "".join(name.split()).casefold()
+
+
+def _same_company(participant: str, target: str) -> bool:
     """Whether a task target names this participant.
 
-    Exact after normalisation, or one being a prefix of the other, so a
-    task targeting 清溢 covers the participant 清溢光电 -- an alias gap
-    that otherwise raised a material obligation for a company that was
-    in fact assigned (U1-09). It is deliberately narrow: a prefix is
-    the shape a Chinese company short name actually takes, and anything
-    looser would silently cover a genuinely different company.
+    Exact after normalising whitespace and case, and nothing looser.
+    Prefix matching closed the 清溢 / 清溢光电 alias gap and opened a
+    worse one: 丰田通商 prefix-matches the participant 丰田, so
+    assigning Toyota Tsusho silently discharged Toyota's obligation
+    (U1-09). A false positive erases required work; a false negative
+    costs one extra material issue. Aliases are resolved once, at task
+    creation, against the map the Lead was shown.
     """
-    left = "".join(participant.split()).casefold()
-    right = "".join(target.split()).casefold()
-    if not left or not right:
-        return False
-    return left == right or left.startswith(right) or right.startswith(left)
+    return bool(participant) and _normalised(participant) == _normalised(target)
+
+
+def canonical_targets(
+    targets: list[str], industry_map: records.IndustryMap
+) -> tuple[list[str], list[str]]:
+    """Rewrite company targets to the participant names they name.
+
+    Resolved here, once, where the map is in hand: an exact match wins,
+    and otherwise a prefix resolves **only when exactly one participant
+    matches it**. Anything ambiguous is left as the Lead wrote it and
+    reported, so an unresolved name raises an obligation rather than
+    quietly covering the wrong company.
+    """
+    names = [part.name for part in industry_map.participants]
+    by_normal = {_normalised(name): name for name in names}
+    resolved: list[str] = []
+    notes: list[str] = []
+    for target in targets:
+        key = _normalised(target)
+        if key in by_normal:
+            resolved.append(by_normal[key])
+            continue
+        candidates = [
+            name
+            for name in names
+            if _normalised(name).startswith(key)
+            or key.startswith(_normalised(name))
+        ]
+        if len(candidates) == 1:
+            resolved.append(candidates[0])
+            if candidates[0] != target:
+                notes.append(f"{target!r} resolved to {candidates[0]!r}")
+            continue
+        resolved.append(target)
+        if candidates:
+            notes.append(
+                f"{target!r} matches {len(candidates)} participants "
+                "and was left as written"
+            )
+    return resolved, notes
 
 
 def _scoped(objective: str, chunk: list[str], index: int, chunks: list) -> str:
@@ -1855,13 +2041,31 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
             finding = state["findings"][target]
             if finding.status != "current":
                 resolved = "the finding was withdrawn"
-            elif issue.category == "weak_inference" and (
-                uncomputed_comparison(
-                    finding, claims, state.get("calculations", {})
-                )
-                is None
-            ):
-                resolved = "the comparison was calculated"
+            elif f"!{ARITHMETIC_ISSUE}" in issue.key:
+                # Only the arithmetic obligation closes on arithmetic.
+                # It used to close every `weak_inference` issue on the
+                # finding, including the pre-draft audit's verdicts,
+                # which have nothing to do with a calculation and were
+                # erased by its absence (U1-N02).
+                if (
+                    uncomputed_comparison(
+                        finding, claims, state.get("calculations", {})
+                    )
+                    is None
+                ):
+                    resolved = "the comparison was calculated"
+            elif f"!{INFERENCE_ISSUE}" in issue.key:
+                # An inference failure stands until the reasoning is
+                # repaired and re-audited: a new version of the finding
+                # that the audit has since accepted.
+                if (
+                    finding.inference_version >= finding.version
+                    and finding.inference_review not in records.FAILED_INFERENCE
+                ):
+                    resolved = (
+                        f"the reasoning was re-audited "
+                        f"{finding.inference_review}"
+                    )
         elif issue.draft_version is not None:
             resolved = None  # closed only by a clean later final review
         if resolved:
@@ -2343,16 +2547,45 @@ def build_graph(
                 "analyze",
                 f"[{finding.id}] {judgement.verdict}: {judgement.reason}",
                 next_step=judgement.observable_test or None,
+                kind=INFERENCE_ISSUE,
             )
             update["route_log"].append(
                 f"{issue.id}: {finding.id} {judgement.verdict}"
+            )
+        # Unjudged reasoning is not audited reasoning. A finding the
+        # audit omitted, or judged at an older version, keeps
+        # `unreviewed` and gets its own limitation, so an incomplete
+        # audit cannot pass as a clean one (U1-N03).
+        unjudged = [
+            f
+            for f in findings.values()
+            if f.status == "current"
+            and (
+                f.inference_review == "unreviewed"
+                or f.inference_version < f.version
+            )
+        ]
+        for finding in unjudged:
+            issues, issue = merge.open_issue(
+                issues,
+                "weak_inference",
+                "minor" if not finding.material else "material",
+                finding.id,
+                "analyze",
+                f"[{finding.id}] the reasoning was not judged before "
+                "drafting; the conclusion is delivered unaudited",
+                next_step="Audit this finding's reasoning.",
+                kind=INFERENCE_ISSUE,
+            )
+            update["route_log"].append(
+                f"{issue.id}: {finding.id} was not judged by the audit"
             )
         update["findings"] = findings
         update["issues"] = issues
         judged = len(outcome.judgements)
         update["route_log"].append(
-            f"audit_findings: {judged} finding(s) judged, {failed} failed "
-            "before any prose was written"
+            f"audit_findings: {judged} finding(s) judged, {failed} failed, "
+            f"{len(unjudged)} unjudged, before any prose was written"
         )
         return update
 
@@ -2527,6 +2760,7 @@ def build_graph(
                     "Request the calculation, or state the comparison "
                     "qualitatively."
                 ),
+                kind=ARITHMETIC_ISSUE,
             )
             update["route_log"].append(
                 f"{issue.id}: {fid} compares {gap} with no calculation"
@@ -2767,6 +3001,19 @@ def build_graph(
         ]
         stage = issue_stage(open_material) or "write"
         cycle = state.get("cycle", 0) + 1
+        blocked = acquisition_blocked(state, limits)
+        if stage in ("research", "analyze") and blocked:
+            # No evidence-changing action can run, so re-analysing the
+            # same evidence is not remediation -- it is the loop run 7
+            # spent its last rounds in, revisiting unchanged sources
+            # after two refused acquisitions (plan D-U14). Route
+            # straight to the one bounded editorial correction, then to
+            # honest delivery.
+            log.append(
+                f"remediate: {stage} needs evidence that cannot be "
+                f"acquired ({blocked}); routing to a bounded correction"
+            )
+            stage = "write"
         return {
             "issues": issues,
             "cycle": cycle,

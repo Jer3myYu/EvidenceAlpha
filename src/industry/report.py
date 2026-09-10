@@ -563,6 +563,10 @@ def deferred_review(
             claim
             for claim in state.get("claims", {}).values()
             if claim.material and claim.review_disposition == "deferred"
+            # A claim that already carries a verdict is not waiting for
+            # one. A legacy derived claim whose arithmetic supplied its
+            # verdict was disclosed to the reader as unverified (U1-01).
+            and claim.needs_review()
         ),
         key=lambda c: c.id,
     )

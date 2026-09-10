@@ -1770,7 +1770,12 @@ def cascade_changes(
     }
 
 
-def issue_key(category: str, target: str, text: str | None = None) -> str:
+def issue_key(
+    category: str,
+    target: str,
+    text: str | None = None,
+    kind: str = "",
+) -> str:
     """The canonical key of an issue.
 
     One per category and target; when the issue is about one exact
@@ -1781,6 +1786,13 @@ def issue_key(category: str, target: str, text: str | None = None) -> str:
     and so the attempt count.
     """
     key = f"{category}:{target}"
+    if kind:
+        # Two obligations of the same category can be about the same
+        # target and be different problems: the arithmetic behind a
+        # comparison and the audit's verdict on the reasoning are both
+        # ``weak_inference`` on a finding, and folding them into one key
+        # would let either one's resolution close the other (U1-N02).
+        key = f"{key}!{kind}"
     if text:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         key = f"{key}#{digest}"
@@ -2356,6 +2368,7 @@ def open_issue(
     next_step: str | None = None,
     draft_version: int | None = None,
     text: str | None = None,
+    kind: str = "",
 ) -> tuple[dict[str, records.Issue], records.Issue]:
     """Return the unresolved issue with this key, or add a new one.
 
@@ -2365,7 +2378,7 @@ def open_issue(
     is refreshed the same way and stays retired: the same problem
     recurring never starts a fresh allowance.
     """
-    key = issue_key(category, target, text)
+    key = issue_key(category, target, text, kind)
     updated = dict(issues)
     for issue in issues.values():
         if (
