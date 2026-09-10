@@ -1231,13 +1231,22 @@ class ClaimReview(Record):
 
 
 class SectionIssue(Record):
-    """A problem the final review found in one section."""
+    """A problem the final review found in one section.
+
+    ``block_id`` is the exact unit the problem is about, as the draft
+    labelled it (``<economics:b3>``). Without one, a material
+    unsupported or contradiction issue takes the whole section with it,
+    because nothing else identifies what to remove -- which is what
+    happened to run 7's economics and barriers sections, where this
+    field did not exist at all (plan D-U12).
+    """
 
     section_id: str
     category: IssueCategory
     severity: Severity
     description: str
     claim_id: str | None = None
+    block_id: str | None = None
 
 
 class DraftReview(Record):

@@ -717,16 +717,29 @@ def render_coverage(state: state_module.IndustryState) -> str:
     return "\n".join(lines)
 
 
-def render_sections(sections: list[records.Section]) -> str:
-    """The draft sections verbatim."""
+def render_sections(
+    sections: list[records.Section], labelled: bool = False
+) -> str:
+    """The draft sections verbatim.
+
+    With ``labelled``, every reviewable unit carries its block id, so a
+    reviewer can name the exact sentence or table row it objects to
+    instead of naming the section and taking all of it (plan D-U12).
+    """
     if not sections:
         return "Draft: none."
     parts = []
     for section in sections:
         stale = " (stale)" if section.stale else ""
-        parts.append(
-            f"## [{section.id}] {section.title}{stale}\n{section.text}"
+        body = (
+            "\n".join(
+                f"<{block.id}> {block.text}"
+                for block in report.blocks_of(section)
+            )
+            if labelled
+            else section.text
         )
+        parts.append(f"## [{section.id}] {section.title}{stale}\n{body}")
     return "\n\n".join(parts)
 
 
@@ -1111,7 +1124,7 @@ def final_review_description(state: state_module.IndustryState) -> str:
                 MAX_CONTEXT_CHARS["verifier"],
             ),
             render_findings(state, reviewed_only=True),
-            render_sections(state.get("sections", [])),
+            render_sections(state.get("sections", []), labelled=True),
             "\n".join(frozen_appendix(state)),
             "Check the exact draft: the sections above plus the "
             "limitations and coverage blocks are what delivery "
@@ -1123,8 +1136,13 @@ def final_review_description(state: state_module.IndustryState) -> str:
             "conclusions must be consistent across text and tables "
             "(category contradiction); limitations must sit next to the "
             "claims they qualify; wording must be intelligible to a "
-            "newcomer (category wording, minor). Give the section id and, "
-            "where one applies, the claim id. Set consistent=false if any "
+            "newcomer (category wording, minor). Give the section id, and "
+            "block_id: the <id> of the exact sentence, table row, or "
+            "list item the problem is in, copied from the labels above. "
+            "An unsupported or contradiction issue without a usable "
+            "block_id removes the whole section, so name the unit. "
+            "Where one applies, give the claim id. "
+            "Set consistent=false if any "
             "material issue exists. In retainable, list the section ids "
             "that would still be accurate on their own if the other "
             "sections were removed around them -- a section whose "

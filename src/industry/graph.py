@@ -2550,6 +2550,22 @@ def build_graph(
                 claim_note = (
                     f" (claim {problem.claim_id})" if problem.claim_id else ""
                 )
+                # The exact unit the reviewer named, resolved against the
+                # draft it reviewed. A block that resolves buys a smaller
+                # removal; one that does not buys nothing worse than
+                # before -- `blocking_issues` still takes the section
+                # (plan D-U12, U0-04).
+                block = report.resolve_block(
+                    state.get("sections", []),
+                    problem.section_id,
+                    problem.block_id,
+                )
+                if problem.block_id and block is None:
+                    update["route_log"].append(
+                        f"final_review: {problem.block_id!r} names no unit "
+                        f"of {problem.section_id} in draft {version}; the "
+                        "issue stands and the section is at risk whole"
+                    )
                 issues, issue = merge.open_issue(
                     issues,
                     problem.category,
@@ -2558,6 +2574,7 @@ def build_graph(
                     action,
                     f"[{problem.section_id}] {problem.description}{claim_note}",
                     draft_version=version,
+                    text=block.text if block is not None else None,
                 )
                 flagged.add(issue.key)
             # A draft issue closes only when a newer draft was reviewed

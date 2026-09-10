@@ -845,3 +845,111 @@ def test_delivery_reports_what_it_could_not_strengthen():
     assert "seconds:" in text
     state["repairs"] = {}
     assert not report.repair_lines(state)
+
+
+def _section(text: str) -> records.Section:
+    return records.Section(id="economics", title="Economics", text=text)
+
+
+def test_a14_blocks_are_derived_from_the_text_they_name():
+    section = _section(
+        "Mask blanks are concentrated [C1].\n\n"
+        "This compresses margins.\n\n"
+        "| vendor | share |\n| --- | --- |\n| HOYA | 60% |"
+    )
+    blocks = report.blocks_of(section)
+    assert [b.id for b in blocks] == [f"economics:b{n}" for n in range(1, 6)]
+    assert [b.kind for b in blocks] == [
+        "paragraph",
+        "paragraph",
+        "row",
+        "row",
+        "row",
+    ]
+    # A projection cannot drift from its text: editing re-derives.
+    edited = _section(section.text.replace("compresses", "widens"))
+    assert report.blocks_of(edited)[1].sha256 != blocks[1].sha256
+    assert report.blocks_of(edited)[1].id == blocks[1].id
+
+
+def test_a14_a_resolving_block_removes_one_unit_not_the_section():
+    section = _section(
+        "Mask blanks are concentrated [C1].\n\nThis compresses margins."
+    )
+    block = report.resolve_block([section], "economics", "economics:b2")
+    assert block is not None and block.text == "This compresses margins."
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="economics",
+        requested_action="remove",
+        text=block.text,
+    )
+    # The section is not blocked, and only the named unit goes.
+    assert report.blocking_issues([issue], section) == []
+    redacted = report.redact(section.text, [issue], "economics", "[removed]")
+    assert "concentrated [C1]" in redacted
+    assert "compresses margins" not in redacted
+
+
+def test_a20_an_unresolvable_block_falls_back_to_whole_section_removal():
+    """U0-04: this delta may only make removal more precise, never weaker."""
+    section = _section("Mask blanks are concentrated [C1].")
+    for block_id in (None, "", "economics:b99", "barriers:b1"):
+        assert report.resolve_block([section], "economics", block_id) is None
+    # An issue with no text is exactly what run 7's model-authored issues
+    # were, and it still takes the section.
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="economics",
+        requested_action="remove",
+        text=None,
+    )
+    assert report.blocking_issues([issue], section) == [issue]
+
+
+def test_a20_a_stale_block_text_cannot_certify_a_patch():
+    """A block resolved against an older draft names nothing in this one."""
+    section = _section("The current wording is different.")
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="economics",
+        requested_action="remove",
+        text="The wording the reviewer saw.",
+    )
+    assert report.blocking_issues([issue], section) == [issue]
+
+
+def test_a14_removing_a_block_that_empties_a_table_still_takes_the_section():
+    """U0 recheck (c): resolving an id does not make removal safe."""
+    section = _section("| vendor | share |\n| --- | --- |\n| HOYA | 60% |")
+    blocks = report.blocks_of(section)
+    only_row = blocks[-1]
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="economics",
+        requested_action="remove",
+        text=only_row.text,
+    )
+    # A header and a rule over nothing is not a table.
+    assert report.blocking_issues([issue], section) == [issue]
+
+
+def test_the_reviewer_is_shown_the_block_ids_it_must_name():
+    section = _section("One.\n\nTwo.")
+    labelled = roles.render_sections([section], labelled=True)
+    assert "<economics:b1> One." in labelled
+    assert "<economics:b2> Two." in labelled
+    plain = roles.render_sections([section])
+    assert "<economics:b1>" not in plain and "One." in plain

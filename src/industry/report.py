@@ -53,6 +53,10 @@ class CitationProblem:
     text: str | None = None
 
 
+_SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
+_LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
+
+
 def _is_row(unit: str) -> bool:
     """Whether a factual unit is a Markdown table row."""
     return unit.strip().startswith("|")
@@ -89,6 +93,82 @@ def _data_rows(lines: list[str], block: list[int]) -> set[int]:
             continue
         rows.add(index)
     return rows
+
+
+@dataclasses.dataclass(frozen=True)
+class Block:
+    """One reviewable unit of a section: a paragraph, row, or list item.
+
+    Derived from the section text, never stored beside it. A block is a
+    projection, so it cannot drift from the words it names: re-deriving
+    after an edit gives new ids and new hashes, and an issue whose block
+    no longer resolves fails closed (plan D-U12).
+    """
+
+    id: str
+    kind: str
+    text: str
+    sha256: str
+
+
+def blocks_of(section: records.Section) -> list[Block]:
+    """The reviewable units of one section, in order.
+
+    A table row is its own unit -- one bad row should cost one row --
+    and so is a list item. Everything else is a paragraph. Ids are
+    positional within the section and stable for as long as the text is,
+    which is exactly as long as a verdict about it is worth anything.
+    """
+    units: list[tuple[str, str]] = []
+    for paragraph in section.text.split("\n\n"):
+        lines = [line for line in paragraph.split("\n") if line.strip()]
+        if not lines:
+            continue
+        if all(_is_row(line) for line in lines):
+            units.extend(("row", line.strip()) for line in lines)
+        elif all(_LIST_MARK.match(line.strip()) for line in lines):
+            units.extend(("list_item", line.strip()) for line in lines)
+        else:
+            units.append(("paragraph", paragraph.strip()))
+    return [
+        Block(
+            id=f"{section.id}:b{number}",
+            kind=kind,
+            text=text,
+            sha256=hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+        )
+        for number, (kind, text) in enumerate(units, start=1)
+    ]
+
+
+def resolve_block(
+    sections: list[records.Section], section_id: str, block_id: str | None
+) -> Block | None:
+    """The block an issue names, or None when it names nothing usable.
+
+    None is not a soft failure. `blocking_issues` treats an issue with
+    no removable text as blocking, which removes the whole section --
+    the behaviour this delta inherited and deliberately kept as the
+    floor. Naming a block correctly buys a smaller removal; naming one
+    badly buys nothing worse than before (plan D-U12, U0-04).
+    """
+    if not block_id:
+        return None
+    for section in sections:
+        if section.id != section_id:
+            continue
+        for block in blocks_of(section):
+            if block.id == block_id:
+                return block
+    return None
+
+
+def render_blocks(section: records.Section) -> str:
+    """The section with every reviewable unit labelled, for the reviewer."""
+    lines = [f"[{section.id}] {section.title}"]
+    for block in blocks_of(section):
+        lines.append(f"  <{block.id}> {block.text}")
+    return "\n".join(lines)
 
 
 def unremovable_units(text: str, units: list[str]) -> list[str]:
@@ -321,10 +401,6 @@ def check_citations(
                     )
                 )
     return problems
-
-
-_SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
-_LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 
 
 def _ends_unit(text: str, index: int) -> bool:
