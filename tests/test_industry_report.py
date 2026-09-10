@@ -1251,3 +1251,46 @@ def test_u2_03_the_single_data_row_variant_still_fails_closed():
         text=falling[0].text,
     )
     assert report.blocking_issues([issue], section) == [issue]
+
+
+def test_u2_03_removal_is_one_pass_over_the_original_text():
+    """Two sequential passes fail whichever order they run in: prose
+    first rewrites a row that row deletion was about to match, rows
+    first rewrite a block that prose replacement was about to match
+    (U2-03)."""
+    premise = "This market has no competing suppliers."
+    table = (
+        "| Basis | Implication |\n|---|---|\n"
+        f"| {premise} | Suppliers can dictate prices. |\n"
+        "| Contract terms | Payment is due on acceptance. |"
+    )
+    text = f"Therefore suppliers can dictate prices.\n{table}\n\n{table}"
+    section = records.Section(id="s", title="T", text=text)
+    row = next(
+        b
+        for b in report.blocks_of(section)
+        if b.kind == "row" and premise in b.text
+    )
+    falling = report.dependents_of_text(section, row.text)
+    issues = [
+        records.Issue(
+            id=f"I{n}",
+            key=f"k{n}",
+            category="unsupported",
+            severity="material",
+            target="s",
+            requested_action="remove",
+            text=unit,
+        )
+        for n, unit in enumerate([row.text] + [b.text for b in falling], 1)
+    ]
+    assert report.blocking_issues(issues, section) == []
+    out = report.redact(text, issues, "s", "[X]")
+    # The conclusion, and both occurrences of the disputed row.
+    assert "Therefore suppliers can dictate prices." not in out
+    assert premise not in out
+    # The independent row survives, and the note sits outside the table.
+    assert "Payment is due on acceptance." in out
+    assert "| [X] |" not in out
+    for line in out.split("\n"):
+        assert not (line.strip() == "[X]" and False)

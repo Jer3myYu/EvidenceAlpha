@@ -414,18 +414,76 @@ def redact(
     """
     units = removable_issue_units(issues, section_id)
     blocked = set(unremovable_units(text, units))
-    rows = [u for u in units if _is_row(u) and u not in blocked]
-    prose = [u for u in units if not _is_row(u) and u not in blocked]
-    # Rows first, and both against the *original* text. Replacing prose
-    # first rewrote a row that a row deletion was about to match by its
-    # original wording, so the deletion silently missed and the row
-    # survived as "| [X] | Suppliers can dictate prices. |" -- a
-    # consequence explicitly selected for removal, delivered (U2-03).
-    if rows:
-        text = _drop_rows(text, rows, note)
-    if prose:
-        text = _replace_spans(text, prose, note)
-    return text
+    live = [u for u in units if u not in blocked]
+    return _apply_removals(text, live, note) if live else text
+
+
+def _apply_removals(text: str, units: list[str], note: str) -> str:
+    """Remove every unit in one pass over the original text.
+
+    Two sequential passes cannot be right, whichever order they run in:
+    replacing prose first rewrites a row that row deletion was about to
+    match, and deleting rows first rewrites a block that prose
+    replacement was about to match. Both failures deliver a conclusion
+    that was explicitly selected for removal (U2-03).
+
+    So every span is located against the text as it arrived, longest
+    first -- a block that contains a row is the larger claim about what
+    must go, and the row inside it is already covered -- and the text is
+    emitted once. A deleted row leaves its note after the table rather
+    than between the rule and the surviving rows, which is what would
+    destroy the table.
+    """
+    spans: list[tuple[int, int, bool]] = []
+    for unit in sorted(set(units), key=len, reverse=True):
+        row = _is_row(unit)
+        for start, end in unit_spans(text, unit):
+            if row:
+                start = text.rfind("\n", 0, start) + 1
+                found = text.find("\n", end)
+                end = len(text) if found < 0 else found + 1
+            if not any(start < b and a < end for a, b, _ in spans):
+                spans.append((start, end, row))
+    if not spans:
+        return text
+    out: list[str] = []
+    cursor = 0
+    for start, end, row in sorted(spans):
+        out.append(text[cursor:start])
+        if row:
+            # The note goes after the table this row belonged to.
+            out.append(_TABLE_NOTE)
+        else:
+            out.append(note)
+        cursor = end
+    out.append(text[cursor:])
+    return _place_table_notes("".join(out), note)
+
+
+# Where a deleted row's note waits until the end of its table.
+_TABLE_NOTE = "\x00row\x00"
+
+
+def _place_table_notes(text: str, note: str) -> str:
+    """Move each deleted row's marker to just after its table."""
+    if _TABLE_NOTE not in text:
+        return text
+    kept: list[str] = []
+    pending = False
+    for line in text.split("\n"):
+        if _TABLE_NOTE in line:
+            pending = True
+            remainder = line.replace(_TABLE_NOTE, "").strip()
+            if remainder:
+                kept.append(remainder)
+            continue
+        if pending and not _is_row(line):
+            kept.append(note)
+            pending = False
+        kept.append(line)
+    if pending:
+        kept.append(note)
+    return "\n".join(kept)
 
 
 def _replace_spans(text: str, units: list[str], note: str) -> str:
