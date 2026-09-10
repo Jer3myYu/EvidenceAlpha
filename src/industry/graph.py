@@ -410,21 +410,31 @@ def _reaching(
 
     - it carries exact text, and some retained section holds that text:
       it applies to that section, under that section's id;
-    - it names a retained section: it applies there;
-    - it names nothing this body has: it applies to **every** section,
+    - it names a retained section and its text is not in it: it is
+      about the other draft's wording and does not apply here;
+    - nothing locates it -- it names a section this body never had,
+      renamed or otherwise: it applies to **every** section,
       because we cannot tell which one holds what it faulted, and the
       whole point of retaining a body is that it was already reviewed.
     """
-    if issue.text:
-        holding = [s for s in sections if issue.text in s.text]
+    holding = [s for s in sections if issue.text and issue.text in s.text]
+    if holding:
         return [issue.model_copy(update={"target": s.id}) for s in holding]
     if issue.target in ids:
-        return [issue]
+        # It names a section this body has and its wording is not here,
+        # so it is about the other draft's wording. This body does not
+        # carry the problem, and withholding it would withhold a report
+        # that is in fact fine.
+        return [issue] if not issue.text else []
     if issue.severity != "material" or issue.category not in (
         "unsupported",
         "contradiction",
     ):
         return []
+    # Nothing locates it: the section was renamed, or renamed and
+    # edited, or the objection names a section this body never had.
+    # The objection does not lapse -- it stands against every section,
+    # because we cannot tell which one holds what it faulted.
     return [issue.model_copy(update={"target": s.id}) for s in sections]
 
 

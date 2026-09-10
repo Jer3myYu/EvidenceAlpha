@@ -269,3 +269,45 @@ def test_a_worse_replacement_never_displaces_the_retained_candidate():
     # An exact tie keeps the incumbent: a replacement must be better,
     # not merely newer.
     assert graph_module.stored_rank(kept) >= graph_module.stored_rank(better)
+
+
+def test_a_renamed_section_does_not_let_an_objection_lapse():
+    """A section renamed *and* reworded between drafts (U2-01).
+
+    The distinction that matters is whether the objection names a
+    section this body actually has. If it does and its wording is not
+    here, it is about the other draft. If it names nothing here, we
+    cannot tell, and it stands against every section.
+    """
+    section = records.Section(
+        id="intro", title="t", text="保留下来的一句。", claim_ids=[]
+    )
+    candidate = records.DeliveryCandidate(
+        sections=[section],
+        subject=records.ReviewSubject(digest="d"),
+        draft_version=1,
+    )
+
+    def _issue(text, target):
+        return records.Issue(
+            id="I9",
+            key="unsupported:x",
+            category="unsupported",
+            severity="material",
+            target=target,
+            requested_action="remove",
+            description="d",
+            text=text,
+            draft_version=2,
+        )
+
+    # Renamed and reworded: nothing locates it, so it binds anyway.
+    renamed = graph_module.issues_for_candidate(
+        candidate, {"I9": _issue("只在新草稿里的一句。", "new_intro")}
+    )
+    assert [i.target for i in renamed.values()] == ["intro"]
+    # Same section id, wording only in the newer draft: not this body's
+    # problem, and withholding it would withhold a sound report.
+    assert not graph_module.issues_for_candidate(
+        candidate, {"I9": _issue("只在新草稿里的一句。", "intro")}
+    )
