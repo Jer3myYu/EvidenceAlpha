@@ -538,18 +538,12 @@ class Evidence(Record):
     # records were.
     context_basis: str = ""
 
-    @pydantic.model_validator(mode="after")
-    def _context_shows_its_basis(self) -> "Evidence":
-        interpreted = any(
+    def interpreted(self) -> bool:
+        """Whether any of the four context fields carries a reading."""
+        return any(
             value is not None
             for value in (self.entity, self.period, self.unit, self.scope)
         )
-        if interpreted and not self.context_basis.strip():
-            raise ValueError(
-                "evidence whose entity, period, unit or scope is set names "
-                "what supports that reading in context_basis"
-            )
-        return self
 
     @pydantic.model_validator(mode="after")
     def _passages_need_a_version(self) -> "Evidence":

@@ -32,6 +32,7 @@ rather than reporting an attempt finished while its work goes on.
 
 import asyncio
 import functools
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -258,6 +259,14 @@ def user_prompt(work: records.WorkerInput, collector: tools.Collector) -> str:
     ]
     if task.scope:
         lines.append(f"Scope: {task.scope}")
+    if task.targets:
+        # The named companies, segments, or areas this session owes,
+        # rendered so a decomposed part cannot be dispatched with the
+        # whole plan's scope still in its prompt (U1-08).
+        lines.append(
+            "Targets, all of which this session must cover: "
+            + "; ".join(task.targets)
+        )
     if task.required_fields:
         lines.append("Required fields: " + "; ".join(task.required_fields))
     if task.acceptance:
@@ -482,6 +491,8 @@ _ORIGINAL_CONTEXT_FIELDS = (
     "capex",
     "financial",
     "metric",
+    "employee",
+    "headcount",
     "milestone",
     "qualification",
     "production",
@@ -498,9 +509,21 @@ _ORIGINAL_CONTEXT_FIELDS = (
 
 
 def needs_original_context(task: records.Task) -> bool:
-    """Whether this task's own required fields demand more than snippets."""
+    """Whether this task's own required fields demand more than snippets.
+
+    ASCII terms match a whole word, plural allowed: "share" inside
+    "shareholder names" is a qualitative field, and treating it as a
+    market-share metric would demand a filing for a list of names
+    (U1-07). CJK terms have no word boundaries and match as substrings.
+    """
     declared = " ".join(task.required_fields).casefold()
-    return any(word in declared for word in _ORIGINAL_CONTEXT_FIELDS)
+    for word in _ORIGINAL_CONTEXT_FIELDS:
+        if word.isascii():
+            if re.search(rf"\b{re.escape(word)}s?\b", declared):
+                return True
+        elif word in declared:
+            return True
+    return False
 
 
 def assess_evidence(

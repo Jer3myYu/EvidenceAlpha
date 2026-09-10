@@ -84,6 +84,7 @@ class _Registry:
         self.relationships = dict(state.get("relationships", {}))
         self.industry_map = state.get("map", records.IndustryMap())
         self.brief = state.get("brief")
+        self.issues = dict(state.get("issues", {}))
         self.log: list[str] = []
         # Claims whose meaning changed in this merge; their dependants
         # (findings, sections) are marked stale by merge_results.
@@ -587,6 +588,50 @@ def _fold_result(
         _fold_finding(registry, result.attempt_id, draft, evidence_map)
     if result.map is not None:
         _fold_map(registry, result.attempt_id, result.map, evidence_map)
+
+
+def _record_unmet_evidence(
+    registry: _Registry,
+    result: records.TaskResult,
+    task: records.Task,
+) -> None:
+    """Turn insufficient evidence into an obligation, not a log line.
+
+    The session ran and finished; its evidence is another question, and
+    a route-log string is not an answer anyone acts on (U1-07). Each
+    short finding gets a material issue naming the claim it became, so
+    the gap is repaired where it is instead of the whole task running
+    again (plan D-U6, A06).
+    """
+    registry.log.append(
+        f"{task.id}: completed, evidence {result.evidence_acceptance}: "
+        f"{len(result.unmet)} finding(s) rest on search snippets alone "
+        "and need original context"
+    )
+    by_statement = {
+        normalize_text(claim.statement): claim
+        for claim in registry.claims.values()
+    }
+    for statement in result.unmet:
+        claim = by_statement.get(normalize_text(statement))
+        target = claim.id if claim is not None else task.id
+        named = f" ({statement})" if claim is None else ""
+        registry.issues, issue = open_issue(
+            registry.issues,
+            "missing_evidence",
+            "material",
+            target,
+            "acquire",
+            f"[{task.id}] the supporting evidence is search snippets "
+            f"only; the original context has not been read{named}",
+            next_step=(
+                "Open the original document and retrieve the passage "
+                "that states this."
+            ),
+        )
+        registry.log.append(
+            f"{issue.id}: {target} needs original context ({task.id})"
+        )
 
 
 def _fold_context(
@@ -1247,21 +1292,7 @@ def merge_results(
             status: records.TaskStatus = "done"
             _fold_result(registry, result, task)
             if result.evidence_acceptance != "accepted":
-                # The session ran and finished. Its evidence is another
-                # question, and the answer targets the findings that are
-                # short rather than making the whole task run again
-                # (plan D-U6).
-                registry.log.append(
-                    f"{task.id}: completed, evidence "
-                    f"{result.evidence_acceptance}: "
-                    f"{len(result.unmet)} finding(s) rest on search "
-                    "snippets alone and need original context"
-                )
-                for statement in result.unmet:
-                    registry.log.append(
-                        f"{task.id}: original context needed for "
-                        f"{statement}"
-                    )
+                _record_unmet_evidence(registry, result, task)
         elif (
             not (result.error or "").startswith("schema")
             and task.attempts < limits.task_attempts
@@ -1313,6 +1344,7 @@ def merge_results(
         "claims": registry.claims,
         "relationships": registry.relationships,
         "map": registry.industry_map,
+        "issues": registry.issues,
         "route_log": registry.log,
     }
     if registry.changed:
@@ -1490,6 +1522,12 @@ def invalidate_claim(
     """
     claims = dict(state.get("claims", {}))
     claim = claims[claim_id]
+    if changes.get("material") and not claim.material:
+        # Importance and admission are separate fields, so a revision
+        # that raises one must not leave the other saying the review
+        # owes this claim nothing (U1-13).
+        changes.setdefault("review_disposition", "pending")
+        changes.setdefault("review_deferred_reason", None)
     for field in ("calculation_id", "calculation_version", "kind"):
         # The producer owns these. A correction that could detach a
         # derived claim from its arithmetic is refused, not applied.

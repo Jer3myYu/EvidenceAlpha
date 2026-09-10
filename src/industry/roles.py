@@ -518,7 +518,45 @@ def _claim_line(
             f"{item.locator}; retrieved {retrieved}{limits})\n"
             f'    "{item.excerpt}"'
         )
+        parts.extend(_context_lines(state, eid))
     return "\n".join(parts)
+
+
+def _context_lines(
+    state: state_module.IndustryState, evidence_id: str
+) -> list[str]:
+    """What the run established about an excerpt, beside the excerpt.
+
+    A recorded reading that nobody reads repairs nothing (U1-05). The
+    verifier judging whether a figure belongs to 清溢 or 龙图 needs the
+    document subject and the basis for it in front of the excerpt, and
+    a cell-specific reading must stay cell-specific rather than being
+    presented as the subject of the whole table.
+    """
+    lines = []
+    for binding in state.get("context", {}).get(evidence_id, []):
+        fields = "; ".join(
+            f"{name}={value}"
+            for name, value in (
+                ("entity", binding.entity),
+                ("period", binding.period),
+                ("unit", binding.unit),
+                ("scope", binding.scope),
+            )
+            if value
+        )
+        where = (
+            f" cell ({binding.cell_row},{binding.cell_col})"
+            if binding.cell_row is not None
+            else ""
+        )
+        basis = f'; basis: "{binding.basis}"' if binding.basis else ""
+        lines.append(
+            f"    context{where}: {binding.status}"
+            + (f"; {fields}" if fields else "")
+            + basis
+        )
+    return lines
 
 
 def reviewed_claim_ids(state: state_module.IndustryState) -> list[str]:

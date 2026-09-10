@@ -1133,11 +1133,12 @@ def pending_review(
     partitions the quota actually governs rather than a second,
     disagreeing grouping by lowest question id.
 
-    Within that order, claims resting on the same source travel
-    together (plan D-U6b). The verifier reads a document once per batch
-    instead of once per claim, which is what pays for the review demand
-    that keeping materiality created. Ordering stays deterministic given
-    the registry.
+    Within the batch priority selects, claims resting on the same
+    source travel together and their shared excerpts are rendered once
+    (plan D-U6b). Grouping never changes *which* claims are selected --
+    doing so let one source's mates crowd out a required question --
+    only the order they are presented in. Ordering stays deterministic
+    given the registry.
     """
     unreviewed = sorted(
         reviewable(state),
@@ -1162,12 +1163,17 @@ def pending_review(
             if queue:
                 ordered.append(queue.pop(0))
     ordered.extend(rest)
-    ordered = group_by_source(state, ordered)
     # A claim a repair strengthened goes first: its verdict is what the
     # repair bought, and the rest of the batch fills in behind it.
     repaired = repaired_awaiting_review(state)
     ordered = repaired + [cid for cid in ordered if cid not in repaired]
-    return ordered[: batch or REVIEW_BATCH]
+    # Cut to the batch *before* grouping. Grouping first pulled
+    # source-mates ahead of the round-robin and could fill a whole batch
+    # from one question, spending scarce review capacity on work the
+    # priority order had not selected (U1-10). Selection is priority's;
+    # grouping only decides the order within what priority chose.
+    selected = ordered[: batch or REVIEW_BATCH]
+    return group_by_source(state, selected)
 
 
 def group_by_source(
@@ -1262,6 +1268,37 @@ def scope_review(
             ],
         }
     )
+
+
+def uncomputed_comparison(
+    finding: records.Finding,
+    claims: dict[str, records.Claim],
+    calculations: dict[str, records.Calculation],
+) -> str | None:
+    """The metric a finding compares without arithmetic, if any.
+
+    Deterministic and narrow on purpose: two or more cited claims that
+    carry an admitted quantity for the *same* metric, and no derived
+    claim among the citations to have compared them. That is a
+    comparison whether the prose says "twice", "higher", or nothing at
+    all, and it is the case ``calc`` exists to settle (plan D-U10).
+    """
+    by_metric: dict[str, set[str]] = {}
+    for cid in finding.claim_ids:
+        claim = claims.get(cid)
+        if claim is None or claim.quantity is None:
+            continue
+        if claim.kind == "derived" and claim.calculation_id in calculations:
+            # The comparison was computed; this is its result.
+            return None
+        if not claim.dimension:
+            continue
+        metric = " ".join(claim.dimension.split()).casefold()
+        by_metric.setdefault(metric, set()).add(claim.id)
+    for metric, cited in sorted(by_metric.items()):
+        if len(cited) >= 2:
+            return metric
+    return None
 
 
 def review_remaining(state: state_module.IndustryState) -> int:
@@ -1493,7 +1530,17 @@ def _tasks_from_plan(
                     "explicit partial plan"
                 )
                 continue
-            part = spec.model_copy(update={"targets": chunk})
+            # Scoping the record without scoping the contract would
+            # multiply the infeasible task rather than split it: the
+            # worker prompt renders objective, scope and acceptance,
+            # so a part says what it alone must cover (U1-08).
+            part = spec.model_copy(
+                update={
+                    "targets": chunk,
+                    "objective": _scoped(spec.objective, chunk, index, chunks),
+                    "scope": _scoped_note(spec.scope, chunk, index, chunks),
+                }
+            )
             key = spec.key if index == 0 else f"{spec.key}#{index + 1}"
             key_to_id[key] = f"T{next_number}"
             next_number += 1
@@ -1531,6 +1578,29 @@ def _tasks_from_plan(
     return tasks, issues, log
 
 
+def _scoped(objective: str, chunk: list[str], index: int, chunks: list) -> str:
+    """One part's objective, naming only what this part must cover."""
+    if len(chunks) == 1 or not chunk:
+        return objective
+    named = ", ".join(chunk)
+    return (
+        f"{objective} -- part {index + 1} of {len(chunks)}: cover only "
+        f"{named} in this session."
+    )
+
+
+def _scoped_note(scope: str, chunk: list[str], index: int, chunks: list) -> str:
+    """One part's scope note, saying which targets are somebody else's."""
+    if len(chunks) == 1 or not chunk:
+        return scope
+    named = ", ".join(chunk)
+    note = (
+        f"This session covers {named} only; the other targets of this "
+        f"plan are separate tasks (part {index + 1} of {len(chunks)})."
+    )
+    return f"{scope} {note}".strip()
+
+
 def company_obligation(
     state: state_module.IndustryState,
     tasks: dict[str, records.Task],
@@ -1554,17 +1624,40 @@ def company_obligation(
     brief = state.get("brief")
     if 7 not in records.required_ids(brief):
         return issues, []
-    if any(task.role == "company" for task in tasks.values()):
-        return issues, []
     industry_map = state.get("map", records.IndustryMap())
     if not industry_map.participants:
         # Nothing has been discovered to compare yet; the obligation is
         # real but not yet actionable.
         return issues, []
-    key = "q7:no-company-task"
-    if any(issue.key == key for issue in issues.values()):
+    # Every company a company task actually owns, whatever its status:
+    # a role-bearing task is not an assignment for companies it never
+    # named, and a failed task leaves its own targets unmet (U1-09).
+    assigned: set[str] = set()
+    for task in tasks.values():
+        if task.role != "company" or task.status in ("failed", "skipped"):
+            continue
+        assigned.update(name.casefold() for name in task.targets)
+        if not task.targets:
+            # An untargeted company task is a general assignment; it
+            # covers the comparison as a whole.
+            return issues, []
+    unassigned = [
+        part.name
+        for part in industry_map.participants
+        if part.name.casefold() not in assigned
+    ]
+    if not unassigned:
         return issues, []
+    named = ", ".join(sorted(unassigned)[:6])
+    if len(unassigned) > 6:
+        named += f", and {len(unassigned) - 6} more"
+    key = "q7:no-company-task"
     updated = dict(issues)
+    for issue in updated.values():
+        if issue.key == key and issue.status in (
+            records.UNRESOLVED_ISSUE_STATUSES
+        ):
+            return issues, []
     issue_id = merge.next_id("I", updated)
     updated[issue_id] = records.Issue(
         id=issue_id,
@@ -1574,16 +1667,16 @@ def company_obligation(
         target="Q7",
         description=(
             "The brief requires a company comparison and no company "
-            f"evidence task was created. {reason}"
+            f"evidence task covers {named}. {reason}"
         ),
         requested_action="research",
         next_step=(
-            "Assign a company task for the selected comparison companies."
+            "Assign a company task naming the selected comparison companies."
         ),
     )
     return updated, [
-        f"{issue_id}: Q7 requires company evidence and no company task "
-        f"was created ({reason})"
+        f"{issue_id}: Q7 requires company evidence; no company task "
+        f"covers {named} ({reason})"
     ]
 
 
@@ -2150,12 +2243,30 @@ def build_graph(
                 calculations[calc_id] = result
                 if result.status == "ok":
                     claim_id = merge.next_id("C", claims)
+                    # A calculation's result matters because its inputs
+                    # did, never because a partition has room (U1-02).
+                    # The queue decides only whether its review waits.
+                    material = any(
+                        claims[item.claim_id].material
+                        for item in result.inputs
+                        if item.claim_id in claims
+                    )
+                    fits = merge.admit_material(
+                        claims, limits, "q4", state.get("relationships", {})
+                    )
                     claims[claim_id] = records.Claim(
                         id=claim_id,
                         kind="derived",
-                        material=merge.admit_material(claims, limits, "q4"),
+                        material=material,
                         partition="q4",
                         questions=[4],
+                        question_mapping="declared",
+                        review_disposition=(
+                            "pending" if not material or fits else "deferred"
+                        ),
+                        review_deferred_reason=(
+                            None if not material or fits else "q4 at capacity"
+                        ),
                         origin=calc_id,
                         **calc.derived_fields(result, claims),
                     )
@@ -2214,6 +2325,32 @@ def build_graph(
                 entity=spec.entity,
             )
         issues = dict(state.get("issues", {}))
+        for fid, finding in findings.items():
+            gap = uncomputed_comparison(finding, claims, calculations)
+            if gap is None:
+                continue
+            # A conclusion that compares two numbers rests on arithmetic
+            # whether or not anyone ran it. Admitting it silently is how
+            # "A is roughly twice B" reaches a reader with nothing behind
+            # it (U1-12, A12). The finding is kept -- the Analyst's
+            # reasoning is not thrown away -- and the obligation is
+            # recorded, which caps the report's status until it is met.
+            issues, issue = merge.open_issue(
+                issues,
+                "weak_inference",
+                "material",
+                fid,
+                "analyze",
+                f"[{fid}] the conclusion compares {gap} without a "
+                "calculation behind it",
+                next_step=(
+                    "Request the calculation, or state the comparison "
+                    "qualitatively."
+                ),
+            )
+            update["route_log"].append(
+                f"{issue.id}: {fid} compares {gap} with no calculation"
+            )
         for request in analysis.evidence_requests:
             issues, _ = merge.open_issue(
                 issues,
@@ -2281,6 +2418,20 @@ def build_graph(
             return update
         outcome = scope_review(state, outcome, pending)
         applied = merge.apply_review(state, outcome)
+        # A settled claim frees its partition slot, so the claims that
+        # were waiting for one are admitted now, before anything asks
+        # what is left to review (U1-01). Without this the deferral the
+        # quota created was permanent -- a demotion under another name.
+        promoted, promotion_log = merge.reconsider_deferred(
+            applied["claims"],
+            limits,
+            state.get("brief"),
+            applied["relationships"],
+        )
+        applied["claims"] = promoted
+        update.setdefault("route_log", []).extend(
+            f"review: {line}" for line in promotion_log
+        )
         update.update(
             {
                 "claims": applied["claims"],

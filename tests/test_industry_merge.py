@@ -2713,3 +2713,93 @@ def test_a_relationship_that_gained_evidence_is_reviewed_again():
     relationships = state["relationships"]
     assert not merge.claim_needs_attention(state["claims"]["C1"], {})
     assert merge.claim_needs_attention(state["claims"]["C1"], relationships)
+
+
+def test_u1_02_a_calculation_result_is_material_because_its_inputs_were():
+    """U1-02: a queue's occupancy is not a judgement about importance."""
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "material_per_question": 1}
+    )
+    parent = records.Claim(
+        id="C1",
+        statement="p",
+        kind="fact",
+        material=True,
+        partition="q4",
+        review="supported",
+        review_disposition="pending",
+    )
+    filler = records.Claim(
+        id="C2",
+        statement="f",
+        kind="fact",
+        material=True,
+        partition="q4",
+        review_disposition="pending",
+    )
+    claims = {"C1": parent, "C2": filler}
+    # q4 is full of outstanding work.
+    assert not merge.admit_material(claims, limits, "q4", {})
+    # Materiality still comes from the inputs, and the queue only defers.
+    assert parent.material
+
+
+def test_u1_13_a_revision_that_raises_importance_normalises_admission():
+    state = base_state()
+    claim = records.Claim(
+        id="C1",
+        statement="s",
+        kind="fact",
+        evidence_ids=[],
+        material=False,
+        review_disposition="unnecessary",
+    )
+    state = {**state, "claims": {"C1": claim}}
+    update = merge.invalidate_claim(state, "C1", material=True, statement="t")
+    revised = update["claims"]["C1"]
+    assert revised.material and revised.review_disposition == "pending"
+    # And it is now visible to the one definition of selectable work.
+    assert [c.id for c in merge.outstanding_review(update["claims"], {})] == [
+        "C1"
+    ]
+
+
+def test_u1_07_insufficient_evidence_becomes_an_obligation_not_a_log_line():
+    """A06: a route-log string is not something anyone acts on."""
+    state = base_state()
+    result = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "fact text", "va")],
+        findings=[
+            records.FindingDraft(
+                statement="company A had revenue of 1.2bn",
+                material=True,
+                evidence_refs=["E1"],
+                topics=["comparison"],
+            )
+        ],
+        evidence_acceptance="insufficient",
+        unmet=["company A had revenue of 1.2bn"],
+    )
+    update = merge.merge_results(state, [result], LIMITS)
+    opened = [
+        i
+        for i in update["issues"].values()
+        if i.category == "missing_evidence" and i.severity == "material"
+    ]
+    assert len(opened) == 1
+    issue = opened[0]
+    # It targets the claim the short finding became, not the whole task.
+    claim = next(
+        c
+        for c in update["claims"].values()
+        if c.statement.startswith("company A")
+    )
+    assert issue.target == claim.id
+    assert issue.requested_action == "acquire"
+    assert "original document" in (issue.next_step or "")

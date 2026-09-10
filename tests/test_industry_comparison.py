@@ -60,6 +60,10 @@ def claim(
         evidence_ids=["E1"],
         review=review,
         review_reason=reason,
+        # The verifier confirmed the claim bears on the comparison; a
+        # tag it did not confirm has never earned coverage (U1-03).
+        topics=["comparison"],
+        reviewed_topics=["comparison"],
         entity=entity,
         dimension=dimension,
         period=period,
@@ -175,3 +179,36 @@ def test_the_projection_is_deterministic():
     assert comparison.render(
         comparison.project(state(a, b))
     ) == comparison.render(comparison.project(state(b, a)))
+
+
+def test_u1_03_an_unconfirmed_comparison_tag_earns_nothing():
+    """Only topics the verifier confirmed take part, as everywhere else."""
+    a = claim("C1", "清溢", "revenue", 52.0, "亿元", "2024")
+    b = claim("C2", "龙图", "revenue", 40.0, "亿元", "2024")
+    b = b.model_copy(update={"reviewed_topics": []})
+    projection = comparison.project(state(a, b))
+    assert [c.claim_id for row in projection.rows for c in row.cells] == ["C1"]
+    assert not projection.any_comparable()
+
+
+def test_u1_03_numbers_with_no_established_unit_or_period_are_not_a_basis():
+    """The same unknown written twice is not agreement."""
+    a = claim("C1", "清溢", "capacity", 100.0, "元", None)
+    b = claim("C2", "龙图", "capacity", 80.0, "元", None)
+    projection = comparison.project(state(a, b))
+    assert projection.rows[0].comparable() == []
+    # Qualitative cells, which carry no value, still compare.
+    c = claim("C3", "清溢", "positioning")
+    e = claim("C4", "龙图", "positioning")
+    qualitative = comparison.project(state(c, e))
+    assert qualitative.rows[0].comparable()
+
+
+def test_u1_04_a_scale_below_a_divide_is_reached():
+    """`万元/片` parses as divide(scale10(4, 元), 片)."""
+    a = claim("C1", "清溢", "unit price", 1.0, "万元/片", "2024")
+    b = claim("C2", "龙图", "unit price", 10000.0, "元/片", "2024")
+    projection = comparison.project(state(a, b))
+    assert projection.any_comparable()
+    values = {round(c.value) for c in projection.rows[0].cells}
+    assert values == {10000}

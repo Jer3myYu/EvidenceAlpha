@@ -23,6 +23,8 @@ from industry import report
 from industry import records
 from industry import roles
 from industry import schedule
+from industry import worker
+from industry import tools
 from industry import trace
 from research import crew
 from research import persist
@@ -3061,3 +3063,200 @@ def test_a_task_naming_more_targets_than_a_session_can_cover_is_split():
     ]
     # Deterministic: the Lead's order is preserved for replay.
     assert schedule.decompose([], limits) == [[]]
+
+
+def test_u1_01_a_settled_claim_frees_its_slot_inside_the_review_node():
+    """The helper existed and nothing called it, so deferral was forever."""
+    limits = records.Limits(material_per_question=1)
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="a",
+            kind="fact",
+            material=True,
+            partition="q4",
+            review_disposition="pending",
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="b",
+            kind="fact",
+            material=True,
+            partition="q4",
+            review_disposition="deferred",
+            review_deferred_reason="q4 at capacity",
+        ),
+    }
+    # Only the admitted one is selectable while it waits for a verdict.
+    assert [c.id for c in merge.outstanding_review(claims, {})] == ["C1"]
+    settled = {
+        **claims,
+        "C1": claims["C1"].model_copy(update={"review": "supported"}),
+    }
+    promoted, log = merge.reconsider_deferred(settled, limits)
+    assert log and promoted["C2"].review_disposition == "pending"
+    assert promoted["C2"].review_deferred_reason is None
+    assert [c.id for c in merge.outstanding_review(promoted, {})] == ["C2"]
+
+
+def test_u1_01_an_unreviewed_material_claim_caps_the_report_status():
+    rows = [
+        records.Coverage(question=q, status="covered", note="n")
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    state = {
+        "brief": records.Brief(industry="x"),
+        "claims": {
+            "C1": records.Claim(
+                id="C1",
+                statement="a",
+                kind="fact",
+                material=True,
+                partition="q4",
+                review_disposition="deferred",
+                review_deferred_reason="q4 at capacity",
+            )
+        },
+        "findings": {},
+        "issues": {},
+    }
+    assert coverage.report_status(rows, state, verified=True) != "complete"
+    assert report.deferred_review(state)[0].id == "C1"
+    note = report.deferred_note(state)
+    assert "not independently verified" in note and "q4" in note
+    # And the reader is told, in the delivered appendix.
+    lines = report.appendices(state, rows)
+    assert any("unreviewed" in line for line in lines)
+
+
+def test_u1_08_a_decomposed_task_dispatches_a_smaller_contract():
+    limits = records.Limits(tools_per_attempt=6, tools_per_target=3)
+    plan = roles.TaskPlan(
+        tasks=[
+            roles.TaskSpec(
+                key="cmp",
+                role="company",
+                objective="Compare A, B, C, D, E",
+                scope="the five listed vendors",
+                targets=["A", "B", "C", "D", "E"],
+            )
+        ]
+    )
+    state = {"tasks": {}, "issues": {}, "evidence": {}}
+    # Two slots for three parts: the third is an explicit partial plan.
+    tasks, _, log = graph_module._tasks_from_plan(
+        state, plan, 2, "research", limits
+    )
+    created = sorted(tasks.values(), key=lambda t: t.id)
+    assert [t.targets for t in created] == [["A", "B"], ["C", "D"]]
+    # Each part says what it alone must cover, in the text the worker
+    # actually renders.
+    for task in created:
+        assert "part " in task.objective and "cover only" in task.objective
+        allowance = records.Reservation(turns=1, tool_calls=1, seconds=1.0)
+        prompt = worker.user_prompt(
+            records.WorkerInput(
+                thread_id="t",
+                attempt=records.Attempt(
+                    id=f"{task.id}.1",
+                    task_id=task.id,
+                    reserved=allowance,
+                    started_at="2026-09-10T00:00:00+00:00",
+                ),
+                task=task,
+                brief=records.Brief(industry="x"),
+                language="en",
+                allowance=allowance,
+                model="claude-sonnet-5",
+                prompt_version=roles.PROMPT_VERSION,
+            ),
+            tools.Collector(f"{task.id}.1", task.id),
+        )
+        assert "; ".join(task.targets) in prompt
+    assert any("has no slot" in line and "E" in line for line in log)
+    assert any("is split into 3" in line for line in log)
+
+
+def test_u1_09_a_company_task_covers_only_the_companies_it_names():
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="mid",
+                stage="midstream",
+                description="d",
+                claim_id="C1",
+            )
+        ],
+        participants=[
+            records.Participant(
+                id=f"P{n}",
+                name=name,
+                segment_id="G1",
+                role="supplier",
+                selection_rationale="r",
+                claim_id=f"C{n}",
+            )
+            for n, name in enumerate(["清溢", "龙图", "路维"], start=2)
+        ],
+    )
+    brief = records.Brief(industry="x", required_ids=[7], priority=[7])
+    state = {"brief": brief, "map": industry_map}
+    tasks = {
+        "T1": records.Task(
+            id="T1",
+            kind="research",
+            role="company",
+            objective="o",
+            targets=["清溢"],
+        )
+    }
+    issues, log = graph_module.company_obligation(state, tasks, {}, "r")
+    assert log and "龙图" in next(iter(issues.values())).description
+    assert "路维" in next(iter(issues.values())).description
+    # A failed task leaves its own targets unmet.
+    failed = {
+        "T1": tasks["T1"].model_copy(
+            update={"targets": ["清溢", "龙图", "路维"], "status": "failed"}
+        )
+    }
+    issues2, log2 = graph_module.company_obligation(state, failed, {}, "r")
+    assert log2 and "清溢" in next(iter(issues2.values())).description
+    # An untargeted company task is a general assignment.
+    general = {"T1": tasks["T1"].model_copy(update={"targets": []})}
+    assert graph_module.company_obligation(state, general, {}, "r") == ({}, [])
+
+
+def test_u1_10_grouping_reorders_the_batch_but_never_reselects_it():
+    """One source's mates must not crowd out a required question."""
+    evidence = {
+        f"E{n}": records.Evidence(
+            id=f"E{n}",
+            source_id="S1" if n != 2 else "S2",
+            excerpt="x",
+            locator="p",
+            kind="snippet",
+            extraction="search_snippet",
+            task_id="T1",
+            retrieved_at="2026-09-10T00:00:00+00:00",
+        )
+        for n in (1, 2)
+    }
+    state = {"claims": {}, "evidence": evidence}
+    ordered = ["C1", "C2", "C3"]
+    state["claims"] = {
+        "C1": records.Claim(
+            id="C1", statement="a", kind="fact", evidence_ids=["E1"]
+        ),
+        "C2": records.Claim(
+            id="C2", statement="b", kind="fact", evidence_ids=["E2"]
+        ),
+        "C3": records.Claim(
+            id="C3", statement="c", kind="fact", evidence_ids=["E1"]
+        ),
+    }
+    grouped = graph_module.group_by_source(state, ordered)
+    assert sorted(grouped) == sorted(
+        ordered
+    ), "grouping must not change membership"
+    assert grouped == ["C1", "C3", "C2"]

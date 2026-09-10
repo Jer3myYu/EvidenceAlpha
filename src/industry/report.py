@@ -546,6 +546,40 @@ def _cite(match: re.Match, claims, evidence, order) -> str:
     return "[" + ", ".join(str(n) for n in numbers) + "]"
 
 
+def deferred_review(
+    state: state_module.IndustryState,
+) -> list[records.Claim]:
+    """Material claims the bounded review never reached.
+
+    The one reader of ``review_disposition == "deferred"`` outside
+    merge: coverage says how many obligations are unmet, delivery caps
+    the status because of them, and the reader is told. A queue that
+    filled is a limitation of the run, and the reader owns it.
+    """
+    return sorted(
+        (
+            claim
+            for claim in state.get("claims", {}).values()
+            if claim.material and claim.review_disposition == "deferred"
+        ),
+        key=lambda c: c.id,
+    )
+
+
+def deferred_note(state: state_module.IndustryState) -> str | None:
+    """What to tell the reader about unreviewed material, if anything."""
+    deferred = deferred_review(state)
+    if not deferred:
+        return None
+    partitions = sorted({merge.material_partition(c) for c in deferred})
+    named = ", ".join(partitions)
+    return (
+        f"{len(deferred)} material finding(s) were collected but not "
+        "independently verified within this run's review budget "
+        f"({named}); they are not cited in this report."
+    )
+
+
 def appendices(
     state: state_module.IndustryState,
     coverage: list[records.Coverage],
@@ -585,11 +619,57 @@ def appendices(
                 + (f" ({issue.resolution})" if issue.resolution else "")
             )
         lines.append("")
+    note = deferred_note(state)
+    if note:
+        # A material claim the review never reached is a limitation of
+        # this run, and the reader owns it. Before D-U2 the claim was
+        # written non-material and nobody was told (U1-01).
+        if not unresolved:
+            lines += ["## " + ("局限性" if zh else "Limitations"), ""]
+        lines.append(f"- [material] unreviewed: {note}")
+        lines.append("")
+    omitted = map_omissions(state)
+    if omitted:
+        if not unresolved and not note:
+            lines += ["## " + ("局限性" if zh else "Limitations"), ""]
+        lines.append(f"- [minor] scope: {omitted}")
+        lines.append("")
     lines += ["## " + ("问题覆盖" if zh else "Coverage"), ""]
     for item in coverage:
         lines.append(f"- Q{item.question}: {item.status}")
     lines.append("")
     return lines
+
+
+def map_omissions(state: state_module.IndustryState) -> str | None:
+    """What the bounded map view left out of the delivered report.
+
+    The registry keeps every candidate segment, link and participant
+    since D-U3, and the view bounds what any reader sees. A reader who
+    is not told the view is bounded would read a partial chain as the
+    whole industry (U1-14).
+    """
+    industry_map = state.get("map", records.IndustryMap())
+    if not industry_map.segments:
+        return None
+    limits = _limits_of(state)
+    _, beyond, _ = merge.map_view(industry_map, limits, state.get("claims"))
+    if not beyond:
+        return None
+    detail = ", ".join(
+        f"{count} {kind}" for kind, count in sorted(beyond.items())
+    )
+    return (
+        f"the industry map holds further candidates this report does not "
+        f"show ({detail}); they were recorded but not selected for the "
+        "delivered view"
+    )
+
+
+def _limits_of(state: state_module.IndustryState) -> records.Limits:
+    """The run's configured limits, or the defaults for an older thread."""
+    meta = state.get("meta")
+    return getattr(meta, "limits", None) or records.Limits()
 
 
 _UNIT = "\x1f"

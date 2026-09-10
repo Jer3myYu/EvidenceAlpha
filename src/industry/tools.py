@@ -361,6 +361,20 @@ class FixtureBackend:
             self.store, version, canonical_url, chunks
         )
 
+    def read_snapshot(
+        self, version: records.SourceVersion
+    ) -> list[snapshots.Chunk]:
+        """The stored snapshot's own chunks, read directly.
+
+        The fixed-evidence path must offer every tool the live path
+        does, or a matched comparison measures the harness rather than
+        the workflow: without this, ``read_source`` returned an
+        AttributeError observation on every fixture run (U1-11).
+        ``snapshots.read_snapshot`` reads the blob the version records,
+        which ``fetch`` above wrote from the fixture's own bytes.
+        """
+        return snapshots.read_snapshot(version)
+
     def search_documents(
         self, query: str, k: int, source_url: str | None
     ) -> list[snapshots.Hit]:
@@ -439,8 +453,30 @@ class Collector:
         limitations: list[str] | None = None,
         version_id: str | None = None,
         table: records.TableLayout | None = None,
+        entity: str | None = None,
+        period: str | None = None,
+        unit: str | None = None,
+        scope: str | None = None,
+        context_basis: str = "",
     ) -> records.Evidence:
-        """Record one excerpt and return it with its label."""
+        """Record one excerpt and return it with its label.
+
+        A reading of what the excerpt is about (entity, period, unit,
+        scope) is admitted only with the page, header, caption, or
+        sentence that supports it: filling a null field is not evidence
+        (plan D-U7). The rule lives here, at the one boundary that
+        creates evidence, rather than on the record -- a validator that
+        raised would refuse to load a schema-11 record that legitimately
+        carried an entity and never recorded a basis (U1-06).
+        """
+        if (
+            any(v is not None for v in (entity, period, unit, scope))
+            and not context_basis.strip()
+        ):
+            raise ValueError(
+                "evidence whose entity, period, unit or scope is set names "
+                "what supports that reading in context_basis"
+            )
         item = records.Evidence(
             id=f"E{len(self.evidence) + 1}",
             source_id=source.id,
@@ -453,6 +489,11 @@ class Collector:
             task_id=self.task_id,
             retrieved_at=records.now_iso(),
             table=table,
+            entity=entity,
+            period=period,
+            unit=unit,
+            scope=scope,
+            context_basis=context_basis,
         )
         self.evidence.append(item)
         return item

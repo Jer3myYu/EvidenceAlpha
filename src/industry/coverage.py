@@ -329,7 +329,14 @@ def _q7(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
         cited = set(finding.claim_ids)
         for row in projection.rows:
             for group in row.comparable():
-                if len({c.claim_id for c in group} & cited) >= 2:
+                # Two *entities* the finding itself cites, not two claim
+                # ids: citing two figures about one company while a
+                # second company sits elsewhere in the projection is not
+                # a comparison (U1-03).
+                entities = {
+                    c.entity.casefold() for c in group if c.claim_id in cited
+                }
+                if len(entities) >= 2:
                     covered = True
                     break
             if covered:
@@ -667,6 +674,12 @@ def report_status(
     by_question = {c.question: c for c in coverage}
     if sorted(by_question) != sorted(records.REQUIRED_QUESTIONS):
         return "incomplete"
+    if report.deferred_review(state):
+        # A material claim the review never reached is an unmet
+        # obligation, not an absence. Before D-U2 it was written
+        # non-material and vanished; now it is visible, and a report
+        # that leaves one outstanding is not complete (U1-01).
+        return "complete_with_limitations"
     claims = state.get("claims", {})
     findings = state.get("findings", {})
     issues = [

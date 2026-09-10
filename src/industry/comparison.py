@@ -60,12 +60,26 @@ class Row:
         return grouped
 
     def comparable(self) -> list[list[Cell]]:
-        """Groups where at least two distinct entities can be compared."""
-        return [
-            cells
-            for cells in self.bases().values()
-            if len({c.entity.casefold() for c in cells}) >= 2
-        ]
+        """Groups where at least two distinct entities can be compared.
+
+        A group of numbers whose unit or period nobody established is
+        not a basis -- it is the same unknown written twice, and
+        treating it as agreement is how two unrelated figures end up in
+        one column (U1-03). Scope is not required, because sources often
+        do not state one; it only has to *agree*, which it does by
+        being part of the basis, so consolidated still never groups with
+        a segment. Qualitative cells carry no value at all and are
+        unaffected: they compare on the metric itself.
+        """
+        groups = []
+        for (unit, period, _), cells in self.bases().items():
+            if len({c.entity.casefold() for c in cells}) < 2:
+                continue
+            numeric = any(c.value is not None for c in cells)
+            if numeric and not (unit and period):
+                continue
+            groups.append(cells)
+        return groups
 
 
 @dataclasses.dataclass(frozen=True)
@@ -94,12 +108,37 @@ def normalise(quantity: records.Quantity) -> tuple[float, str]:
     rate, which is evidence this module does not have and will not
     invent.
     """
-    value = quantity.value
-    expr = quantity.unit
-    while expr.kind == "scale10" and expr.left is not None:
-        value *= 10.0**expr.exponent
-        expr = expr.left
-    return value, quantities.render(expr)
+    exponent, base = _strip_scale(quantity.unit)
+    return quantity.value * 10.0**exponent, quantities.render(base)
+
+
+def _strip_scale(expr: records.UnitExpr) -> tuple[int, records.UnitExpr]:
+    """The total power of ten in ``expr``, and ``expr`` without it.
+
+    A scale does not only sit at the top. ``万元/片`` parses as
+    ``divide(scale10(4, 元), 片)``, and a loop that only unwrapped the
+    outermost node never reached it -- so ``1 万元/片`` and
+    ``10000 元/片`` looked like two incompatible bases and a legitimate
+    comparison regressed (U1-04). A scale in a denominator counts
+    negatively; one under a power counts as many times as the power.
+    """
+    if expr.kind == "scale10" and expr.left is not None:
+        inner, base = _strip_scale(expr.left)
+        return expr.exponent + inner, base
+    if expr.kind in ("multiply", "divide"):
+        if expr.left is None or expr.right is None:
+            return 0, expr
+        left_exp, left = _strip_scale(expr.left)
+        right_exp, right = _strip_scale(expr.right)
+        sign = 1 if expr.kind == "multiply" else -1
+        rebuilt = records.UnitExpr(kind=expr.kind, left=left, right=right)
+        return left_exp + sign * right_exp, rebuilt
+    if expr.kind == "power" and expr.left is not None:
+        inner, base = _strip_scale(expr.left)
+        return inner * expr.exponent, records.UnitExpr(
+            kind="power", exponent=expr.exponent, left=base
+        )
+    return 0, expr
 
 
 def _cell(
@@ -147,6 +186,11 @@ def project(state: dict[str, Any]) -> Projection:
     Only reviewed claims take part: an unreviewed number has not earned
     a place in a table a reader will compare across. The order is by
     metric then claim id, so a replay projects identically.
+    Only claims the verifier confirmed as bearing on the comparison
+    take part (``reviewed_topics``), the same rule coverage applies
+    everywhere else: a tag the verifier did not confirm has never been
+    allowed to earn coverage, and it may not earn it here either
+    (U1-03).
     """
     claims = state.get("claims", {})
     evidence = state.get("evidence", {})
@@ -157,6 +201,8 @@ def project(state: dict[str, Any]) -> Projection:
     by_metric: dict[str, tuple[str, list[Cell]]] = {}
     for claim in sorted(claims.values(), key=lambda c: c.id):
         if not claim.is_reviewed():
+            continue
+        if "comparison" not in claim.reviewed_topics:
             continue
         cell = _cell(claim, evidence)
         if cell is None:
