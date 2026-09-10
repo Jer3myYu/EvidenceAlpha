@@ -47,6 +47,7 @@ from industry import budget
 from industry import calc
 from industry import coverage as coverage_module
 from industry import merge
+from industry import pdf as pdf_module
 from industry import quantities
 from industry import records
 from industry import report
@@ -555,6 +556,32 @@ def _thread_id() -> str:
     except RuntimeError:
         return "anonymous"
     return str(config.get("configurable", {}).get("thread_id", "anonymous"))
+
+
+def _render_pdf(thread_id: str, text: str, directory: str) -> str:
+    """Render the delivered report as a PDF; report failure, never raise.
+
+    The Markdown report is the delivered artifact and its status was
+    decided by the delivery gate. Typography runs afterwards and is
+    allowed to fail: a broken render costs the reader a formatted copy,
+    and must never cost them the report or change what it says it is.
+
+    Args:
+      thread_id: Names the file, as it names the Markdown report.
+      text: The delivered Markdown, verbatim.
+      directory: Where reports are written.
+
+    Returns:
+      The route-log line naming the PDF, or naming the failure.
+    """
+    try:
+        written = pdf_module.write_pdf(thread_id, text, directory)
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        return (
+            "deliver: pdf rendering failed, the Markdown report stands "
+            f"({type(error).__name__}: {error})"
+        )
+    return f"deliver: pdf {written}"
 
 
 def _writer() -> Callable[[dict[str, Any]], Any] | None:
@@ -2572,6 +2599,7 @@ def build_graph(
         status = delivery.status
         text = report.render(chosen, derived, status, delivery, plan)
         path = report.write_report(_thread_id(), text, runtime.reports_dir)
+        pdf_note = _render_pdf(_thread_id(), text, runtime.reports_dir)
         meta = state["meta"].model_copy(
             update={
                 "execution_status": "completed",
@@ -2585,7 +2613,8 @@ def build_graph(
             "delivery": delivery,
             "route_log": [
                 f"deliver: {delivery.level} ({status}); {delivery.reason}; "
-                f"report {path}"
+                f"report {path}",
+                pdf_note,
             ],
         }
         if released:

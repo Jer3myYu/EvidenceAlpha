@@ -13,7 +13,8 @@ Every run is checkpointed to ``data/workflow.db`` under a thread id,
 printed first. An interrupted run resumes with ``--resume`` at the
 node that did not finish; a Phase 6-9 thread cannot be resumed here
 (replay it in Studio). The report is written to
-``data/reports/<thread_id>.md``; the trace shows every node, task, and
+``data/reports/<thread_id>.md``, with a formatted copy alongside it at
+``data/reports/<thread_id>.pdf``; the trace shows every node, task, and
 the budget as the run goes.
 """
 
@@ -24,6 +25,7 @@ import tempfile
 
 from industry import budget
 from industry import graph as graph_module
+from industry import pdf as pdf_module
 from industry import records
 from industry import snapshots
 from industry import state as state_module
@@ -259,6 +261,9 @@ async def main() -> None:
         if delivery.floor:
             lines.append(delivery.floor + ".")
         lines.append(str(meta.report_path))
+        rendered = pdf_module.pdf_beside(meta.report_path)
+        if rendered:
+            lines.append(rendered)
         show("REPORT", "\n".join(lines))
     else:
         show("REPORT", f"{meta.report_status}: {meta.report_path}")

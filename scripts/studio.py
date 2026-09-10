@@ -46,6 +46,7 @@ from starlette import routing
 from industry import admission as admission_module
 from industry import budget
 from industry import graph as graph_module
+from industry import pdf as pdf_module
 from industry import records
 from industry import roles
 from industry import state as state_module
@@ -309,6 +310,9 @@ async def replay_industry(
         "completed": bool(last) and not last.next,
         "report_status": persist.recorded_meta(values, "report_status"),
         "report_path": persist.recorded_meta(values, "report_path"),
+        "report_pdf": pdf_module.pdf_beside(
+            persist.recorded_meta(values, "report_path")
+        ),
         "delivery": _delivery(values),
         "events": events,
     }

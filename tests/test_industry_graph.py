@@ -17,6 +17,7 @@ from industry import budget
 from industry import calc
 from industry import coverage
 from industry import graph as graph_module
+from industry import pdf as pdf_module
 from industry import merge
 from industry import report
 from industry import records
@@ -2842,3 +2843,48 @@ def test_a_dispatched_repair_is_visible_in_the_trace():
         "dispatch", {"route_log": [line]}, {"tasks": {}, "attempts": {}}
     )
     assert rendered == ["DISPATCH: 1 attempts started"]
+
+
+def test_delivery_writes_the_pdf_beside_the_markdown(tmp_path):
+    """Plan §4.47: the formatted copy is rendered after the gate."""
+    runtime, _, _, compiled = make(tmp_path)
+    config = persist.thread_config("t1")
+    runtime.begin("t1")
+    state = run(compiled.ainvoke({"question": "光掩模产业调研"}, config))
+    written = tmp_path / "reports" / "t1.pdf"
+    assert written.is_file()
+    assert written.read_bytes().startswith(b"%PDF")
+    assert f"deliver: pdf {written}" in state["route_log"]
+    assert pdf_module.pdf_beside(state["meta"].report_path) == str(written)
+
+
+def test_a_failed_pdf_render_costs_the_reader_nothing_but_the_pdf(
+    tmp_path, monkeypatch
+):
+    """Typography never decides what was verified.
+
+    The Markdown report, its path and its status are the delivered
+    artifact; a broken renderer is recorded in the route log and
+    changes none of them.
+    """
+    monkeypatch.setattr(
+        pdf_module,
+        "write_pdf",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("no space")),
+    )
+    runtime, _, _, compiled = make(tmp_path)
+    config = persist.thread_config("t1")
+    runtime.begin("t1")
+    state = run(compiled.ainvoke({"question": "光掩模产业调研"}, config))
+    meta = state["meta"]
+    assert meta.execution_status == "completed"
+    assert meta.report_status == "complete"
+    assert state["delivery"].level == "verified"
+    assert meta.report_path == str(tmp_path / "reports" / "t1.md")
+    assert (tmp_path / "reports" / "t1.md").is_file()
+    assert not (tmp_path / "reports" / "t1.pdf").exists()
+    assert (
+        "deliver: pdf rendering failed, the Markdown report stands "
+        "(OSError: no space)" in state["route_log"]
+    )
+    assert pdf_module.pdf_beside(meta.report_path) is None
