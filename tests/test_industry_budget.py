@@ -357,7 +357,14 @@ def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
         )
         for n in range(25)
     }
-    state = {"attempts": {}, "single_calls": {}, "claims": claims}
+    # The repair earmark rides with the two stages that could spend it
+    # (plan revision 39 §4.46.3); closed, the reserve is what it was.
+    state = {
+        "attempts": {},
+        "single_calls": {},
+        "claims": claims,
+        "repair_window": "closed",
+    }
     # 25 unreviewed material claims = 3 batches; analyze + assess follow.
     seconds, turns = budget.pipeline_reserve(state, limits, "research")
     assert seconds == 3 * 240 + 2 * 480
@@ -370,8 +377,23 @@ def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
     # reserve, 5400 - 960 - 1680 = 2760 s admits 3 attempts of 900 s,
     # not the 4 that fit without the pipeline reserve.
     assert budget.dispatchable(state, limits, False) == 3
-    empty = {"attempts": {}, "single_calls": {}, "claims": {}}
+    empty = {
+        "attempts": {},
+        "single_calls": {},
+        "claims": {},
+        "repair_window": "closed",
+    }
     assert budget.dispatchable(empty, limits, False) == 3  # (4440-960)//900
+    # With the window open, one repair pair is held back from both.
+    held_s, held_turns = budget.repair_pair_cost(limits)
+    for stage in ("research", "review"):
+        was = budget.pipeline_reserve(state, limits, stage)
+        now = budget.pipeline_reserve({**state, "repair_window": "open"},
+                                      limits, stage)
+        assert now == (was[0] + held_s, was[1] + held_turns)
+    assert budget.pipeline_reserve(
+        {**state, "repair_window": "open"}, limits, "analyze"
+    ) == (480, 10)
 
 
 def test_review_is_refused_when_analysis_could_not_follow():

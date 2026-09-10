@@ -50,6 +50,10 @@ import pydantic
 # be told apart by where their figures came from; a schema-7 thread can
 # hold a calculation that divided a figure by itself and is refused for
 # resume like the rest.
+# 11: a repair attempt is reserved at `repair_timeout_s` and admitted
+# with the review it forces as a charged pair, and the run records
+# whether its repair window is still open. A schema-10 thread reserved
+# 900 s for a 60 s session and could not fund the pair.
 # Schema 9 adds the reservation pair and the retained delivery
 # candidate: a schema-8 thread can hold a body whose review was never
 # affordable, and carries no candidate to fall back to.
@@ -60,7 +64,7 @@ import pydantic
 # instead of strengthening their targets; nothing infers a target,
 # attachment or disposition for it, so it replays read-only and is
 # refused for resume like every earlier schema.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]
@@ -1232,6 +1236,12 @@ class Limits(Record):
     # The one run-level repair ceiling (plan revision 38 §4.45.2): a
     # ceiling, never a promise -- the budget decides how many run.
     acquisition_executions: int = pydantic.Field(default=4, ge=0)
+    # A repair is a small unit of work: every recorded repair session
+    # finished inside 90 s (33, 34, 50, 55, 55, 85) while reserving
+    # 900, which is why none was ever affordable. Plan revision 39
+    # §4.46.1; enforced by the attempt's reservation and the worker's
+    # deadline, never by hope.
+    repair_timeout_s: float = pydantic.Field(default=180.0, gt=0)
     # Pipeline reservations: what research dispatch and each single
     # call keep for the stages that must follow (review batches of the
     # material claims already collected, then analyze and assess).

@@ -45,6 +45,10 @@ class IndustryState(TypedDict, total=False):
     # Every evidence repair the verifier asked for, with what became of
     # it (plan revision 38 §4.45.4).
     repairs: dict[str, records.RepairRequest]
+    # "open" while one repair pair is still earmarked, "used" once one
+    # was admitted, "closed" once the run passed the point of asking
+    # (plan revision 39 §4.46.3). Absent means open.
+    repair_window: str
     attempts: dict[str, records.Attempt]
     single_calls: dict[str, records.Attempt]
     phase: str

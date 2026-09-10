@@ -2284,73 +2284,10 @@ def requests_for(state):
     ]
 
 
-def test_every_repair_request_is_recorded_and_two_bounds_hold():
-    # 23 requests and nothing truncated (plan revision 38 §4.45.4).
-    # Two bounds decide what becomes a task: the run's repair ceiling,
-    # and what the budget can actually fund -- an untouched ledger at
-    # default limits funds three full attempts, not four.
-    state = repair_state(pending=23)
-    repairs, log = graph_module.record_repairs(
-        state, requests_for(state), state["claims"], 1
-    )
-    assert len(repairs) == 23 and log
-
-    ceiling = records.Limits(acquisition_executions=2)
-    bounded, tasks, _ = graph_module.schedule_repairs(
-        {**state, "repairs": repairs}, ceiling
-    )
-    admitted = [r for r in bounded.values() if r.status == "admitted"]
-    deferred = [r for r in bounded.values() if r.status == "deferred"]
-    assert len(admitted) == 2 and len(deferred) == 21 and len(tasks) == 2
-    assert all("ceiling" in r.reason for r in deferred)
-    task = tasks[admitted[0].task_id]
-    assert task.kind == "acquisition" and task.target is not None
-    assert task.target.claim_version == 1
-    assert task.target.qualification == "search snippet only"
-
-    roomy = records.Limits(acquisition_executions=10)
-    slots = budget.dispatchable(state, roomy, False)
-    funded, tasks, _ = graph_module.schedule_repairs(
-        {**state, "repairs": repairs}, roomy
-    )
-    admitted = [r for r in funded.values() if r.status == "admitted"]
-    assert len(admitted) == slots == len(tasks)
-    assert all(
-        "reserve" in r.reason for r in funded.values() if r.status == "deferred"
-    )
-
-
-def test_a_repair_is_refused_when_its_own_review_would_not_fit():
-    # The repair costs an attempt *and* the review its attachment makes
-    # necessary; `review_batches` counts only claims that already need
-    # one, so admitting on the attempt alone withdraws a citable claim
-    # with no way to restore it.
-    state = repair_state(pending=1)
-    limits = records.Limits()
-    repairs, _ = graph_module.record_repairs(
-        state, requests_for(state), state["claims"], 1
-    )
-    roomy = {**state, "repairs": repairs}
-    _, tasks, _ = graph_module.schedule_repairs(roomy, limits)
-    assert len(tasks) == 1
-    # Now spend the run to the point where the attempt alone still fits
-    # (`dispatchable` returns 1) but the review its attachment forces
-    # does not.
-    spent = 2400
-    tight = {
-        **roomy,
-        "attempts": {
-            "T1.1": records.Attempt(
-                id="T1.1",
-                task_id="T1",
-                reserved=records.Reservation(
-                    turns=2, tool_calls=2, seconds=spent
-                ),
-                started_at="2026-09-09T00:00:00+00:00",
-                status="done",
-                observed=records.Usage(duration_s=spent),
-            )
-        },
+def charged(state, seconds):
+    """The state with one finished attempt that spent `seconds`."""
+    return {
+        **state,
         "tasks": {
             "T1": records.Task(
                 id="T1",
@@ -2360,12 +2297,95 @@ def test_a_repair_is_refused_when_its_own_review_would_not_fit():
                 status="done",
             )
         },
+        "attempts": {
+            "T1.1": records.Attempt(
+                id="T1.1",
+                task_id="T1",
+                reserved=records.Reservation(
+                    turns=2, tool_calls=2, seconds=seconds
+                ),
+                started_at="2026-09-09T00:00:00+00:00",
+                status="done",
+                observed=records.Usage(duration_s=seconds),
+            )
+        },
     }
-    assert budget.dispatchable(tight, limits, False) == 1
-    repaired, tasks, _ = graph_module.schedule_repairs(tight, limits)
-    assert not [t for t in tasks.values() if t.kind == "acquisition"]
-    assert all(r.status == "deferred" for r in repaired.values())
-    assert any("reserve" in r.reason for r in repaired.values())
+
+
+def test_every_request_is_recorded_and_one_pair_runs_at_a_time():
+    # 23 requests, nothing truncated, and exactly one repair pair
+    # admitted: plan revision 39 §4.46.2 funds a repair together with
+    # the review its attachment forces, and owns one at a time.
+    state = repair_state(pending=23)
+    limits = records.Limits()
+    repairs, log = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    assert len(repairs) == 23 and log
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, limits
+    )
+    admitted = [r for r in repairs.values() if r.status == "admitted"]
+    deferred = [r for r in repairs.values() if r.status == "deferred"]
+    assert len(admitted) == 1 and len(deferred) == 22
+    assert len([t for t in tasks.values() if t.kind == "acquisition"]) == 1
+    assert all(r.reason for r in deferred)
+    assert any("one repair pair runs at a time" in r.reason for r in deferred)
+    task = tasks[admitted[0].task_id]
+    assert task.target is not None and task.target.claim_version == 1
+    assert task.target.qualification == "search snippet only"
+
+
+def test_a_repair_pair_costs_a_short_attempt_and_a_full_review():
+    # The measured failure of revision 38: a 60-second session reserved
+    # 900 seconds, so 757 free seconds funded nothing.
+    limits = records.Limits()
+    assert budget.repair_reservation_for(limits).seconds == 180.0
+    assert budget.reservation_for(limits).seconds == 900.0
+    seconds, turns = budget.repair_pair_cost(limits)
+    assert seconds == 180.0 + limits.single_call_timeout_s
+    assert turns == limits.attempt_turns() + limits.single_call_reserved()
+
+
+def test_a_repair_is_admitted_only_when_its_review_fits_too():
+    # Both halves or neither, across the run's budget.
+    limits = records.Limits()
+    base = repair_state(pending=1)
+    admitted_anywhere = False
+    for spent in (500, 1500, 2000, 2400, 2800, 3200):
+        state = charged(base, spent)
+        repairs, _ = graph_module.record_repairs(
+            state, requests_for(state), state["claims"], 1
+        )
+        repairs, tasks, _ = graph_module.schedule_repairs(
+            {**state, "repairs": repairs}, limits
+        )
+        created = [t for t in tasks.values() if t.kind == "acquisition"]
+        fits = budget.admit_repair_pair(state, limits) > 0
+        assert bool(created) == fits
+        if created:
+            admitted_anywhere = True
+            left = budget.remaining(state, limits)
+            seconds, turns = budget.repair_pair_cost(limits)
+            assert left.seconds - limits.time_reserve_s >= seconds
+            assert left.turns - limits.model_call_reserve >= turns
+    assert admitted_anywhere
+
+
+def test_the_earmark_holds_one_pair_back_from_broad_work():
+    # An earmark of existing capacity: while the window is open, broad
+    # dispatch and ordinary review cannot spend the last repair.
+    limits = records.Limits()
+    state = charged(repair_state(pending=1), 2000)
+    assert budget.repair_earmark(state, limits) == budget.repair_pair_cost(
+        limits
+    )
+    open_slots = budget.dispatchable(state, limits, False)
+    closed = {**state, "repair_window": "closed"}
+    assert budget.repair_earmark(closed, limits) == (0.0, 0)
+    assert budget.dispatchable(closed, limits, False) >= open_slots
+    used = {**state, "repair_window": "used"}
+    assert budget.repair_earmark(used, limits) == (0.0, 0)
 
 
 def test_a_repair_whose_target_moved_is_not_dispatched():
@@ -2451,125 +2471,6 @@ def test_a_repair_is_done_only_when_evidence_was_attached():
     assert settled["RQ2"].status == "dropped"
 
 
-def test_repairs_cannot_all_pass_the_same_one_slot_test():
-    # A created task holds no reservation until it starts, so capacity
-    # has to be debited inside the scheduling call. Found by the
-    # saved-ledger replay: with `dispatchable` at 1, two repairs were
-    # admitted against the after arm's real round-5 checkpoint.
-    state = repair_state(pending=4)
-    limits = records.Limits()
-    spent = 2000
-    state["tasks"] = {
-        "T1": records.Task(
-            id="T1",
-            kind="research",
-            role="industry",
-            objective="o",
-            status="done",
-        )
-    }
-    state["attempts"] = {
-        "T1.1": records.Attempt(
-            id="T1.1",
-            task_id="T1",
-            reserved=records.Reservation(turns=2, tool_calls=2, seconds=spent),
-            started_at="2026-09-09T00:00:00+00:00",
-            status="done",
-            observed=records.Usage(duration_s=spent),
-        )
-    }
-    slots = budget.dispatchable(state, limits, False)
-    assert slots == 1
-    repairs, _ = graph_module.record_repairs(
-        state, requests_for(state), state["claims"], 1
-    )
-    repairs, tasks, _ = graph_module.schedule_repairs(
-        {**state, "repairs": repairs}, limits
-    )
-    created = [t for t in tasks.values() if t.kind == "acquisition"]
-    assert len(created) == slots
-    assert len([r for r in repairs.values() if r.status == "deferred"]) == 3
-
-
-def charged(state, seconds):
-    """The state with one finished attempt that spent `seconds`."""
-    return {
-        **state,
-        "tasks": {
-            "T1": records.Task(
-                id="T1",
-                kind="research",
-                role="industry",
-                objective="o",
-                status="done",
-            )
-        },
-        "attempts": {
-            "T1.1": records.Attempt(
-                id="T1.1",
-                task_id="T1",
-                reserved=records.Reservation(
-                    turns=2, tool_calls=2, seconds=seconds
-                ),
-                started_at="2026-09-09T00:00:00+00:00",
-                status="done",
-                observed=records.Usage(duration_s=seconds),
-            )
-        },
-    }
-
-
-def test_a_repair_is_admitted_only_when_its_review_can_still_run():
-    # Post-implementation review of §4.45, finding 1. The projection
-    # priced the review the attachment forces at one review batch
-    # (240s), while admitting a review call really reserves
-    # `single_call_timeout_s` (480s) plus its downstream stages. A
-    # repair could therefore be admitted, withdraw a citable claim, and
-    # leave no affordable way to restore it.
-    limits = records.Limits()
-    base = repair_state(pending=1)
-    admitted_anywhere = False
-    for spent in (500, 1000, 1500, 2000, 2500, 3000):
-        state = charged(base, spent)
-        repairs, _ = graph_module.record_repairs(
-            state, requests_for(state), state["claims"], 1
-        )
-        repairs, tasks, _ = graph_module.schedule_repairs(
-            {**state, "repairs": repairs}, limits
-        )
-        for request in repairs.values():
-            if request.status != "admitted":
-                continue
-            admitted_anywhere = True
-            # The repair has been paid for; its review must still fit.
-            after = {
-                **state,
-                "claims": {
-                    request.claim_id: state["claims"][
-                        request.claim_id
-                    ].model_copy(
-                        update={"review": "unreviewed", "review_reason": None}
-                    )
-                },
-                "attempts": {
-                    **state["attempts"],
-                    "T9.1": records.Attempt(
-                        id="T9.1",
-                        task_id=request.task_id,
-                        reserved=budget.reservation_for(limits),
-                        started_at="2026-09-09T00:00:00+00:00",
-                        status="done",
-                        observed=records.Usage(
-                            duration_s=limits.task_timeout_s
-                        ),
-                    ),
-                },
-            }
-            assert budget.admit_single_call(after, limits, "review") > 0
-        assert len([t for t in tasks.values() if t.kind == "acquisition"]) <= 1
-    assert admitted_anywhere  # the rule bounds repairs, it does not ban them
-
-
 def test_a_closed_request_does_not_suppress_a_later_one():
     # A review may legitimately ask again once an attempt attached
     # nothing; deduplicating terminal requests silenced the repeat.
@@ -2629,3 +2530,167 @@ def test_a_request_whose_target_stopped_being_repairable_is_closed():
     assert not [t for t in tasks.values() if t.kind == "acquisition"]
     request = next(iter(repairs.values()))
     assert request.status == "dropped" and request.reason
+
+
+def test_a_held_repair_review_is_activated_without_a_second_charge():
+    # The §4.41 shape, applied to a repair: the review it forces is
+    # taken with it and charged from that moment, then activated.
+    limits = records.Limits()
+    held = records.Attempt(
+        id="review.2",
+        task_id="review",
+        status="running",
+        reserved=records.Reservation(
+            turns=limits.single_call_reserved(),
+            tool_calls=0,
+            seconds=limits.single_call_timeout_s,
+            pair_id="T5.1",
+            held=True,
+        ),
+        started_at="2026-09-09T00:00:00+00:00",
+    )
+    state = {"single_calls": {"review.2": held}}
+    # A held allowance is not a running call: the router must not read
+    # it as one, or another review round could never be asked for.
+    assert graph_module.running_reservation(state, "review") is None
+    reserve = graph_module.reserve_node("review", limits)
+    update = run(reserve(state))
+    activated = update["single_calls"]["review.2"]
+    assert activated.reserved.held is False
+    assert activated.reserved.pair_id == "T5.1"
+    assert activated.reserved.seconds == limits.single_call_timeout_s
+    assert any("activated" in line for line in update["route_log"])
+
+
+def test_priority_puts_a_central_promotable_target_first():
+    # Plan revision 39 §4.46.4: what the reader loses most by not
+    # repairing, then how real the route to original context is.
+    state = repair_state(pending=3)
+    state["coverage"] = [
+        records.Coverage(question=1, status="partial"),
+        records.Coverage(question=8, status="covered"),
+    ]
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"questions": [8]}
+    )
+    state["claims"]["C2"] = state["claims"]["C2"].model_copy(
+        update={"questions": [1]}
+    )
+    state["claims"]["C3"] = state["claims"]["C3"].model_copy(
+        update={"questions": [8], "milestone": "mass_production"}
+    )
+    requests = {
+        cid: records.RepairRequest(
+            id=f"RQ{n}", claim_id=cid, objective=f"o{n}", status="pending"
+        )
+        for n, cid in enumerate(("C1", "C2", "C3"), start=1)
+    }
+    ranked = sorted(
+        requests.values(),
+        key=lambda r: graph_module.repair_priority({**state}, r),
+    )
+    # C2 answers an uncovered central question; C3 carries a milestone;
+    # C1 is neither.
+    assert [r.claim_id for r in ranked] == ["C2", "C3", "C1"]
+
+
+def test_a_speculative_repair_waits_behind_an_accessible_one():
+    state = repair_state(pending=2)
+    state["evidence"] = {
+        "E1": records.Evidence(
+            id="E1",
+            source_id="S1",
+            source_version_id="v1",
+            excerpt="x",
+            locator="l",
+            kind="snippet",
+            extraction="search_snippet",
+            task_id="T1",
+            retrieved_at="2026-09-09T00:00:00+00:00",
+        ),
+        "E2": records.Evidence(
+            id="E2",
+            source_id="S2",
+            source_version_id=None,
+            excerpt="y",
+            locator="l",
+            kind="snippet",
+            extraction="search_snippet",
+            task_id="T1",
+            retrieved_at="2026-09-09T00:00:00+00:00",
+        ),
+    }
+    state["sources"] = {
+        "S1": records.Source(
+            id="S1",
+            canonical_url="https://a.example/x",
+            title="a",
+            kind="web_page",
+        ),
+        "S2": records.Source(id="S2", title="b", kind="web_page"),
+    }
+    state["source_versions"] = {
+        "v1": records.SourceVersion(
+            id="v1",
+            source_id="S1",
+            content_hash="h",
+            blob_path="b",
+            meta_path="m",
+            final_url="u",
+            content_type="text/html",
+            size=1,
+            retrieved_at="2026-09-09T00:00:00+00:00",
+            extraction_version="v3",
+        )
+    }
+    state["claims"]["C1"] = state["claims"]["C1"].model_copy(
+        update={"evidence_ids": ["E2"]}
+    )
+    state["claims"]["C2"] = state["claims"]["C2"].model_copy(
+        update={"evidence_ids": ["E1"]}
+    )
+    speculative = records.RepairRequest(
+        id="RQ1", claim_id="C1", objective="find something"
+    )
+    accessible = records.RepairRequest(
+        id="RQ2", claim_id="C2", objective="open the original"
+    )
+    ranked = sorted(
+        [speculative, accessible],
+        key=lambda r: graph_module.repair_priority(state, r),
+    )
+    assert [r.id for r in ranked] == ["RQ2", "RQ1"]
+
+
+def test_the_completed_review_reaches_the_repair_decision():
+    # The stale ledger of revision 38: `graph.review` decided against
+    # the reservation the call no longer held, which is the difference
+    # between admitting a repair and refusing one on all four saved
+    # runs (plan revision 39 §4.46.0).
+    limits = records.Limits()
+    state = charged(repair_state(pending=1), 2600)
+    running = records.Attempt(
+        id="review.1",
+        task_id="review",
+        status="running",
+        reserved=records.Reservation(
+            turns=limits.single_call_reserved(),
+            tool_calls=0,
+            seconds=limits.single_call_timeout_s,
+        ),
+        started_at="2026-09-09T00:00:00+00:00",
+    )
+    stale = {**state, "single_calls": {"review.1": running}}
+    done = {
+        **state,
+        "single_calls": {
+            "review.1": running.model_copy(
+                update={
+                    "status": "done",
+                    "observed": records.Usage(turns=3, duration_s=175.2),
+                }
+            )
+        },
+    }
+    assert budget.admit_repair_pair(stale, limits) == 0
+    assert budget.admit_repair_pair(done, limits) > 0

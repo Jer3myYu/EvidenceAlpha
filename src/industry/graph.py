@@ -274,7 +274,14 @@ def running_reservation(
     for call in sorted(
         calls.values(), key=lambda c: merge.attempt_number(c.id)
     ):
-        if call.task_id == node and call.status == "running":
+        # A held allowance is a reservation waiting to be activated by
+        # its `reserve_<node>`, not a call this node is running: the
+        # router must not read it as one (plan revision 39 §4.46.2).
+        if (
+            call.task_id == node
+            and call.status == "running"
+            and not call.reserved.held
+        ):
             return call
     return None
 
@@ -376,11 +383,13 @@ def _with_reservation(call: records.Attempt, **changes: Any) -> records.Attempt:
     )
 
 
-def _held_review(calls: dict[str, records.Attempt]) -> records.Attempt | None:
-    """The final-review allowance held by a write, if one is waiting."""
+def _held_call(
+    calls: dict[str, records.Attempt], node: str
+) -> records.Attempt | None:
+    """The allowance a paired admission is holding for ``node``."""
     for call in calls.values():
         if (
-            call.task_id == "final_review"
+            call.task_id == node
             and call.status == "running"
             and call.reserved.held
         ):
@@ -388,11 +397,29 @@ def _held_review(calls: dict[str, records.Attempt]) -> records.Attempt | None:
     return None
 
 
+def _held_review(calls: dict[str, records.Attempt]) -> records.Attempt | None:
+    """The final-review allowance held by a write, if one is waiting."""
+    return _held_call(calls, "final_review")
+
+
 def reserve_node(node: str, limits: records.Limits):
     """The checkpointed admission step that precedes a single-call node."""
 
     async def reserve(state: state_module.IndustryState) -> dict[str, Any]:
         calls = dict(state.get("single_calls", {}))
+        if node == "review":
+            held = _held_call(calls, "review")
+            if held is not None:
+                # Taken with the repair that made it necessary and
+                # charged ever since (plan revision 39 §4.46.2).
+                calls[held.id] = _with_reservation(held, held=False)
+                return {
+                    "single_calls": calls,
+                    "route_log": [
+                        f"reserve_review: {held.id} activated, held since "
+                        "its repair was admitted"
+                    ],
+                }
         if node == "final_review":
             held = _held_review(calls)
             if held is not None:
@@ -640,96 +667,116 @@ def record_repairs(
     return repairs, log
 
 
-def _repair_priority(
+def _acquisition_route(
+    state: state_module.IndustryState,
+    claim: records.Claim,
+    request: records.RepairRequest,
+) -> int:
+    """How real a route to original context is; lower sorts first.
+
+    A recorded route, never a predicted verdict (plan revision 39
+    §4.46.4). 0: a snippet whose source already has a resolvable
+    version agreeing on its source. 1: a concrete document URL, from
+    the request or the source. 2: neither -- a speculative search,
+    which waits behind every accessible repair.
+    """
+    evidence = state.get("evidence", {})
+    sources = state.get("sources", {})
+    versions = state.get("source_versions", {})
+    urls: list[str] = []
+    for eid in claim.evidence_ids:
+        item = evidence.get(eid)
+        if item is None:
+            continue
+        version = versions.get(item.source_version_id or "")
+        if version is not None and version.source_id == item.source_id:
+            return 0
+        source = sources.get(item.source_id)
+        if source is not None and source.canonical_url:
+            urls.append(source.canonical_url)
+    if request.url or urls:
+        return 1
+    return 2
+
+
+def repair_priority(
     state: state_module.IndustryState, request: records.RepairRequest
-) -> tuple[int, int]:
-    """Lower sorts first: issue, then central question, then figure."""
+) -> tuple[int, int, int, int]:
+    """Lower sorts first: what the reader loses most by not repairing.
+
+    Plan revision 39 §4.46.4, and deterministic to the last field so a
+    replay ranks identically.
+    """
     claim = state.get("claims", {})[request.claim_id]
-    issues = state.get("issues", {}).values()
-    if any(
-        i.status in records.UNRESOLVED_ISSUE_STATUSES
-        and i.severity == "material"
-        and i.category in ("unsupported", "contradiction")
-        and i.target == claim.id
-        for i in issues
-    ):
+    central = set(records.CENTRAL_QUESTIONS)
+    thin = {
+        row.question
+        for row in state.get("coverage", [])
+        if row.question in central and row.status != "covered"
+    }
+    findings = state.get("findings", {}).values()
+    if thin & set(claim.questions):
         rank = 0
     elif any(
-        row.question in records.CENTRAL_QUESTIONS
-        and row.status != "covered"
-        and claim.id in row.claim_ids
-        for row in state.get("coverage", [])
+        finding.status == "current"
+        and finding.material
+        and claim.id in finding.claim_ids
+        and central & set(finding.questions)
+        for finding in findings
     ):
         rank = 1
     elif (
         claim.quantity is not None
         or claim.milestone is not None
         or request.relationship_id is not None
+        or {"cost_structure", "bargaining_power", "commercialization"}
+        & set(claim.topics)
     ):
         rank = 2
-    else:
+    elif any(
+        issue.status in records.UNRESOLVED_ISSUE_STATUSES
+        and issue.severity == "material"
+        and issue.category in ("unsupported", "contradiction")
+        and issue.target == claim.id
+        for issue in state.get("issues", {}).values()
+    ):
         rank = 3
-    return rank, merge.schedule.task_number(claim.id)
-
-
-def _projected_review_state(
-    state: state_module.IndustryState,
-    targets: set[str],
-    limits: records.Limits,
-    attempts: int = 0,
-) -> state_module.IndustryState:
-    """The state as it will be once these targets have been repaired.
-
-    An attachment resets its target's review, and that review has to be
-    affordable or the repair leaves the claim withdrawn and unusable --
-    the defect the design review of §4.45 found, because
-    ``budget.review_batches`` counts only what already needs review.
-    ``attempts`` charges the repair attempts themselves, each at the
-    reservation dispatch will take, so the question asked is the real
-    one: after paying for this repair, can its review still run?
-    """
-    claims = dict(state.get("claims", {}))
-    for cid in targets:
-        claim = claims.get(cid)
-        if claim is not None and not claim.needs_review():
-            claims[cid] = claim.model_copy(
-                update={"review": "unreviewed", "review_reason": None}
-            )
-    projected: state_module.IndustryState = {**state, "claims": claims}
-    if attempts:
-        planned = dict(state.get("attempts", {}))
-        for number in range(attempts):
-            planned[f"repair-projection.{number}"] = records.Attempt(
-                id=f"repair-projection.{number}",
-                task_id="repair-projection",
-                reserved=budget.reservation_for(limits),
-                started_at=records.now_iso(),
-            )
-        projected["attempts"] = planned
-    return projected
+    else:
+        rank = 4
+    return (
+        rank,
+        _acquisition_route(state, claim, request),
+        merge.schedule.task_number(claim.id),
+        merge.schedule.task_number(request.id),
+    )
 
 
 def repair_affordable(
     state: state_module.IndustryState,
     limits: records.Limits,
-    targets: set[str],
-    attempts: int,
+    outstanding: int,
 ) -> bool:
     """Whether a repair and the review it forces both fit.
 
-    Both halves or neither: the attempt has to be dispatchable now, and
-    the review its attachment makes necessary has to be admissible
-    *after* the attempt has been charged. A repair that passes only the
-    first half withdraws a citable claim and leaves no way to restore
-    it (post-implementation review of §4.45, finding 1). Neither half
-    may touch the write/final-review reserve, which
-    ``budget.admit_single_call`` keeps for the reserved nodes alone.
+    Both halves or neither (plan revision 39 §4.46.2): a repair that
+    could not be validated withdraws a citable claim and leaves no way
+    to restore it. Neither half may touch the write/final-review
+    reserve or the downstream provisions.
+
+    Args:
+      state: The state the decision is made on -- with the ledger the
+        completed call actually left, never the one it no longer holds.
+      limits: The run's limits.
+      outstanding: Repair pairs already outstanding, this one included.
+
+    Returns:
+      Whether this repair may be admitted.
     """
-    projected = _projected_review_state(state, targets, limits)
-    if budget.dispatchable(projected, limits, False) <= attempts - 1:
+    if outstanding > 1:
+        # One pair at a time keeps the held review's ownership
+        # unambiguous.
         return False
-    after = _projected_review_state(state, targets, limits, attempts=attempts)
-    return budget.admit_single_call(after, limits, "review") > 0
+    return budget.admit_repair_pair(state, limits) > 0
 
 
 def schedule_repairs(
@@ -789,7 +836,7 @@ def schedule_repairs(
             if r.status in ("pending", "deferred")
             and r.claim_id not in open_targets
         ),
-        key=lambda r: _repair_priority(state, r),
+        key=lambda r: repair_priority(state, r),
     )
     for request in considered:
         if request.claim_id in open_targets:
@@ -808,28 +855,47 @@ def schedule_repairs(
                 update={
                     "status": "deferred",
                     "reason": (
-                        f"{limits.acquisition_executions} repairs is the "
-                        "run's ceiling"
+                        f"execution ceiling: {limits.acquisition_executions} "
+                        "repairs is the run's limit"
                     ),
                 }
             )
             continue
-        # A task created here holds no reservation until it starts, so
-        # capacity is debited inside this call, and the review the
-        # attachment forces is priced at what a review call really
-        # reserves.
-        if not repair_affordable(
-            state,
-            limits,
-            open_targets | {request.claim_id},
-            admitted_now + 1,
-        ):
+        if admitted_now:
+            repairs[request.id] = request.model_copy(
+                update={
+                    "status": "deferred",
+                    "reason": "priority: one repair pair runs at a time",
+                }
+            )
+            continue
+        # Both halves or neither: the repair attempt and the review its
+        # attachment forces are admitted together (plan revision 39
+        # §4.46.2), out of what is free after the delivery reserve and
+        # the downstream provisions.
+        if not repair_affordable(state, limits, admitted_now + 1):
+            seconds, turns = budget.repair_pair_cost(limits)
+            left = budget.remaining(state, limits)
+            short = (
+                "seconds"
+                if left.seconds - limits.time_reserve_s < seconds
+                else (
+                    "turns"
+                    if left.turns - limits.model_call_reserve < turns
+                    else (
+                        "tools"
+                        if left.tool_calls < limits.tools_per_attempt
+                        else "task executions"
+                    )
+                )
+            )
             repairs[request.id] = request.model_copy(
                 update={
                     "status": "deferred",
                     "reason": (
-                        "the repair and the review it needs do not both fit "
-                        "in what is left outside the reserve"
+                        f"{short}: the repair and the review it needs "
+                        f"({seconds:.0f}s, {turns} turns) do not both fit "
+                        "outside the reserve"
                     ),
                 }
             )
@@ -1498,8 +1564,10 @@ def build_graph(
                     )
                     continue
                 target = task.target
+                # Historical acquisitions are already charged in the
+                # ledger; only this one is new work to project.
                 if target is not None and not repair_affordable(
-                    state, limits, {target.claim_id}, acquisitions + 1
+                    state, limits, 1
                 ):
                     # A retry never passes task creation again, so the
                     # rule that both halves of a repair must fit is
@@ -1531,26 +1599,62 @@ def build_graph(
             thread_id, state
         )
         log = []
+        calls = dict(state.get("single_calls", {}))
+        window = state.get("repair_window", "open")
         for task in ready[:slots]:
+            repair = task.kind == "acquisition" and task.target is not None
+            reservation = (
+                budget.repair_reservation_for(limits)
+                if repair
+                else budget.reservation_for(limits)
+            )
             attempt = records.Attempt(
                 id=f"{task.id}.{task.attempts + 1}",
                 task_id=task.id,
-                reserved=budget.reservation_for(limits),
+                reserved=reservation,
                 started_at=records.now_iso(),
             )
+            if repair:
+                # The review this repair forces is taken with it and
+                # charged from now, exactly as a write takes its final
+                # review (plan revision 39 §4.46.2). It is held until
+                # `reserve_review` activates it, without a second
+                # charge, and it is the next ordinary batch.
+                attempt = _with_reservation(attempt, pair_id=attempt.id)
+                held = _reservation(
+                    {**state, "single_calls": calls},
+                    "review",
+                    limits,
+                    limits.single_call_reserved(),
+                )
+                held = _with_reservation(held, pair_id=attempt.id, held=True)
+                calls[held.id] = held
+                window = "used"
+                log.append(
+                    f"dispatch: {attempt.id} reserved "
+                    f"{limits.repair_timeout_s:.0f}s with {held.id} held "
+                    "for the review it forces"
+                )
             attempts[attempt.id] = attempt
             tasks[task.id] = task.model_copy(
                 update={"status": "running", "attempts": task.attempts + 1}
             )
             meter.register(attempt.id, attempt.reserved.tool_calls)
-            log.append(f"dispatch: {attempt.id} reserved and admitted")
+            if not repair:
+                log.append(f"dispatch: {attempt.id} reserved and admitted")
         if len(ready) > slots:
             log.append(
                 f"dispatch: {len(ready) - slots} ready tasks wait for budget"
             )
         if not ready:
             log.append("dispatch: nothing ready")
-        return {"tasks": tasks, "attempts": attempts, "route_log": log}
+        return {
+            "tasks": tasks,
+            "attempts": attempts,
+            "single_calls": calls,
+            "repair_window": window,
+            "route_log": log,
+        }
 
     def fan_out(state: state_module.IndustryState) -> list[Send] | str:
         thread_id = _thread_id()
@@ -1734,6 +1838,9 @@ def build_graph(
 
     async def analyze(state: state_module.IndustryState) -> dict[str, Any]:
         note = ANALYSIS_NOTE
+        # Reaching analysis is the run passing the point of asking for
+        # repairs; whatever the earmark was holding goes back.
+        closed = close_repair_window(state)
         # A calculation a corrected claim stopped is run again from the
         # claims as they stand now, before the analyst is asked for
         # anything: a derived claim comes back as a new version stating
@@ -1747,6 +1854,9 @@ def build_graph(
 
         analysis, update = await call_with_reservation(state, "analyze", first)
         update.setdefault("route_log", []).extend(log)
+        if closed:
+            update["repair_window"] = closed["repair_window"]
+            update["route_log"].extend(closed["route_log"])
         if log:
             # Recomputation is deterministic arithmetic, not a model
             # call: it stands whether or not the analyst was admitted,
@@ -1971,6 +2081,14 @@ def build_graph(
         update["route_log"].extend(repair_log)
         reviewed_state = {
             **state,
+            # The call that has just finished is charged its observed
+            # usage, not the full reservation it no longer holds: this
+            # decision used to be made against a stale ledger, and it
+            # is the difference between admitting a repair and refusing
+            # one (plan revision 39 §4.46.0).
+            "single_calls": update.get(
+                "single_calls", state.get("single_calls", {})
+            ),
             "repairs": repairs,
             "tasks": tasks,
             "claims": reviewed_claims,
@@ -2007,6 +2125,24 @@ def build_graph(
         return state_module.registry_signature(state) != state.get(
             "last_signature", ""
         )
+
+    def close_repair_window(
+        state: state_module.IndustryState,
+    ) -> dict[str, Any]:
+        """Release the earmark once the run has stopped asking.
+
+        Recorded, so a later phase change cannot silently recreate it
+        (plan revision 39 §4.46.3).
+        """
+        if not budget.repair_window_open(state):
+            return {}
+        return {
+            "repair_window": "closed",
+            "route_log": [
+                "repairs: the window closed with no repair admitted; "
+                "its earmark is released"
+            ],
+        }
 
     def after_review(state: state_module.IndustryState) -> str:
         _, ready = schedule.ready(schedule.validate(state.get("tasks", {})))

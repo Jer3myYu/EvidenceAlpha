@@ -169,6 +169,74 @@ def review_batches(
     return -(-unreviewed // limits.review_batch)
 
 
+def repair_reservation_for(limits: records.Limits) -> records.Reservation:
+    """What one repair attempt is charged (plan revision 39 §4.46.1).
+
+    A repair opens an original its claim already names; it is not a
+    research session, and reserving one as though it were is what kept
+    every repair unaffordable. Turns and tools are unchanged: the
+    8-exchange experiment failed with ``error_max_turns``.
+    """
+    return records.Reservation(
+        turns=limits.attempt_turns(),
+        tool_calls=limits.tools_per_attempt,
+        seconds=limits.repair_timeout_s,
+    )
+
+
+def repair_pair_cost(limits: records.Limits) -> tuple[float, int]:
+    """The seconds and turns one repair *and* its review together take."""
+    return (
+        limits.repair_timeout_s + limits.single_call_timeout_s,
+        limits.attempt_turns() + limits.single_call_reserved(),
+    )
+
+
+def repair_window_open(state: state_module.IndustryState) -> bool:
+    """Whether one repair pair is still earmarked for this run."""
+    return state.get("repair_window", "open") == "open"
+
+
+def repair_earmark(
+    state: state_module.IndustryState, limits: records.Limits
+) -> tuple[float, int]:
+    """The seconds and turns held back for one repair pair, if any.
+
+    An earmark of existing capacity, never new budget and never a
+    charge: it stops broad dispatch and ordinary review from spending
+    the last repair opportunity (plan revision 39 §4.46.3). It is gone
+    once a pair has been admitted or the window has closed.
+    """
+    if not repair_window_open(state):
+        return 0.0, 0
+    return repair_pair_cost(limits)
+
+
+def admit_repair_pair(
+    state: state_module.IndustryState, limits: records.Limits
+) -> int:
+    """The review turns a repair may hold, or 0 if the pair does not fit.
+
+    Both halves or neither. The pair is admitted from what is free
+    after the delivery reserve and the downstream provisions -- its own
+    earmark included, since this call is what spends it -- so a repair
+    can never be funded out of what write, final review, analysis or
+    coverage are keeping.
+    """
+    left = remaining(state, limits)
+    seconds, turns = repair_pair_cost(limits)
+    keep_s, keep_turns = pipeline_reserve(state, limits, "review")
+    keep_s -= repair_earmark(state, limits)[0]
+    keep_turns -= repair_earmark(state, limits)[1]
+    fits = (
+        left.seconds - limits.time_reserve_s - keep_s >= seconds
+        and left.turns - limits.model_call_reserve - keep_turns >= turns
+        and left.tool_calls >= limits.tools_per_attempt
+        and left.task_executions >= 1
+    )
+    return limits.single_call_reserved() if fits else 0
+
+
 def pipeline_reserve(
     state: state_module.IndustryState, limits: records.Limits, stage: str
 ) -> tuple[float, int]:
@@ -191,6 +259,12 @@ def pipeline_reserve(
         batches * limits.review_batch_s + calls * limits.single_call_timeout_s
     )
     turns = (batches + calls) * limits.single_call_reserved()
+    if stage in ("research", "review"):
+        # One repair pair is earmarked while the window is open, so the
+        # discretionary work of these stages cannot spend it.
+        held_s, held_turns = repair_earmark(state, limits)
+        seconds += held_s
+        turns += held_turns
     return seconds, turns
 
 

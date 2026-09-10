@@ -929,10 +929,49 @@ def render(
             parts.append("")
     else:
         parts += appendices(state, coverage)
+    parts += repair_lines(state)
     parts += ["## " + ("来源" if zh else "Sources"), ""]
     parts += source_lines or ["(none cited)"]
     parts.append("")
     return "\n".join(parts)
+
+
+def repair_lines(state: state_module.IndustryState) -> list[str]:
+    """What the run asked to strengthen, and what became of it.
+
+    Plan revision 39 §4.46.5: a deferred repair is a gap the reader is
+    entitled to see, not an internal accounting detail. Nothing here
+    asserts anything about the industry.
+    """
+    repairs = state.get("repairs", {})
+    if not repairs:
+        return []
+    zh = state["brief"].language == "zh"
+    done = [r for r in repairs.values() if r.status == "done"]
+    waiting = [
+        r for r in repairs.values() if r.status in ("deferred", "pending")
+    ]
+    dropped = [r for r in repairs.values() if r.status == "dropped"]
+    lines = ["## " + ("证据补强" if zh else "Evidence repair"), ""]
+    lines.append(
+        (
+            f"请求 {len(repairs)} 项；已补强 {len(done)} 项，"
+            f"未能安排 {len(waiting)} 项，已放弃 {len(dropped)} 项。"
+        )
+        if zh
+        else (
+            f"{len(repairs)} requested; {len(done)} strengthened, "
+            f"{len(waiting)} not scheduled, {len(dropped)} dropped."
+        )
+    )
+    lines.append("")
+    for request in sorted(waiting, key=lambda r: r.id)[:10]:
+        lines.append(f"- {request.claim_id}: {request.objective[:110]}")
+        if request.reason:
+            lines.append(f"  - {request.reason}")
+    if waiting:
+        lines.append("")
+    return lines
 
 
 def write_report(

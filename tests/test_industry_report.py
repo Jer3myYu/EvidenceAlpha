@@ -815,3 +815,33 @@ def test_citability_is_validated_wider_than_credit_is_counted():
     # A withdrawn producer still withdraws the result.
     state["claims"]["C21"] = parent.model_copy(update={"review": "unsupported"})
     assert "C20" not in coverage_module.delivered_claims(state, body)
+
+
+def test_delivery_reports_what_it_could_not_strengthen():
+    # Plan revision 39 §4.46.5: a deferred repair is a gap the reader is
+    # entitled to see. §4.45.4 asserted this and nothing implemented it.
+    state = useful_state(BODY)
+    state["repairs"] = {
+        "RQ1": records.RepairRequest(
+            id="RQ1",
+            claim_id="C1",
+            objective="open the original filing behind the 66% figure",
+            status="deferred",
+            reason="seconds: the repair and the review it needs do not fit",
+        ),
+        "RQ2": records.RepairRequest(
+            id="RQ2",
+            claim_id="C2",
+            objective="x",
+            status="done",
+            reason="evidence attached",
+        ),
+    }
+    lines = report.repair_lines(state)
+    text = "\n".join(lines)
+    assert "证据补强" in text
+    assert "RQ1" not in text  # the claim and the reason, not the ids
+    assert "C1" in text and "original filing" in text
+    assert "seconds:" in text
+    state["repairs"] = {}
+    assert not report.repair_lines(state)
