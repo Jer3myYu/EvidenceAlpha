@@ -1199,3 +1199,55 @@ def test_u2_03_a_sentence_inside_a_paragraph_is_still_redacted_in_place():
     out = report.redact(section.text, [issue], "s", "[X]")
     assert "A good sentence. [X] More context." in out
     assert "Therefore X." in out
+
+
+def test_u2_03_a_dependent_table_row_is_deleted_not_rewritten():
+    """Prose replacement rewrote the row before row deletion matched its
+    original wording, so the row survived as "| [X] | ... |" (U2-03)."""
+    premise = "This market has no competing suppliers."
+    text = (
+        f"{premise}\n\n"
+        "| Basis | Implication |\n|---|---|\n"
+        f"| {premise} | Suppliers can dictate prices. |\n"
+        "| Contract terms | Payment is due on acceptance. |"
+    )
+    section = records.Section(id="s", title="T", text=text)
+    falling = report.dependents_of_text(section, premise)
+    assert [b.kind for b in falling] == ["row"]
+    issues = [
+        records.Issue(
+            id=f"I{n}",
+            key=f"k{n}",
+            category="unsupported",
+            severity="material",
+            target="s",
+            requested_action="remove",
+            text=unit,
+        )
+        for n, unit in enumerate([premise] + [b.text for b in falling], 1)
+    ]
+    out = report.redact(text, issues, "s", "[X]")
+    assert "dictate prices" not in out
+    assert "Payment is due on acceptance." in out
+    assert "| [X] |" not in out, "the row is deleted, not rewritten"
+
+
+def test_u2_03_the_single_data_row_variant_still_fails_closed():
+    """A header and a rule over nothing is not a table."""
+    premise = "This market has no competing suppliers."
+    text = (
+        f"{premise}\n\n| Basis | Implication |\n|---|---|\n"
+        f"| {premise} | Suppliers can dictate prices. |"
+    )
+    section = records.Section(id="s", title="T", text=text)
+    falling = report.dependents_of_text(section, premise)
+    issue = records.Issue(
+        id="I2",
+        key="k2",
+        category="unsupported",
+        severity="material",
+        target="s",
+        requested_action="remove",
+        text=falling[0].text,
+    )
+    assert report.blocking_issues([issue], section) == [issue]

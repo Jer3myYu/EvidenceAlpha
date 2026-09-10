@@ -416,10 +416,15 @@ def redact(
     blocked = set(unremovable_units(text, units))
     rows = [u for u in units if _is_row(u) and u not in blocked]
     prose = [u for u in units if not _is_row(u) and u not in blocked]
-    if prose:
-        text = _replace_spans(text, prose, note)
+    # Rows first, and both against the *original* text. Replacing prose
+    # first rewrote a row that a row deletion was about to match by its
+    # original wording, so the deletion silently missed and the row
+    # survived as "| [X] | Suppliers can dictate prices. |" -- a
+    # consequence explicitly selected for removal, delivered (U2-03).
     if rows:
         text = _drop_rows(text, rows, note)
+    if prose:
+        text = _replace_spans(text, prose, note)
     return text
 
 
