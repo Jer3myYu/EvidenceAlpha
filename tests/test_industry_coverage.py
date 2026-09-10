@@ -437,3 +437,68 @@ def test_a_qualification_without_a_reason_classifies_no_region():
             part.claim_id
         ].model_copy(update={"review": "qualified", "review_reason": None})
     assert statuses(coverage.derive(state, None))[6] != "covered"
+
+
+def test_a04_a_required_company_comparison_cannot_pass_as_a_limitation():
+    """A04/A18/U0-05: Q7 uncovered is `incomplete` when the brief needs it.
+
+    Under the `CENTRAL_QUESTIONS` constant, Q7 could be uncovered while
+    every other question was covered and the report still called itself
+    `complete_with_limitations` -- an absent comparison delivered as a
+    footnote (plan D-U4).
+    """
+    rows = [
+        records.Coverage(
+            question=q, status="covered" if q != 7 else "uncovered", note="n"
+        )
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    brief = records.Brief(
+        industry="x",
+        required_ids=[1, 2, 3, 4, 5, 7],
+        priority=[1, 2, 3, 4, 5, 7],
+    )
+    state = {"brief": brief, "claims": {}, "findings": {}, "issues": {}}
+    assert coverage.report_status(rows, state) == "incomplete"
+
+    # A brief whose scope excludes the comparison is not penalised for it.
+    narrow = brief.model_copy(
+        update={"required_ids": [1, 2, 3, 4, 5], "priority": [1, 2, 3, 4, 5]}
+    )
+    assert (
+        coverage.report_status(rows, {**state, "brief": narrow})
+        == "complete_with_limitations"
+    )
+
+
+def test_a04_a_scope_excluding_china_acquires_no_q6_obligation():
+    rows = [
+        records.Coverage(
+            question=q, status="covered" if q != 6 else "uncovered", note="n"
+        )
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    state = {"claims": {}, "findings": {}, "issues": {}}
+    china = records.Brief(industry="x", required_ids=[1, 6], priority=[1, 6])
+    assert (
+        coverage.report_status(rows, {**state, "brief": china}) == "incomplete"
+    )
+    without = records.Brief(industry="x", required_ids=[1], priority=[1])
+    assert (
+        coverage.report_status(rows, {**state, "brief": without})
+        == "complete_with_limitations"
+    )
+
+
+def test_a_legacy_brief_keeps_the_schema_11_required_set():
+    """A25: a thread with no `required_ids` behaves exactly as before."""
+    rows = [
+        records.Coverage(
+            question=q, status="covered" if q != 7 else "uncovered", note="n"
+        )
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    legacy = records.Brief(industry="x")
+    assert legacy.required_ids == []
+    state = {"brief": legacy, "claims": {}, "findings": {}, "issues": {}}
+    assert coverage.report_status(rows, state) == "complete_with_limitations"

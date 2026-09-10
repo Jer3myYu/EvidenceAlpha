@@ -545,7 +545,7 @@ def meets_floor(
         return False, f"{names} uncovered"
     answered = [
         q
-        for q in records.CENTRAL_QUESTIONS
+        for q in records.required_ids(state.get("brief"))
         if rows.get(q) is not None and rows[q].status != "uncovered"
     ]
     if len(answered) < floor.central_required:
@@ -635,10 +635,18 @@ def report_status(
     report complete), and ``verified`` (a final review ran on the
     delivered draft); without verification the best status is
     ``complete_with_limitations``.
-    ``complete_with_limitations``: every central question at least
-    partial, no unresolved material issue targeting anything counted
-    toward a central question, and no finding cited for a central
-    question resting on an unsupported or contradicted claim.
+    ``complete_with_limitations``: every question the brief requires at
+    least partial, no unresolved material issue targeting anything
+    counted toward one, and no finding cited for one resting on an
+    unsupported or contradicted claim.
+
+    The required set is the brief's (``records.required_ids``), not the
+    ``CENTRAL_QUESTIONS`` constant. Under the constant, Q7 could be
+    uncovered while every other question was covered and the report
+    still called itself ``complete_with_limitations`` -- an absent
+    company comparison passing as a limitation (plan D-U4, U0-05). A
+    brief whose scope excludes China acquires no Q6 obligation by the
+    same rule.
     ``incomplete``: otherwise, including when the coverage does not
     hold exactly the eight required questions (fail closed).
     """
@@ -663,7 +671,7 @@ def report_status(
     if report.unremovable_section_issues(state):
         return "incomplete"
     central_targets: set[str] = set()
-    for number in records.CENTRAL_QUESTIONS:
+    for number in records.required_ids(state.get("brief")):
         item = by_question[number]
         if item.status == "uncovered":
             return "incomplete"

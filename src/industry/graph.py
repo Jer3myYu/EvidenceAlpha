@@ -754,7 +754,7 @@ def repair_priority(
     replay ranks identically.
     """
     claim = state.get("claims", {})[request.claim_id]
-    central = set(records.CENTRAL_QUESTIONS)
+    central = set(records.required_ids(state.get("brief")))
     thin = {
         row.question
         for row in state.get("coverage", [])
@@ -1123,25 +1123,37 @@ def pending_review(
     Review is bounded by the budget, so the order is the priority in
     which claims earn citability, interleaved so no group starves: one
     queue for map claims (the value chain and its participants) and one
-    per central question, taken round-robin in id order, then the
+    per question the brief requires, taken round-robin, then the
     remaining material claims; at most ``batch`` per call (the run's
     ``Limits.review_batch``; ``REVIEW_BATCH`` is only the default).
+
+    A claim goes to the queue of the partition it was admitted to
+    (``Claim.partition``), which is the same least-loaded assignment
+    ``merge.assign_partition`` made, so the round-robin drains the
+    partitions the quota actually governs rather than a second,
+    disagreeing grouping by lowest question id.
+
+    Within that order, claims resting on the same source travel
+    together (plan D-U6b). The verifier reads a document once per batch
+    instead of once per claim, which is what pays for the review demand
+    that keeping materiality created. Ordering stays deterministic given
+    the registry.
     """
     unreviewed = sorted(
         reviewable(state),
         key=lambda c: merge.schedule.task_number(c.id),
     )
     queues: dict[str, list[str]] = {"map": []}
-    for question in records.CENTRAL_QUESTIONS:
+    for question in records.required_ids(state.get("brief")):
         queues[f"q{question}"] = []
     rest: list[str] = []
     for claim in unreviewed:
         if claim.map_ref is not None:
             queues["map"].append(claim.id)
             continue
-        central = [q for q in claim.questions if q in records.CENTRAL_QUESTIONS]
-        if central:
-            queues[f"q{min(central)}"].append(claim.id)
+        partition = merge.material_partition(claim)
+        if partition in queues:
+            queues[partition].append(claim.id)
         else:
             rest.append(claim.id)
     ordered: list[str] = []
@@ -1150,11 +1162,52 @@ def pending_review(
             if queue:
                 ordered.append(queue.pop(0))
     ordered.extend(rest)
+    ordered = group_by_source(state, ordered)
     # A claim a repair strengthened goes first: its verdict is what the
     # repair bought, and the rest of the batch fills in behind it.
     repaired = repaired_awaiting_review(state)
     ordered = repaired + [cid for cid in ordered if cid not in repaired]
     return ordered[: batch or REVIEW_BATCH]
+
+
+def group_by_source(
+    state: state_module.IndustryState, ordered: list[str]
+) -> list[str]:
+    """Reorder claims so those sharing a source are adjacent (D-U6b).
+
+    Stable: a claim keeps the position its priority earned, and the
+    others resting on the same source are pulled up behind it. The
+    priority order therefore still decides what gets reviewed at all;
+    grouping only decides what accompanies it, so one document is read
+    once per batch instead of once per claim.
+
+    A group result still needs a verdict per target. ``scope_review``
+    and ``merge.apply_review`` are unchanged: a claim the verifier
+    omitted stays unreviewed, never supported by association.
+    """
+    claims = state.get("claims", {})
+    evidence = state.get("evidence", {})
+
+    def sources_of(claim_id: str) -> frozenset[str]:
+        claim = claims.get(claim_id)
+        if claim is None:
+            return frozenset()
+        found = (evidence.get(eid) for eid in claim.evidence_ids)
+        return frozenset(item.source_id for item in found if item is not None)
+
+    remaining = list(ordered)
+    grouped: list[str] = []
+    while remaining:
+        head = remaining.pop(0)
+        grouped.append(head)
+        shared = sources_of(head)
+        if not shared:
+            continue
+        companions = [c for c in remaining if sources_of(c) & shared]
+        for companion in companions:
+            remaining.remove(companion)
+        grouped.extend(companions)
+    return grouped
 
 
 def scope_review(
@@ -1904,7 +1957,7 @@ def build_graph(
         issues = dict(state.get("issues", {}))
         missing = list(assessment.missing) if assessment else []
         for item in derived:
-            central = item.question in records.CENTRAL_QUESTIONS
+            central = item.question in records.required_ids(state.get("brief"))
             if item.status == "covered":
                 continue
             description = f"Q{item.question} {item.status}: {item.note}"

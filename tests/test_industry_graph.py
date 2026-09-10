@@ -2917,3 +2917,66 @@ def test_a_failed_rerender_does_not_leave_last_run_s_pdf_behind(
     assert (reports / "t1.md").is_file()
     assert state["meta"].report_status == "complete"
     assert pdf_module.pdf_beside(state["meta"].report_path) is None
+
+
+def test_d_u6b_a_review_batch_groups_claims_that_share_a_source():
+    """D-U6b: the verifier reads a document once per batch, not per claim.
+
+    Priority still decides what is reviewed at all; grouping decides only
+    what travels with it.
+    """
+    evidence = {
+        "E1": records.Evidence(
+            id="E1",
+            source_id="S1",
+            excerpt="x",
+            locator="p1",
+            kind="snippet",
+            extraction="search_snippet",
+            task_id="T1",
+            retrieved_at="2026-09-10T00:00:00+00:00",
+        ),
+        "E2": records.Evidence(
+            id="E2",
+            source_id="S2",
+            excerpt="y",
+            locator="p1",
+            kind="snippet",
+            extraction="search_snippet",
+            task_id="T1",
+            retrieved_at="2026-09-10T00:00:00+00:00",
+        ),
+    }
+    claims = {
+        "C1": records.Claim(
+            id="C1", statement="a", kind="fact", evidence_ids=["E1"]
+        ),
+        "C2": records.Claim(
+            id="C2", statement="b", kind="fact", evidence_ids=["E2"]
+        ),
+        "C3": records.Claim(
+            id="C3", statement="c", kind="fact", evidence_ids=["E1"]
+        ),
+        "C4": records.Claim(
+            id="C4", statement="d", kind="fact", evidence_ids=["E2"]
+        ),
+    }
+    state = {"claims": claims, "evidence": evidence}
+    grouped = graph_module.group_by_source(state, ["C1", "C2", "C3", "C4"])
+    # C1 keeps its position; C3 shares S1 and is pulled up behind it.
+    assert grouped == ["C1", "C3", "C2", "C4"]
+    # Stable and deterministic: the same input gives the same order.
+    assert graph_module.group_by_source(state, grouped) == grouped
+    # A claim with no evidence is left exactly where priority put it.
+    state2 = {
+        "claims": {
+            **claims,
+            "C5": records.Claim(id="C5", statement="e", kind="fact"),
+        },
+        "evidence": evidence,
+    }
+    assert graph_module.group_by_source(state2, ["C5", "C1", "C3"]) == [
+        "C5",
+        "C1",
+        "C3",
+    ]

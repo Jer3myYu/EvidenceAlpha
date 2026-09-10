@@ -72,6 +72,54 @@ def default_brief(question: str) -> records.Brief:
     )
 
 
+def derive_obligations(brief: records.Brief) -> dict[str, list[int]]:
+    """Which questions this brief must answer, decided in Python.
+
+    Deterministic, and no model call: which questions are *required* is
+    a reading of the scope, not a judgement about evidence (plan D-U4).
+    The result governs admission, coverage, report status, and the
+    delivery floor alike, so a required answer cannot go missing under a
+    limitation in one of them and be counted in another.
+
+    Q1-Q5 explain the industry and are always required outside
+    navigation mode. Q7, the company comparison, is a required output of
+    the product itself, so it is required whenever a real brief is
+    written. Q6 is required only when a China comparison is genuinely in
+    scope -- document 01 forbids forcing one on a scope that excludes it.
+    Q8 stays advisory: conclusions follow from whatever the run could
+    establish and are not a separate evidence obligation.
+    """
+    if brief.mode == "navigation":
+        required = [1, 2, 3]
+    else:
+        required = [1, 2, 3, 4, 5, 7]
+        if _china_in_scope(brief):
+            required.append(6)
+    required.sort()
+    # Priority breaks ties only: ``assign_partition`` compares load
+    # first, so ascending order cannot recreate the q1 flood.
+    return {"required_ids": required, "priority": list(required)}
+
+
+_CHINA = ("china", "中国", "中国大陆", "prc")
+
+
+def _china_in_scope(brief: records.Brief) -> bool:
+    """Whether the brief asks for a China comparison at all.
+
+    Naming China in ``boundary_out`` puts it outside the industry
+    boundary, which is the Lead's way of saying the scope excludes it;
+    that decides the question before the geography is read.
+    """
+    outside = " ".join(brief.boundary_out).casefold()
+    if any(marker in outside for marker in _CHINA):
+        return False
+    asked = " ".join(
+        [brief.geography, brief.industry] + brief.constraints
+    ).casefold()
+    return any(marker in asked for marker in _CHINA)
+
+
 # --- wire models -----------------------------------------------------------
 
 
@@ -727,7 +775,8 @@ async def scope(
         updates["mode"] = output.explicit_mode
     if output.explicit_geography:
         updates["geography"] = output.explicit_geography
-    return defaults.model_copy(update=updates)
+    brief = defaults.model_copy(update=updates)
+    return brief.model_copy(update=derive_obligations(brief))
 
 
 def scope_description(question: str) -> str:
