@@ -158,11 +158,15 @@ def attempt_charge(attempt: records.Attempt) -> records.Usage:
         if observed is not None and observed.duration_s > 0
         else attempt.reserved.seconds
     )
-    return records.Usage(
-        turns=attempt.reserved.turns,
-        tool_calls=attempt.reserved.tool_calls,
-        duration_s=measured,
-        unknown=True,
+    # Unknown counters retain the reservation, but any provider-exposed
+    # cost/tokens remain a known subtotal, never silently discarded.
+    return (observed or records.Usage()).model_copy(
+        update={
+            "turns": attempt.reserved.turns,
+            "tool_calls": attempt.reserved.tool_calls,
+            "duration_s": measured,
+            "unknown": True,
+        }
     )
 
 

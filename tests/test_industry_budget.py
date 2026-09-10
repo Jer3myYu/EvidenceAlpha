@@ -68,6 +68,28 @@ def test_ledger_counts_each_attempt_once():
     assert budget.ledger(state).turns == 2
 
 
+def test_partial_usage_keeps_known_subtotal_and_conservative_unknown_charge():
+    observed = records.Usage(
+        unknown=True,
+        duration_s=30,
+        output_tokens=13,
+        cache_read_input_tokens=17,
+        cost_usd=0.25,
+        cost_basis="sdk_total_cost_usd",
+    )
+    failed = attempt("review.1", "failed", observed)
+    charge = budget.attempt_charge(failed)
+    assert charge.turns == failed.reserved.turns
+    assert charge.tool_calls == failed.reserved.tool_calls
+    spent = budget.ledger({"single_calls": {failed.id: failed}})
+    assert spent.cost_usd == 0.25
+    assert spent.output_tokens == 13
+    assert spent.cache_read_input_tokens == 17
+    assert spent.unknown_attempts == 1
+    assert not spent.cost_complete and not spent.usage_complete
+    assert spent.observed_session_s == spent.wall_clock_s == 30
+
+
 def test_dispatchable_respects_every_limit_and_reserve():
     limits = records.Limits(
         task_executions=12,

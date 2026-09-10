@@ -151,12 +151,16 @@ class RolesApi(Protocol):
 
 
 def _usage_of(llm: crew.ClaudeLLM, started: float) -> records.Usage:
-    last = llm.last_usage or {}
+    return _role_usage(llm.last_usage, started)
+
+
+def _role_usage(last: dict[str, Any] | None, started: float) -> records.Usage:
+    last = last or {}
     usage = last.get("usage") or {}
     return records.Usage(
         turns=int(last.get("turns") or 0),
         duration_s=round(time.monotonic() - started, 3),
-        unknown=not last,
+        unknown=not isinstance(last.get("turns"), int),
         **records.provider_usage(
             usage, last.get("cost_usd"), last.get("model_usage")
         ),
@@ -680,11 +684,12 @@ def _complete(
     reservation: records.Attempt,
     usage: records.Usage,
     timing: dict[str, str] | None = None,
+    failed: bool = False,
 ) -> dict[str, records.Attempt]:
     calls = dict(state.get("single_calls", {}))
     calls[reservation.id] = reservation.model_copy(
         update={
-            "status": "done" if not usage.unknown else "failed",
+            "status": "failed" if failed or usage.unknown else "done",
             "observed": usage,
             "duration_s": usage.duration_s,
             **(timing or {}),
@@ -2316,6 +2321,8 @@ def build_graph(
             return None, {"route_log": [f"{node}: skipped (no reservation)"]}
         history = dict(state.get("stage_inputs", {}))
         signature = None
+        failed_key = f"{node}:terminal_failure"
+        failed_signature = None
         if node in ("analyze", "write"):
             actions = sorted(
                 {
@@ -2340,21 +2347,73 @@ def build_graph(
                     ],
                 ]
             )
-            if signature in history.get(node, []):
-                return None, {
-                    "single_calls": _release(state, node),
-                    "route_log": [
-                        f"{node}: unchanged evidence/action already attempted"
+            # A failed output gains nothing from a newly recorded
+            # acquisition gap alone. It needs changed support or an
+            # actual correction for this role before another attempt.
+            corrections = (
+                ("analyze",)
+                if node == "analyze"
+                else ("analyze", "edit", "remove")
+            )
+            failed_signature = report_units.digest(
+                [
+                    state_module.support_signature(state),
+                    [action for action in actions if action[2] in corrections],
+                    [
+                        (f.id, f.inference_review, f.inference_reason)
+                        for f in state.get("findings", {}).values()
                     ],
-                }
+                ]
+            )
+        elif node == "review":
+            failed_signature = report_units.digest(
+                roles.review_description(
+                    state, pending_review(state, limits.review_batch)
+                )
+            )
+        if signature in history.get(node, []) or failed_signature in (
+            history.get(failed_key, [])
+        ):
+            return None, {
+                "single_calls": _release(state, node),
+                **(
+                    {"review_stalls": REVIEW_STALLS} if node == "review" else {}
+                ),
+                "route_log": [
+                    f"{node}: unchanged evidence/action already attempted"
+                ],
+            }
+        if signature is not None:
             history[node] = history.get(node, []) + [signature]
         max_turns = budget.max_turns_for(reservation.reserved.turns, limits)
         timing: dict[str, str] = {}
+        started = time.monotonic()
         try:
             with admission_module.capture_timing() as timing:
                 output, usage = await call(
                     max_turns, reservation.reserved.seconds
                 )
+        except crew.RoleFailure as error:
+            if failed_signature is not None:
+                history[failed_key] = history.get(failed_key, []) + [
+                    failed_signature
+                ]
+            return None, {
+                "single_calls": _complete(
+                    state,
+                    reservation,
+                    _role_usage(error.usage, started),
+                    timing,
+                    failed=True,
+                ),
+                "route_log": [
+                    f"{reservation.id}: {error.kind}: RoleFailure: {error}"
+                ],
+                "stage_inputs": history,
+                **(
+                    {"review_stalls": REVIEW_STALLS} if node == "review" else {}
+                ),
+            }
         except (crew.RoleTimeout, crew.RoleHung) as error:
             # This call's own deadline, not a program fault: the
             # reservation stays charged in full and the node degrades

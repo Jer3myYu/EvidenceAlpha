@@ -7,8 +7,10 @@ the no-progress stop, and the revision route after the final review.
 """
 
 import asyncio
+import dataclasses
 import pathlib
 
+import claude_agent_sdk
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -2189,6 +2191,257 @@ def test_a_role_deadline_charges_its_reservation_and_the_run_delivers(
         "complete_with_limitations",
         "incomplete",
     )
+
+
+@pytest.mark.parametrize("known_usage", [False, True])
+def test_terminal_role_failure_settles_and_delivers_without_unchanged_retry(
+    tmp_path, monkeypatch, known_usage
+):
+    runtime, api, _, compiled = make(tmp_path)
+    result = claude_agent_sdk.ResultMessage(
+        subtype="error_max_structured_output_retries",
+        duration_ms=10,
+        duration_api_ms=9,
+        is_error=True,
+        num_turns=7,
+        session_id="offline",
+        total_cost_usd=0.25,
+        usage={
+            "input_tokens": 11,
+            "output_tokens": 13,
+            "cache_read_input_tokens": 17,
+            "cache_creation_input_tokens": 19,
+        },
+    )
+    invocations = []
+
+    async def query(**kwargs):
+        del kwargs
+        invocations.append("sdk")
+        if known_usage:
+            yield result
+        raise claude_agent_sdk.ResultError(
+            "exhausted", dataclasses.asdict(result) if known_usage else {}
+        )
+
+    monkeypatch.setattr(claude_agent_sdk, "query", query)
+    api.analyze = graph_module.LiveRoles(runtime.admission).analyze
+    config = persist.thread_config("terminal-failure")
+    runtime.begin("terminal-failure")
+    state = run(compiled.ainvoke({"question": "q"}, config))
+    attempts = [
+        c for c in state["single_calls"].values() if c.task_id == "analyze"
+    ]
+    failed = [c for c in attempts if c.status == "failed"]
+    assert len(failed) == len(invocations) == 1, "\n".join(state["route_log"])
+    attempt = failed[0]
+    assert attempt.queued_at <= attempt.admitted_at <= attempt.kickoff_at
+    assert attempt.kickoff_at <= attempt.invoked_at <= attempt.finished_at
+    assert attempt.observed.unknown is not known_usage
+    assert attempt.observed.turns == (7 if known_usage else 0)
+    assert attempt.observed.cost_usd == (0.25 if known_usage else None)
+    assert budget.attempt_charge(attempt).turns == (
+        7 if known_usage else attempt.reserved.turns
+    )
+    assert len(state["stage_inputs"]["analyze"]) == 1
+    assert any("schema: RoleFailure" in line for line in state["route_log"])
+    assert state["meta"].execution_status == "completed"
+    assert not runtime.admission.live()
+
+
+@pytest.mark.parametrize(
+    ("node", "action"),
+    [("analyze", "analyze"), ("write", "edit"), ("write", "remove")],
+)
+@pytest.mark.parametrize("changed", ["text", "support"])
+def test_failure_guard_allows_changed_support_or_concrete_correction(
+    tmp_path, node, action, changed
+):
+    runtime, api, _, compiled = make(tmp_path)
+    state = graph_module.initial_state("fixture", runtime.limits)
+    state["brief"] = roles.default_brief("fixture")
+    calls = []
+
+    async def fail(*args, **kwargs):
+        del args, kwargs
+        calls.append(node)
+        raise crew.RoleFailure("exhausted")
+
+    setattr(api, node, fail)
+    issue = records.Issue(
+        id="I1",
+        key="first",
+        category="weak_inference",
+        severity="material",
+        target="economics",
+        requested_action=action,
+        text="Prices will certainly grow.",
+        description="Qualify certainty.",
+    )
+
+    def invoke(current, objection, number):
+        current = {**current, "issues": {objection.id: objection}}
+        key = f"{node}.{number}"
+        current["single_calls"] = {
+            **current.get("single_calls", {}),
+            key: records.Attempt(
+                id=key,
+                task_id=node,
+                started_at=records.now_iso(),
+                reserved=records.Reservation(
+                    turns=10, tool_calls=0, seconds=480
+                ),
+            ),
+        }
+        update = run(compiled.nodes[node].node.steps[0].afunc(current))
+        return {**current, **update}
+
+    state = invoke(state, issue, 1)
+    cosmetic = issue.model_copy(
+        update={"id": "I2", "description": "Other words."}
+    )
+    state = invoke(state, cosmetic, 2)
+    assert calls == [node]
+    assert state["single_calls"][f"{node}.1"].status == "failed"
+    assert state["single_calls"][f"{node}.2"].observed.turns == 0
+    if changed == "support":
+        state["evidence"] = {"E1": passage("E1", "S1", "new passage")}
+    else:
+        cosmetic = cosmetic.model_copy(
+            update={"text": "Demand certainly doubled."}
+        )
+    state = invoke(state, cosmetic, 3)
+    assert calls == [node, node]
+    assert state["single_calls"][f"{node}.1"].status == "failed"
+    assert state["single_calls"][f"{node}.3"].status == "failed"
+
+
+def test_failed_final_review_cannot_approve_rewrite_or_lose_prior_candidate(
+    tmp_path,
+):
+    runtime, api, _, compiled = make(tmp_path)
+    runtime.begin("review-failure")
+    original = run(
+        compiled.ainvoke(
+            {"question": "q"}, persist.thread_config("review-failure")
+        )
+    )
+    assert report.certificate_applies(original)
+    candidate = records.DeliveryCandidate(
+        sections=original["sections"],
+        subject=original["review_subject"],
+        review=original["final_review"],
+        draft_version=original["draft_version"],
+        issues=original["issues"],
+        level=original["delivery"].level,
+        status=original["delivery"].status,
+    )
+    state = {
+        **original,
+        "candidate": candidate,
+        "draft_version": original["draft_version"] + 1,
+        "sections": [
+            records.Section(id="replacement", title="New", text="Unreviewed.")
+        ],
+        "single_calls": {
+            "final_review.99": records.Attempt(
+                id="final_review.99",
+                task_id="final_review",
+                started_at=records.now_iso(),
+                reserved=records.Reservation(
+                    turns=10, tool_calls=0, seconds=480
+                ),
+            )
+        },
+    }
+
+    async def fail(*args):
+        del args
+        raise crew.RoleFailure("no structured output")
+
+    api.final_review = fail
+    update = run(compiled.nodes["final_review"].node.steps[0].afunc(state))
+    state.update(update)
+    assert state["single_calls"]["final_review.99"].status == "failed"
+    assert not report.certificate_applies(state)
+    delivered = run(compiled.nodes["deliver"].node.steps[0].afunc(state))
+    assert delivered["delivery"].level == original["delivery"].level
+    text = pathlib.Path(delivered["meta"].report_path).read_text(
+        encoding="utf-8"
+    )
+    assert "Unreviewed." not in text
+    assert "reviewed draft" in delivered["delivery"].reason
+
+
+@pytest.mark.parametrize("known", [False, True])
+def test_failed_claim_review_does_not_repeat_its_unchanged_batch(
+    tmp_path, known
+):
+    runtime, api, _, compiled = make(tmp_path, floor=coverage.UsefulnessFloor())
+    calls = []
+    actual_review = api.review_claims
+    succeeding = False
+
+    async def fail(state, claim_ids, max_turns, deadline):
+        calls.append(roles.review_description(state, claim_ids))
+        if succeeding:
+            return await actual_review(state, claim_ids, max_turns, deadline)
+        raise crew.RoleFailure(
+            "exhausted", {"turns": 1, "cost_usd": 0.25} if known else None
+        )
+
+    api.review_claims = fail
+    runtime.begin("review-batch-failure")
+    state = run(
+        compiled.ainvoke(
+            {"question": "q"}, persist.thread_config("review-batch-failure")
+        )
+    )
+    assert len(calls) == len(set(calls)) == 1
+    assert state["meta"].execution_status == "completed"
+    assert all(c.review == "unreviewed" for c in state["claims"].values())
+    assert state["delivery"].level == "diagnostic_only"
+    assert state["review_stalls"] == graph_module.REVIEW_STALLS
+    assert len(state["stage_inputs"]["review:terminal_failure"]) == 1
+
+    def invoke(current, number):
+        key = f"review.{number}"
+        current["single_calls"] = {
+            **current["single_calls"],
+            key: records.Attempt(
+                id=key,
+                task_id="review",
+                started_at=records.now_iso(),
+                reserved=records.Reservation(
+                    turns=10, tool_calls=0, seconds=480
+                ),
+            ),
+        }
+        update = run(compiled.nodes["review"].node.steps[0].afunc(current))
+        return {**current, **update}
+
+    state["issues"] = {
+        key: item.model_copy(update={"description": "Cosmetic change."})
+        for key, item in state["issues"].items()
+    }
+    state = invoke(state, 998)
+    assert len(calls) == 1
+    assert state["single_calls"]["review.998"].observed.turns == 0
+    pending = graph_module.pending_review(state, runtime.limits.review_batch)
+    eid = state["claims"][pending[0]].evidence_ids[0]
+    evidence = state["evidence"][eid]
+    state["evidence"] = {
+        **state["evidence"],
+        eid: evidence.model_copy(
+            update={"excerpt": evidence.excerpt + " New evidence."}
+        ),
+    }
+    succeeding = True
+    state = invoke(state, 999)
+    assert len(calls) == len(set(calls)) == 2
+    assert state["single_calls"]["review.999"].status == "done"
+    assert state["single_calls"]["review.1"].status == "failed"
+    assert state["review_stalls"] == 0
 
 
 def test_a_whole_run_stays_well_inside_the_superstep_bound(tmp_path):

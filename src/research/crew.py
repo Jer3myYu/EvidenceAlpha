@@ -65,6 +65,20 @@ class RoleTimeout(TimeoutError):
     """A role's model call exceeded its deadline and was cancelled."""
 
 
+class RoleFailure(RuntimeError):
+    """A terminal model outcome, never a programming or cancellation error."""
+
+    def __init__(
+        self,
+        message: str,
+        usage: dict[str, Any] | None = None,
+        kind: str = "schema",
+    ) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.kind = kind
+
+
 class RoleHung(RuntimeError):
     """This call's cancellation did not stop it within the grace period.
 
@@ -208,7 +222,7 @@ class ClaudeLLM(crewai.BaseLLM):
         ``call`` from a thread, which runs this coroutine to completion.
 
         Raises:
-          RuntimeError: If the SDK reports an error or returns nothing.
+          RoleFailure: If the SDK reports failure or invalid output.
         """
         del tools, callbacks, available_functions, from_task, from_agent
         system_prompt, prompt = split_messages(messages)
@@ -234,41 +248,72 @@ class ClaudeLLM(crewai.BaseLLM):
             }
         result = None
         exchanges = 0
+        self.last_usage = None
         if self.on_invoke is not None:
             self.on_invoke()
-        async for message in claude_agent_sdk.query(
-            prompt=prompt, options=options
-        ):
-            if isinstance(message, claude_agent_sdk.AssistantMessage):
-                exchanges += 1
-            if isinstance(message, claude_agent_sdk.ResultMessage):
-                result = message
-        if result is not None:
-            self.last_usage = {
-                "turns": result.num_turns,
-                # Assistant messages seen: the text answer plus every
-                # structured-output attempt the CLI made.
-                "exchanges": exchanges,
-                "usage": result.usage,
-                # The SDK reports per-model figures, including the cache
-                # categories, separately from the flat usage dictionary.
-                # Dropping them here is why every recorded run's cache
-                # accounting was empty (plan D-U15, U2-11).
-                "model_usage": getattr(result, "model_usage", None),
-                "cost_usd": result.total_cost_usd,
-                "duration_ms": result.duration_ms,
-                "is_error": result.is_error,
-            }
+        try:
+            async for message in claude_agent_sdk.query(
+                prompt=prompt, options=options
+            ):
+                if isinstance(message, claude_agent_sdk.AssistantMessage):
+                    exchanges += 1
+                if isinstance(message, claude_agent_sdk.ResultMessage):
+                    result = message
+                    # Save before advancing: the iterator can raise with
+                    # this same terminal result. Never add it twice.
+                    self._record_usage(dataclasses.asdict(message), exchanges)
+        except claude_agent_sdk.ResultError as error:
+            if self.last_usage is None:
+                self._record_usage(error.data or {}, exchanges)
+            kind = (
+                "transport"
+                if error.terminal_reason == "api_error"
+                else "schema"
+            )
+            raise RoleFailure(str(error), self.last_usage, kind) from error
         if result is None or result.is_error:
             errors = result.errors if result else "no result"
-            raise RuntimeError(f"Model call failed: {errors}")
+            kind = (
+                "transport"
+                if result and result.terminal_reason == "api_error"
+                else "schema"
+            )
+            raise RoleFailure(
+                f"Model call failed: {errors}", self.last_usage, kind
+            )
         if response_model is None:
             if result.result is None:
-                raise RuntimeError("Model call returned no text.")
+                raise RoleFailure(
+                    "Model call returned no text.", self.last_usage
+                )
             return FINAL_ANSWER + result.result
         if result.structured_output is None:
-            raise RuntimeError("Model call returned no structured output.")
-        return response_model.model_validate(result.structured_output)
+            raise RoleFailure(
+                "Model call returned no structured output.", self.last_usage
+            )
+        try:
+            return response_model.model_validate(result.structured_output)
+        except pydantic.ValidationError as error:
+            raise RoleFailure(
+                f"Model output failed validation: {error}", self.last_usage
+            ) from error
+
+    def _record_usage(self, data: dict[str, Any], exchanges: int) -> None:
+        """Keep the terminal cumulative payload, including cache categories."""
+        if not any(
+            data.get(key) is not None
+            for key in ("num_turns", "usage", "total_cost_usd", "modelUsage")
+        ):
+            return
+        self.last_usage = {
+            "turns": data.get("num_turns"),
+            "exchanges": exchanges,
+            "usage": data.get("usage"),
+            "model_usage": data.get("model_usage") or data.get("modelUsage"),
+            "cost_usd": data.get("total_cost_usd"),
+            "duration_ms": data.get("duration_ms"),
+            "is_error": data.get("is_error"),
+        }
 
     def call(
         self,
@@ -403,7 +448,7 @@ async def run_task(
       RoleHung: If ``deadline`` passed and the call did not stop.
       admission.Blocked: If an earlier operation that outlived its
         cancellation is still live; no call is started.
-      RuntimeError: If the model call fails, or a structured task did
+      RoleFailure: If the model call fails, or a structured task did
         not produce its model.
     """
     if grace is None:
@@ -476,12 +521,18 @@ async def run_task(
         # it does otherwise -- after a grace that expired, or a second
         # interruption during the wait.
         slot.settle(kickoff)
+    if not output.tasks_output:
+        raise RoleFailure(
+            f"{role.name} task returned no output.",
+            getattr(llm, "last_usage", None),
+        )
     task_output = output.tasks_output[0]
     if role.output is None:
         return task_output.raw
     if not isinstance(task_output.pydantic, role.output):
-        raise RuntimeError(
-            f"{role.name} task returned no {role.output.__name__}."
+        raise RoleFailure(
+            f"{role.name} task returned no {role.output.__name__}.",
+            getattr(llm, "last_usage", None),
         )
     return task_output.pydantic
 

@@ -1,14 +1,95 @@
 """The adapter changes Phase 10 needs: per-role model, usage, deadline."""
 
 import asyncio
+import dataclasses
 import threading
 import time
 
+import claude_agent_sdk
 import crewai
 import pytest
 
 from industry import admission
 from research import crew
+
+
+@pytest.mark.parametrize(
+    "ending", ["both", "exception", "result", "unknown", "missing", "invalid"]
+)
+def test_terminal_role_output_failure_keeps_usage_once(monkeypatch, ending):
+    result = claude_agent_sdk.ResultMessage(
+        subtype="error_max_structured_output_retries",
+        duration_ms=1000,
+        duration_api_ms=900,
+        is_error=ending not in ("missing", "invalid"),
+        num_turns=7,
+        session_id="offline",
+        total_cost_usd=0.25,
+        usage={
+            "input_tokens": 11,
+            "output_tokens": 13,
+            "cache_read_input_tokens": 17,
+            "cache_creation_input_tokens": 19,
+        },
+        model_usage={"offline": {"outputTokens": 13}},
+        structured_output={} if ending == "invalid" else None,
+    )
+
+    async def query(**kwargs):
+        del kwargs
+        if ending not in ("exception", "unknown"):
+            yield result
+        if ending in ("both", "exception", "unknown"):
+            raise claude_agent_sdk.ResultError(
+                "exhausted",
+                {} if ending == "unknown" else dataclasses.asdict(result),
+            )
+
+    monkeypatch.setattr(claude_agent_sdk, "query", query)
+    llm = crew.ClaudeLLM()
+    with pytest.raises(crew.RoleFailure) as caught:
+        asyncio.run(llm.acall("offline", response_model=crew.PLANNER.output))
+    assert caught.value.kind == "schema"
+    assert caught.value.usage == llm.last_usage
+    if ending == "unknown":
+        assert llm.last_usage is None
+    else:
+        assert llm.last_usage["turns"] == 7
+        assert llm.last_usage["cost_usd"] == 0.25
+        assert llm.last_usage["usage"] == result.usage
+        assert llm.last_usage["model_usage"] == result.model_usage
+
+
+@pytest.mark.parametrize("error_type", [ValueError, asyncio.CancelledError])
+def test_role_programming_errors_and_cancellation_propagate(
+    monkeypatch, error_type
+):
+    async def query(**kwargs):
+        del kwargs
+        raise error_type("not a terminal model outcome")
+        yield  # pylint: disable=unreachable
+
+    monkeypatch.setattr(claude_agent_sdk, "query", query)
+    with pytest.raises(error_type):
+        asyncio.run(crew.ClaudeLLM().acall("offline"))
+
+
+def test_exception_only_partial_usage_is_not_discarded(monkeypatch):
+    async def query(**kwargs):
+        del kwargs
+        raise claude_agent_sdk.ResultError(
+            "exhausted",
+            {"total_cost_usd": 0.25, "usage": {"output_tokens": 13}},
+        )
+        yield  # pylint: disable=unreachable
+
+    monkeypatch.setattr(claude_agent_sdk, "query", query)
+    llm = crew.ClaudeLLM()
+    with pytest.raises(crew.RoleFailure) as caught:
+        asyncio.run(llm.acall("offline"))
+    assert caught.value.usage["turns"] is None
+    assert caught.value.usage["cost_usd"] == 0.25
+    assert caught.value.usage["usage"]["output_tokens"] == 13
 
 
 class SleepingLLM(crewai.BaseLLM):
