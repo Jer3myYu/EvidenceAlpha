@@ -53,6 +53,10 @@ class Ledger:
       cost_complete: Whether every counted execution exposed a cost. A
         missing cost is unknown, and ``cost_usd`` under a false flag is
         a subtotal rather than a total.
+      usage_complete: Whether every counted execution exposed the cache
+        categories too. Run 7's totals are cost-complete and
+        usage-incomplete: the $9.19 is a real SDK estimate, and the 144
+        input tokens behind it are not the context volume.
       input_tokens: Observed ordinary input tokens; not context volume.
       output_tokens: Observed output tokens.
       cache_creation_input_tokens: Observed cache writes.
@@ -69,6 +73,7 @@ class Ledger:
     output_tokens: int
     observed_session_s: float = 0.0
     cost_complete: bool = True
+    usage_complete: bool = True
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
 
@@ -125,7 +130,7 @@ def ledger(state: state_module.IndustryState) -> Ledger:
     total = records.Usage()
     unknown = 0
     observed_seconds = 0.0
-    costed = counted = 0
+    costed = counted = captured = 0
     attempts = state.get("attempts", {})
     executions = list(attempts.values()) + list(
         state.get("single_calls", {}).values()
@@ -145,6 +150,8 @@ def ledger(state: state_module.IndustryState) -> Ledger:
             counted += 1
             if observed.cost_usd is not None:
                 costed += 1
+            if observed.complete:
+                captured += 1
     return Ledger(
         turns=total.turns,
         tool_calls=total.tool_calls,
@@ -159,6 +166,7 @@ def ledger(state: state_module.IndustryState) -> Ledger:
         # a subtotal presented as a total is how "50% cheaper" gets
         # claimed from an incomplete measurement.
         cost_complete=unknown == 0 and costed == counted,
+        usage_complete=unknown == 0 and captured == counted,
         cache_creation_input_tokens=total.cache_creation_input_tokens,
         cache_read_input_tokens=total.cache_read_input_tokens,
     )
