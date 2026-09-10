@@ -237,6 +237,26 @@ def admit_repair_pair(
     return limits.single_call_reserved() if fits else 0
 
 
+def repair_shortfall(
+    state: state_module.IndustryState, limits: records.Limits
+) -> str:
+    """Which dimension refuses a repair pair, in admission's own terms."""
+    left = remaining(state, limits)
+    seconds, turns = repair_pair_cost(limits)
+    keep_s, keep_turns = pipeline_reserve(state, limits, "review")
+    keep_s -= repair_earmark(state, limits)[0]
+    keep_turns -= repair_earmark(state, limits)[1]
+    if left.seconds - limits.time_reserve_s - keep_s < seconds:
+        return "seconds"
+    if left.turns - limits.model_call_reserve - keep_turns < turns:
+        return "turns"
+    if left.tool_calls < limits.tools_per_attempt:
+        return "tools"
+    if left.task_executions < 1:
+        return "task executions"
+    return "priority"
+
+
 def pipeline_reserve(
     state: state_module.IndustryState, limits: records.Limits, stage: str
 ) -> tuple[float, int]:
@@ -291,11 +311,19 @@ def dispatchable(
     """
     left = remaining(state, limits)
     keep_s, keep_turns = pipeline_reserve(state, limits, "research")
-    executions = left.task_executions - (1 if keep_acquisition_slot else 0)
+    # An open repair window holds back the execution and the tools its
+    # pair will need, not only its seconds and turns
+    # (post-implementation finding 4).
+    held = 1 if repair_window_open(state) else 0
+    executions = (
+        left.task_executions - (1 if keep_acquisition_slot else 0) - held
+    )
     turns = (
         left.turns - limits.model_call_reserve - keep_turns
     ) // limits.attempt_turns()
-    tools = left.tool_calls // limits.tools_per_attempt
+    tools = (
+        left.tool_calls - held * limits.tools_per_attempt
+    ) // limits.tools_per_attempt
     seconds = left.seconds - limits.time_reserve_s - keep_s
     by_time = math.floor(seconds / limits.task_timeout_s)
     return max(0, min(executions, turns, tools, by_time))

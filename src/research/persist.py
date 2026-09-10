@@ -293,6 +293,12 @@ def validate_records(values: dict[str, Any]) -> list[str]:
     """
     problems: list[str] = []
     expected = state_module.record_types()
+    window = values.get("repair_window")
+    if window is not None and window not in ("open", "used", "closed"):
+        # A primitive the type annotation cannot police: the earmark is
+        # a scheduling decision, and an unreadable value must not be
+        # resumed on (plan revision 39 §4.46.7).
+        problems.append(f"repair_window: {window!r} is not a window state")
 
     def check(label: str, item: Any, model: type | None) -> None:
         problems.extend(record_problems(label, item, model))

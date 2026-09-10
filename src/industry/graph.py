@@ -667,7 +667,7 @@ def record_repairs(
     return repairs, log
 
 
-def _acquisition_route(
+def acquisition_route(
     state: state_module.IndustryState,
     claim: records.Claim,
     request: records.RepairRequest,
@@ -683,18 +683,29 @@ def _acquisition_route(
     evidence = state.get("evidence", {})
     sources = state.get("sources", {})
     versions = state.get("source_versions", {})
+
+    def fetchable(url: str | None) -> bool:
+        return bool(url) and url.lower().startswith(("http://", "https://"))
+
     urls: list[str] = []
     for eid in claim.evidence_ids:
         item = evidence.get(eid)
         if item is None:
             continue
-        version = versions.get(item.source_version_id or "")
-        if version is not None and version.source_id == item.source_id:
-            return 0
         source = sources.get(item.source_id)
-        if source is not None and source.canonical_url:
-            urls.append(source.canonical_url)
-    if request.url or urls:
+        version = versions.get(item.source_version_id or "")
+        if (
+            item.kind == "snippet"
+            and source is not None
+            and version is not None
+            and version.source_id == item.source_id
+        ):
+            # The snippet's own source already carries a fetched
+            # version to read the original from.
+            return 0
+        if source is not None and fetchable(source.canonical_url):
+            urls.append(source.canonical_url or "")
+    if fetchable(request.url) or urls:
         return 1
     return 2
 
@@ -745,7 +756,7 @@ def repair_priority(
         rank = 4
     return (
         rank,
-        _acquisition_route(state, claim, request),
+        acquisition_route(state, claim, request),
         merge.schedule.task_number(claim.id),
         merge.schedule.task_number(request.id),
     )
@@ -801,6 +812,23 @@ def schedule_repairs(
     open_targets = {
         r.claim_id for r in repairs.values() if r.status == "admitted"
     }
+    # Ownership is read from what the run actually holds -- a repair
+    # task waiting or running, or a review held for one -- so a retry
+    # or a second scheduling call cannot open a second pair
+    # (post-implementation finding 3).
+    outstanding = sum(
+        1
+        for task in tasks.values()
+        if task.kind == "acquisition"
+        and task.target is not None
+        and task.status in ("pending", "running")
+    ) + sum(
+        1
+        for call in state.get("single_calls", {}).values()
+        if call.task_id == "review"
+        and call.reserved.held
+        and call.status == "running"
+    )
     attempts = state.get("attempts", {})
     spent = sum(
         1
@@ -861,7 +889,7 @@ def schedule_repairs(
                 }
             )
             continue
-        if admitted_now:
+        if admitted_now or outstanding:
             repairs[request.id] = request.model_copy(
                 update={
                     "status": "deferred",
@@ -875,20 +903,7 @@ def schedule_repairs(
         # the downstream provisions.
         if not repair_affordable(state, limits, admitted_now + 1):
             seconds, turns = budget.repair_pair_cost(limits)
-            left = budget.remaining(state, limits)
-            short = (
-                "seconds"
-                if left.seconds - limits.time_reserve_s < seconds
-                else (
-                    "turns"
-                    if left.turns - limits.model_call_reserve < turns
-                    else (
-                        "tools"
-                        if left.tool_calls < limits.tools_per_attempt
-                        else "task executions"
-                    )
-                )
-            )
+            short = budget.repair_shortfall(state, limits)
             repairs[request.id] = request.model_copy(
                 update={
                     "status": "deferred",
@@ -938,6 +953,29 @@ def schedule_repairs(
     if deferred:
         log.append(f"repairs: {deferred} deferred, kept for the next round")
     return repairs, tasks, log
+
+
+def can_start(
+    state: state_module.IndustryState,
+    limits: records.Limits,
+    ready: list[records.Task],
+) -> bool:
+    """Whether anything ready could actually start now.
+
+    An admitted repair pair is funded on its own terms and must not be
+    routed away because no ordinary 900-second slot is free: at every
+    recorded decision boundary there was none (plan revision 39
+    §4.46.2, post-implementation finding 1).
+    """
+    if budget.dispatchable(state, limits, False) > 0:
+        return True
+    return any(
+        task.kind == "acquisition"
+        and task.target is not None
+        and not stale_repair(task, state.get("claims", {}))
+        and repair_affordable(state, limits, 1)
+        for task in ready
+    )
 
 
 def stale_repair(task: records.Task, claims: dict[str, records.Claim]) -> bool:
@@ -1010,6 +1048,38 @@ def settle_repairs(
     return repairs
 
 
+def repaired_awaiting_review(state: state_module.IndustryState) -> list[str]:
+    """Targets a repair strengthened that still need their verdict.
+
+    The review a repair paid for is the *next ordinary batch*, so the
+    batch has to actually contain the target: without this the queue's
+    ordinary order can spend every funded batch elsewhere and leave the
+    repaired claim withdrawn (plan revision 39 §4.46.2,
+    post-implementation finding 2).
+    """
+    claims = state.get("claims", {})
+    relationships = state.get("relationships", {})
+    calculations = state.get("calculations", {})
+    ordered: list[str] = []
+    for request in sorted(
+        state.get("repairs", {}).values(),
+        key=lambda r: merge.schedule.task_number(r.id),
+    ):
+        if request.status != "done":
+            continue
+        claim = claims.get(request.claim_id)
+        if (
+            claim is None
+            or claim.id in ordered
+            or not claim.material
+            or not merge.claim_needs_attention(claim, relationships)
+            or not merge.producer_chain_intact(claim, claims, calculations)
+        ):
+            continue
+        ordered.append(claim.id)
+    return ordered
+
+
 def pending_review(
     state: state_module.IndustryState, batch: int | None = None
 ) -> list[str]:
@@ -1045,6 +1115,10 @@ def pending_review(
             if queue:
                 ordered.append(queue.pop(0))
     ordered.extend(rest)
+    # A claim a repair strengthened goes first: its verdict is what the
+    # repair bought, and the rest of the batch fills in behind it.
+    repaired = repaired_awaiting_review(state)
+    ordered = repaired + [cid for cid in ordered if cid not in repaired]
     return ordered[: batch or REVIEW_BATCH]
 
 
@@ -1538,6 +1612,16 @@ def build_graph(
             t.kind == "acquisition" for t in ready
         )
         slots = budget.dispatchable(state, limits, keep_slot)
+        # A repair pair is admitted on its own terms (plan revision 39
+        # §4.46.2). It must not then wait for an ordinary 900-second
+        # slot: at every recorded decision boundary there were none,
+        # which would leave the pair admitted and unable to start.
+        repairs_first = [
+            task
+            for task in ready
+            if task.kind == "acquisition" and task.target is not None
+        ]
+        ordinary = [task for task in ready if task not in repairs_first]
         attempts = dict(state.get("attempts", {}))
         # Acquisition attempts are capped for the run: beyond the cap a
         # ready acquisition task is skipped, never dispatched.
@@ -1601,7 +1685,8 @@ def build_graph(
         log = []
         calls = dict(state.get("single_calls", {}))
         window = state.get("repair_window", "open")
-        for task in ready[:slots]:
+        starting = repairs_first + ordinary[:slots]
+        for task in starting:
             repair = task.kind == "acquisition" and task.target is not None
             reservation = (
                 budget.repair_reservation_for(limits)
@@ -1642,11 +1727,12 @@ def build_graph(
             meter.register(attempt.id, attempt.reserved.tool_calls)
             if not repair:
                 log.append(f"dispatch: {attempt.id} reserved and admitted")
-        if len(ready) > slots:
+        if len(ordinary) > slots:
             log.append(
-                f"dispatch: {len(ready) - slots} ready tasks wait for budget"
+                f"dispatch: {len(ordinary) - slots} ready tasks wait for "
+                "budget"
             )
-        if not ready:
+        if not starting:
             log.append("dispatch: nothing ready")
         return {
             "tasks": tasks,
@@ -1705,7 +1791,7 @@ def build_graph(
 
     def after_merge(state: state_module.IndustryState) -> str:
         _, ready = schedule.ready(schedule.validate(state.get("tasks", {})))
-        if ready and budget.dispatchable(state, limits, False) > 0:
+        if ready and can_start(state, limits, ready):
             return "dispatch"
         if state.get("phase", "mapping") == "mapping":
             return "reserve_prepare_tasks"
@@ -1766,7 +1852,7 @@ def build_graph(
 
     def after_prepare(state: state_module.IndustryState) -> str:
         _, ready = schedule.ready(schedule.validate(state.get("tasks", {})))
-        if ready and budget.dispatchable(state, limits, False) > 0:
+        if ready and can_start(state, limits, ready):
             return "dispatch"
         return "reserve_review"
 
@@ -2146,7 +2232,7 @@ def build_graph(
 
     def after_review(state: state_module.IndustryState) -> str:
         _, ready = schedule.ready(schedule.validate(state.get("tasks", {})))
-        if ready and budget.dispatchable(state, limits, False) > 0:
+        if ready and can_start(state, limits, ready):
             return "dispatch"
         last = running_reservation(state, "review")
         if (

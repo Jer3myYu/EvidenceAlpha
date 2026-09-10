@@ -95,7 +95,13 @@ def test_dispatchable_respects_every_limit_and_reserve():
             "wall_clock_s": 100000,
         }
     )
-    assert budget.dispatchable(empty, tight, keep_acquisition_slot=True) == 11
+    # An open repair window holds back the execution and the tools its
+    # pair will need as well as its seconds and turns (plan revision 39
+    # §4.46.3), so the same ledger admits one fewer ordinary attempt
+    # until the window closes.
+    assert budget.dispatchable(empty, tight, keep_acquisition_slot=True) == 10
+    closed = {**empty, "repair_window": "closed"}
+    assert budget.dispatchable(closed, tight, keep_acquisition_slot=True) == 11
 
 
 def test_reservations_never_exceed_the_limits_at_the_boundary():
@@ -388,8 +394,9 @@ def test_pipeline_reserve_keeps_time_for_review_analysis_and_assessment():
     held_s, held_turns = budget.repair_pair_cost(limits)
     for stage in ("research", "review"):
         was = budget.pipeline_reserve(state, limits, stage)
-        now = budget.pipeline_reserve({**state, "repair_window": "open"},
-                                      limits, stage)
+        now = budget.pipeline_reserve(
+            {**state, "repair_window": "open"}, limits, stage
+        )
         assert now == (was[0] + held_s, was[1] + held_turns)
     assert budget.pipeline_reserve(
         {**state, "repair_window": "open"}, limits, "analyze"

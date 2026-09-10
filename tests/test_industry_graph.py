@@ -2694,3 +2694,133 @@ def test_the_completed_review_reaches_the_repair_decision():
     }
     assert budget.admit_repair_pair(stale, limits) == 0
     assert budget.admit_repair_pair(done, limits) > 0
+
+
+def test_an_admitted_repair_does_not_wait_for_an_ordinary_slot():
+    # Post-implementation finding 1: a pair admitted on its own terms
+    # was then routed away because no 900-second slot was free -- and
+    # at every recorded decision boundary there was none.
+    limits = records.Limits()
+    state = charged(repair_state(pending=1), 2600)
+    repairs, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, limits
+    )
+    task = next(t for t in tasks.values() if t.kind == "acquisition")
+    ready = [task]
+    assert budget.dispatchable({**state, "tasks": tasks}, limits, False) == 0
+    assert graph_module.can_start({**state, "tasks": tasks}, limits, ready)
+    # An ordinary task alone at the same budget point does not start.
+    ordinary = records.Task(
+        id="T7", kind="research", role="industry", objective="o"
+    )
+    assert not graph_module.can_start(
+        {**state, "tasks": tasks}, limits, [ordinary]
+    )
+
+
+def test_the_funded_review_takes_the_repaired_target_first():
+    # Post-implementation finding 2: the queue's ordinary order could
+    # spend every funded batch elsewhere and leave the repaired claim
+    # withdrawn, with its review already paid for.
+    state = repair_state(pending=12)
+    for n in range(1, 13):
+        state["claims"][f"C{n}"] = state["claims"][f"C{n}"].model_copy(
+            update={
+                "review": "unreviewed",
+                "review_reason": None,
+                "questions": [1],
+            }
+        )
+    target = "C12"
+    state["repairs"] = {
+        "RQ1": records.RepairRequest(
+            id="RQ1",
+            claim_id=target,
+            status="done",
+            reason="evidence attached",
+        )
+    }
+    assert graph_module.repaired_awaiting_review(state) == [target]
+    batch = graph_module.pending_review(state, 10)
+    assert batch[0] == target and len(batch) == 10
+    assert len(set(batch)) == len(batch)
+    # Once it has its verdict it is an ordinary claim again.
+    state["claims"][target] = state["claims"][target].model_copy(
+        update={"review": "supported"}
+    )
+    assert not graph_module.repaired_awaiting_review(state)
+    assert graph_module.pending_review(state, 10)[0] != target
+
+
+def test_one_pair_stays_outstanding_across_scheduling_calls():
+    # Finding 3: `admitted_now` counted one invocation, so a second
+    # call, or a retry, could open a second pair.
+    limits = records.Limits()
+    state = charged(repair_state(pending=3), 1500)
+    repairs, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    repairs, tasks, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, limits
+    )
+    assert len([t for t in tasks.values() if t.kind == "acquisition"]) == 1
+    again, tasks_again, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs, "tasks": tasks}, limits
+    )
+    assert (
+        len([t for t in tasks_again.values() if t.kind == "acquisition"]) == 1
+    )
+    assert any(
+        r.status == "deferred" and "one repair pair" in r.reason
+        for r in again.values()
+    )
+
+
+def test_a_deferral_names_the_dimension_admission_refused_on():
+    # Finding 5: the explanation subtracted nothing downstream, so it
+    # could blame executions for a refusal about seconds.
+    limits = records.Limits()
+    state = charged(repair_state(pending=1), 3300)
+    assert budget.admit_repair_pair(state, limits) == 0
+    assert budget.repair_shortfall(state, limits) == "seconds"
+    repairs, _ = graph_module.record_repairs(
+        state, requests_for(state), state["claims"], 1
+    )
+    repairs, _, _ = graph_module.schedule_repairs(
+        {**state, "repairs": repairs}, limits
+    )
+    request = next(iter(repairs.values()))
+    assert request.status == "deferred" and "seconds:" in request.reason
+
+
+def test_anacquisition_route_claims_only_what_the_record_shows():
+    # Finding 6: "not a URL" ranked as a fetch route, and a passage
+    # with a matching version ranked as the strongest one.
+    state = repair_state(pending=1)
+    claim = state["claims"]["C1"]
+    state["evidence"] = {
+        "E1": records.Evidence(
+            id="E1",
+            source_id="S1",
+            source_version_id=None,
+            excerpt="x",
+            locator="l",
+            kind="snippet",
+            extraction="search_snippet",
+            task_id="T1",
+            retrieved_at="2026-09-09T00:00:00+00:00",
+        )
+    }
+    state["sources"] = {
+        "S1": records.Source(id="S1", title="a", kind="web_page")
+    }
+    state["source_versions"] = {}
+    bogus = records.RepairRequest(id="RQ1", claim_id="C1", url="not a URL")
+    assert graph_module.acquisition_route(state, claim, bogus) == 2
+    real = records.RepairRequest(
+        id="RQ2", claim_id="C1", url="https://a.example/doc"
+    )
+    assert graph_module.acquisition_route(state, claim, real) == 1
