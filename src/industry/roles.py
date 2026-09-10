@@ -332,47 +332,42 @@ def render_brief(brief: records.Brief) -> str:
 def render_map(
     industry_map: records.IndustryMap,
     claims: dict[str, records.Claim] | None = None,
+    limits: records.Limits | None = None,
 ) -> str:
     """Segments, links, and participants with their claim ids.
 
     With ``claims``, only items whose map claim was reviewed
     ``supported`` or ``qualified`` are rendered (the Analyst and the
     Editor see reviewed lineage only); the omitted ones are counted.
+
+    Since plan D-U3 the registry keeps every candidate segment, link,
+    and participant, so this is the one bounded projection every
+    model-facing consumer reads (``merge.map_view``): the candidate set
+    may grow without growing four prompts. What it leaves out is always
+    counted in the text, never dropped in silence.
     """
     if not industry_map.segments:
         return "Industry map: none yet."
-
-    def shown(claim_id: str) -> bool:
-        if claims is None:
-            return True
-        claim = claims.get(claim_id)
-        return claim is not None and claim.is_reviewed()
+    industry_map, cut, unreviewed = merge.map_view(
+        industry_map, limits or records.Limits(), claims
+    )
 
     names = {s.id: s.name for s in industry_map.segments}
     unknown = "?"
     lines = ["Industry map:"]
-    omitted = 0
+    omitted = unreviewed
     for seg in industry_map.segments:
-        if not shown(seg.claim_id):
-            omitted += 1
-            continue
         lines.append(
             f"  {seg.id} [{seg.stage}] {seg.name}: {seg.description} "
             f"(claim {seg.claim_id})"
         )
     for link in industry_map.links:
-        if not shown(link.claim_id):
-            omitted += 1
-            continue
         lines.append(
             f"  {link.id} {names.get(link.from_segment, unknown)} -> "
             f"{names.get(link.to_segment, unknown)}: {link.what_flows} "
             f"(claim {link.claim_id})"
         )
     for part in industry_map.participants:
-        if not shown(part.claim_id):
-            omitted += 1
-            continue
         flows = []
         if part.supplies:
             flows.append(f"supplies {part.supplies}")
@@ -395,6 +390,12 @@ def render_map(
         lines.append(
             f"  ({omitted} map items whose claims are not yet reviewed are "
             "omitted; they may not be stated)"
+        )
+    if cut:
+        detail = ", ".join(f"{n} {kind}" for kind, n in sorted(cut.items()))
+        lines.append(
+            f"  ({detail} beyond this view; the registry keeps them and "
+            "they may be researched, but they are not shown here)"
         )
     if len(lines) == 1:
         lines.append("  (no reviewed map items yet)")
@@ -781,7 +782,7 @@ def plan_description(
     return "\n\n".join(
         [
             render_brief(state["brief"]),
-            render_map(state.get("map", records.IndustryMap())),
+            render_map(state.get("map", records.IndustryMap()), None, limits),
             render_claims(state, None, False, MAX_CONTEXT_CHARS["lead"] // 2),
             render_coverage(state),
             render_issues(state),

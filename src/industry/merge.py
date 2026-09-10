@@ -92,6 +92,23 @@ class _Registry:
             self.claims, self.limits, partition, self.relationships
         )
 
+    def map_admission(
+        self, partition: str, what: str
+    ) -> tuple[records.ReviewDisposition, str | None]:
+        """Whether a map claim's review fits, never whether it exists.
+
+        The candidate is always kept (plan D-U3). A full partition means
+        the verifier will not reach this item yet, and
+        ``reconsider_deferred`` promotes it as soon as a slot frees.
+        """
+        if self.material_quota(partition):
+            return "pending", None
+        self.log.append(
+            f"{what}: kept as a candidate; {partition} at capacity, "
+            "review deferred"
+        )
+        return "deferred", f"{partition} at capacity"
+
     def partition_of(self, questions: list[int]) -> str:
         """The partition one new material claim is admitted to."""
         return assign_partition(
@@ -837,6 +854,124 @@ def _fold_finding(
         )
 
 
+def _bounded(
+    registry: _Registry,
+    attempt_id: str,
+    items: list[Any],
+    what: str,
+) -> list[Any]:
+    """The candidate items one attempt may contribute, truncated visibly.
+
+    The review quotas no longer decide which map candidates exist (plan
+    D-U3), so the candidate set needs a safety bound of its own. Reaching
+    it records the unprocessed count: a truncated set is never reported
+    as a complete one.
+    """
+    cap = registry.limits.map_candidates_per_kind
+    if len(items) <= cap:
+        return list(items)
+    registry.log.append(
+        f"{attempt_id}: {len(items)} {what} exceeds the candidate bound of "
+        f"{cap}; {len(items) - cap} not processed"
+    )
+    return list(items[:cap])
+
+
+def map_view(
+    industry_map: records.IndustryMap,
+    limits: records.Limits,
+    claims: dict[str, records.Claim] | None = None,
+) -> tuple[records.IndustryMap, dict[str, int], int]:
+    """One bounded, dependency-complete projection of the candidate map.
+
+    Every model-facing consumer reads this, not the registry: the
+    candidate set may grow without growing the planning, analysis,
+    coverage, and editor prompts (plan D-U3, U0-06). The report reads it
+    too, so what a reader sees and what a model saw are the same
+    selection.
+
+    Dependency completeness is not only link endpoints. A participant
+    appears only when its segment does, and a link only when both of its
+    segments do, so a view can never dangle. With ``claims``, only items
+    whose map claim is reviewed are eligible, matching what the Analyst
+    and Editor were always shown.
+
+    Returns the view, the counts left out by the view's own bounds, and
+    separately how many items were left out because their map claim is
+    not reviewed. Callers render both as explicit continuation records
+    rather than silence, and the two causes never merge into one number:
+    "not verified yet" and "beyond this view" mean different things to a
+    reader and to a planner.
+    """
+
+    def eligible(claim_id: str) -> bool:
+        if claims is None:
+            return True
+        claim = claims.get(claim_id)
+        return claim is not None and claim.is_reviewed()
+
+    unreviewed = 0
+    segments = []
+    for seg in industry_map.segments:
+        if eligible(seg.claim_id):
+            segments.append(seg)
+        else:
+            unreviewed += 1
+    kept_segments = segments[: limits.map_view_segments]
+    shown_ids = {s.id for s in kept_segments}
+    eligible_ids = {s.id for s in segments}
+
+    links = []
+    for link in industry_map.links:
+        if not eligible(link.claim_id):
+            unreviewed += 1
+        elif (
+            link.from_segment in eligible_ids
+            and link.to_segment in eligible_ids
+        ):
+            links.append(link)
+    # Dependency completeness: a link only when both its segments show.
+    shown_links = [
+        l
+        for l in links
+        if l.from_segment in shown_ids and l.to_segment in shown_ids
+    ]
+    kept_links = shown_links[: limits.map_view_links]
+
+    per_stage: dict[str, int] = {}
+    stage_of = {s.id: s.stage for s in kept_segments}
+    participants = []
+    for part in industry_map.participants:
+        if not eligible(part.claim_id):
+            unreviewed += 1
+        elif part.segment_id in eligible_ids:
+            participants.append(part)
+    kept_participants = []
+    for part in participants:
+        # And a participant only when its segment shows.
+        if part.segment_id not in shown_ids:
+            continue
+        stage = stage_of.get(part.segment_id, "adjacent")
+        if per_stage.get(stage, 0) >= limits.map_view_participants_per_stage:
+            continue
+        per_stage[stage] = per_stage.get(stage, 0) + 1
+        kept_participants.append(part)
+
+    view = records.IndustryMap(
+        segments=kept_segments,
+        links=kept_links,
+        participants=kept_participants,
+        boundary_note=industry_map.boundary_note,
+        gaps=list(industry_map.gaps),
+    )
+    beyond = {
+        "segments": len(segments) - len(kept_segments),
+        "links": len(links) - len(kept_links),
+        "participants": len(participants) - len(kept_participants),
+    }
+    return view, {k: v for k, v in beyond.items() if v > 0}, unreviewed
+
+
 def _fold_map(
     registry: _Registry,
     attempt_id: str,
@@ -849,15 +984,7 @@ def _fold_map(
     participants = list(current.participants)
     by_name = {normalize_text(s.name): s.id for s in segments}
     key_to_id: dict[str, str] = {}
-    for item in draft.segments:
-        if normalize_text(item.name) not in by_name and (
-            not registry.material_quota("map:segment")
-        ):
-            registry.log.append(
-                f"{attempt_id}: map segment {item.name} not added: "
-                f"{registry.limits.map_segments} segments is the cap"
-            )
-            continue
+    for item in _bounded(registry, attempt_id, draft.segments, "map segments"):
         evidence_ids, unknown = _map_refs(item.evidence_refs, evidence_map)
         if unknown or not evidence_ids:
             registry.log.append(
@@ -870,6 +997,9 @@ def _fold_map(
             key_to_id[item.key] = by_name[name]
             continue
         seg_id = next_id("G", {s.id: s for s in segments})
+        disposition, reason = registry.map_admission(
+            "map:segment", f"{attempt_id}: map segment {item.name}"
+        )
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -881,6 +1011,9 @@ def _fold_map(
                 evidence_ids=evidence_ids,
                 material=True,
                 partition="map:segment",
+                review_disposition=disposition,
+                review_deferred_reason=reason,
+                question_mapping="declared",
                 questions=[1],
                 origin=attempt_id,
                 map_ref=seg_id,
@@ -900,13 +1033,7 @@ def _fold_map(
     seg_name = {s.id: s.name for s in segments}
     seg_stage = {s.id: s.stage for s in segments}
     existing_links = {(l.from_segment, l.to_segment) for l in links}
-    for item in draft.links:
-        if not registry.material_quota("map:link"):
-            registry.log.append(
-                f"{attempt_id}: map link {item.from_key}->{item.to_key} not "
-                f"added: {registry.limits.map_links} links is the cap"
-            )
-            continue
+    for item in _bounded(registry, attempt_id, draft.links, "map links"):
         evidence_ids, unknown = _map_refs(item.evidence_refs, evidence_map)
         from_id = key_to_id.get(item.from_key)
         to_id = key_to_id.get(item.to_key)
@@ -919,6 +1046,10 @@ def _fold_map(
         if (from_id, to_id) in existing_links:
             continue
         link_id = next_id("L", {l.id: l for l in links})
+        disposition, reason = registry.map_admission(
+            "map:link",
+            f"{attempt_id}: map link {item.from_key}->{item.to_key}",
+        )
         claim_id = registry.add_claim(
             records.Claim(
                 id="C0",
@@ -930,6 +1061,9 @@ def _fold_map(
                 evidence_ids=evidence_ids,
                 material=True,
                 partition="map:link",
+                review_disposition=disposition,
+                review_deferred_reason=reason,
+                question_mapping="declared",
                 questions=[2],
                 origin=attempt_id,
                 map_ref=link_id,
@@ -948,7 +1082,9 @@ def _fold_map(
     existing_participants = {
         (normalize_text(p.name), p.segment_id) for p in participants
     }
-    for item in draft.participants:
+    for item in _bounded(
+        registry, attempt_id, draft.participants, "map participants"
+    ):
         evidence_ids, unknown = _map_refs(item.evidence_refs, evidence_map)
         seg_id = key_to_id.get(item.segment_key)
         if unknown or not evidence_ids or seg_id is None:
@@ -960,13 +1096,10 @@ def _fold_map(
         if (normalize_text(item.name), seg_id) in existing_participants:
             continue
         stage = seg_stage.get(seg_id, "adjacent")
-        if not registry.material_quota(f"map:participant:{stage}"):
-            registry.log.append(
-                f"{attempt_id}: map participant {item.name} not added: "
-                f"{registry.limits.map_participants_per_stage} {stage} "
-                "participants is the cap"
-            )
-            continue
+        disposition, reason = registry.map_admission(
+            f"map:participant:{stage}",
+            f"{attempt_id}: map participant {item.name}",
+        )
         part_id = next_id("P", {p.id: p for p in participants})
         region = f", {item.region}" if item.region else ""
         unstated = "no supply/buy stated"
@@ -990,6 +1123,9 @@ def _fold_map(
                 evidence_ids=evidence_ids,
                 material=True,
                 partition=f"map:participant:{stage}",
+                review_disposition=disposition,
+                review_deferred_reason=reason,
+                question_mapping="declared",
                 entity=item.name,
                 questions=[3],
                 origin=attempt_id,

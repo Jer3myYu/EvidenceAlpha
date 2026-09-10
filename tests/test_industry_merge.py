@@ -922,7 +922,7 @@ def test_a_settled_claim_frees_its_slot_and_a_deferred_one_takes_it():
     )
 
 
-def test_map_segments_links_and_participants_are_capped():
+def test_a05_map_candidates_are_retained_and_only_review_is_capped():
     state = base_state()
     limits = records.Limits(
         **{
@@ -973,12 +973,82 @@ def test_map_segments_links_and_participants_are_capped():
     )
     update = merge.merge_results(state, [result], limits)
     industry_map = update["map"]
-    assert len(industry_map.segments) == 2
-    assert len(industry_map.links) == 1
-    # One participant per stage: the second segment is midstream, so
-    # its company is admitted beside the first stage's one.
-    assert len(industry_map.participants) == 2
-    assert sum(1 for c in update["claims"].values() if c.map_ref) == 5
+    # A05: every candidate is kept. A company the run cannot afford to
+    # verify is still a company in this industry (plan D-U3).
+    assert len(industry_map.segments) == 4
+    assert len(industry_map.links) == 2
+    assert len(industry_map.participants) == 4
+    map_claims = [c for c in update["claims"].values() if c.map_ref]
+    assert len(map_claims) == 10 and all(c.material for c in map_claims)
+    # The caps now decide only which of them the verifier reaches:
+    # 2 segments + 1 link + 1 per stage of two stages.
+    admitted = [c for c in map_claims if c.review_disposition == "pending"]
+    deferred = [c for c in map_claims if c.review_disposition == "deferred"]
+    assert len(admitted) == 5 and len(deferred) == 5
+    assert all(c.review_deferred_reason for c in deferred)
+    # And no link dangles: both endpoints exist in the registry.
+    ids = {s.id for s in industry_map.segments}
+    assert all(
+        l.from_segment in ids and l.to_segment in ids
+        for l in industry_map.links
+    )
+    assert all(p.segment_id in ids for p in industry_map.participants)
+
+
+def test_a05_the_bounded_view_never_dangles_and_counts_what_it_omits():
+    """A05: the report and every prompt read one dependency-complete view."""
+    limits = records.Limits(
+        **{
+            **LIMITS.model_dump(),
+            "map_view_segments": 1,
+            "map_view_links": 5,
+            "map_view_participants_per_stage": 5,
+        }
+    )
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="a",
+                stage="upstream",
+                description="d",
+                claim_id="C1",
+            ),
+            records.Segment(
+                id="G2",
+                name="b",
+                stage="midstream",
+                description="d",
+                claim_id="C2",
+            ),
+        ],
+        links=[
+            records.Link(
+                id="L1",
+                from_segment="G1",
+                to_segment="G2",
+                what_flows="x",
+                claim_id="C3",
+            )
+        ],
+        participants=[
+            records.Participant(
+                id="P1",
+                name="co",
+                segment_id="G2",
+                role="supplier",
+                selection_rationale="r",
+                claim_id="C4",
+            )
+        ],
+    )
+    view, beyond, unreviewed = merge.map_view(industry_map, limits)
+    # G2 is beyond the view, so its link and its participant go with it
+    # rather than pointing at a segment the reader cannot see.
+    assert [s.id for s in view.segments] == ["G1"]
+    assert view.links == [] and view.participants == []
+    assert beyond == {"segments": 1, "links": 1, "participants": 1}
+    assert unreviewed == 0
 
 
 def test_relationship_needs_a_supported_parent_to_confirm():
@@ -1048,7 +1118,7 @@ def test_material_partitions_are_disjoint_and_fixed_at_admission():
     assert limits.material_claims() == (1 + 1 + 4) + 5 * 1 + 1
 
 
-def test_map_items_beyond_their_sub_quota_are_not_added():
+def test_map_items_beyond_their_sub_quota_are_deferred_not_dropped():
     state = base_state()
     limits = records.Limits(**{**LIMITS.model_dump(), "map_segments": 1})
     draft = records.MapDraft(
@@ -1075,9 +1145,52 @@ def test_map_items_beyond_their_sub_quota_are_not_added():
     )
     update = merge.merge_results(state, [result], limits)
     map_claims = [c for c in update["claims"].values() if c.map_ref]
-    assert len(map_claims) == 1 and map_claims[0].partition == "map:segment"
-    assert len(update["map"].segments) == 1
-    assert any("segments is the cap" in line for line in update["route_log"])
+    assert len(map_claims) == 2
+    assert all(c.partition == "map:segment" for c in map_claims)
+    assert len(update["map"].segments) == 2
+    dispositions = sorted(c.review_disposition for c in map_claims)
+    assert dispositions == ["deferred", "pending"]
+    assert any(
+        "map:segment at capacity, review deferred" in line
+        for line in update["route_log"]
+    )
+
+
+def test_the_candidate_map_has_a_visible_safety_bound():
+    """A05: a truncated candidate set is never reported as a complete one."""
+    state = base_state()
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "map_candidates_per_kind": 2}
+    )
+    draft = records.MapDraft(
+        segments=[
+            records.SegmentDraft(
+                key=f"s{n}",
+                name=f"segment {n}",
+                stage="upstream",
+                description="d",
+                evidence_refs=["E1"],
+            )
+            for n in range(5)
+        ]
+    )
+    result = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "map text", "va")],
+        map=draft,
+    )
+    update = merge.merge_results(state, [result], limits)
+    assert len(update["map"].segments) == 2
+    assert any(
+        "5 map segments exceeds the candidate bound of 2; 3 not processed"
+        in line
+        for line in update["route_log"]
+    )
 
 
 def test_a_repeat_cannot_move_a_claim_out_of_its_partition():

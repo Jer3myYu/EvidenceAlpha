@@ -1296,6 +1296,19 @@ class Limits(Record):
     map_segments: int = pydantic.Field(default=6, ge=0)
     map_links: int = pydantic.Field(default=6, ge=0)
     map_participants_per_stage: int = pydantic.Field(default=4, ge=0)
+    # The candidate map is no longer bounded by the review quotas above
+    # (plan D-U3): a company the run cannot afford to verify is still a
+    # company in this industry, and dropping it broke the chain that
+    # planning and coverage read. These are the safety bounds on the
+    # candidate set itself -- generous, and truncation is visible with
+    # the unprocessed count recorded, never a silent complete set.
+    map_candidates_per_kind: int = pydantic.Field(default=60, gt=0)
+    # How many map items one bounded projection renders to a model
+    # (``merge.map_view``). Every model-facing consumer goes through it,
+    # so the candidate set can grow without growing every prompt.
+    map_view_segments: int = pydantic.Field(default=8, ge=0)
+    map_view_links: int = pydantic.Field(default=12, ge=0)
+    map_view_participants_per_stage: int = pydantic.Field(default=6, ge=0)
     calc_requests_per_call: int = pydantic.Field(default=8, ge=0)
     # Acquisition tasks one review batch may create, and how many
     # acquisition attempts a run may execute in all; each is a task
