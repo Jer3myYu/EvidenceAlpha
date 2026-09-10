@@ -1716,7 +1716,7 @@ def build_graph(
                 calls[held.id] = held
                 window = "used"
                 log.append(
-                    f"dispatch: {attempt.id} reserved "
+                    f"dispatch: {attempt.id} admitted, reserved "
                     f"{limits.repair_timeout_s:.0f}s with {held.id} held "
                     "for the review it forces"
                 )

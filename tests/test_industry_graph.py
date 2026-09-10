@@ -22,6 +22,7 @@ from industry import report
 from industry import records
 from industry import roles
 from industry import schedule
+from industry import trace
 from research import crew
 from research import persist
 
@@ -2824,3 +2825,20 @@ def test_anacquisition_route_claims_only_what_the_record_shows():
         id="RQ2", claim_id="C1", url="https://a.example/doc"
     )
     assert graph_module.acquisition_route(state, claim, real) == 1
+
+
+def test_a_dispatched_repair_is_visible_in_the_trace():
+    # The CLI counts started attempts by looking for "admitted" in the
+    # dispatch log, so a repair that did not say it would have read as
+    # "0 attempts started" while it ran.
+    limits = records.Limits()
+    line = (
+        f"dispatch: T5.1 admitted, reserved "
+        f"{limits.repair_timeout_s:.0f}s with review.3 held for the "
+        "review it forces"
+    )
+    assert "admitted" in line
+    rendered = trace.render_update(
+        "dispatch", {"route_log": [line]}, {"tasks": {}, "attempts": {}}
+    )
+    assert rendered == ["DISPATCH: 1 attempts started"]
