@@ -422,10 +422,15 @@ def _as_of_this_body(issue: records.Issue, draft_version: int) -> records.Issue:
     the very sentence still standing in the retained body (U2-01).
     A resolution recorded against another draft does not travel.
     """
+    settled_by = (
+        issue.resolved_by_draft
+        if issue.resolved_by_draft is not None
+        else issue.draft_version
+    )
     if (
         issue.status == "resolved"
-        and issue.draft_version is not None
-        and issue.draft_version != draft_version
+        and settled_by is not None
+        and settled_by != draft_version
     ):
         return issue.model_copy(
             update={
@@ -513,11 +518,12 @@ def issues_for_candidate(
                 )
                 applies[key] = retargeted
             continue
-        if (
-            issue.status != applies[issue_id].status
-            and issue.draft_version == candidate.draft_version
-        ):
-            applies[issue_id] = issue
+        if issue.status != applies[issue_id].status:
+            # The same provenance test as an imported one: a resolution
+            # is about the body that was reviewed, and `draft_version`
+            # names the draft that *raised* the issue, which does not
+            # move when a later draft settles it (U2-01).
+            applies[issue_id] = _as_of_this_body(issue, candidate.draft_version)
     return applies
 
 
@@ -1436,11 +1442,15 @@ def uncomputed_comparison(
     # comparison. Pooling every compared operand let a calculation over
     # two capex claims discharge a revenue comparison that shared the
     # same finding (U2-05).
-    groups: dict[str, set[str]] = {}
+    # Keyed by (is_declared, metric), because every string is reachable
+    # from a model-supplied `dimension` -- including a JSON "\u0000"
+    # escape, which defeated the sentinel that replaced the plain one
+    # (U2-05).
+    groups: dict[tuple[bool, str], set[str]] = {}
     for cid in compared:
         claim = claims[cid]
         metric = " ".join((claim.dimension or "").split()).casefold()
-        groups.setdefault(metric, set()).add(cid)
+        groups.setdefault((False, metric), set()).add(cid)
     # A declared comparison across metrics -- "capex is 10% of revenue"
     # -- is a real obligation that per-metric grouping splits into two
     # singletons and then ignores. It is kept as a group of its own
@@ -1453,10 +1463,7 @@ def uncomputed_comparison(
         and claims[cid].quantity is not None
     }
     if len(declared) >= 2:
-        # A key no `dimension` can produce: a claim whose metric is
-        # literally "declared" overwrote the declared group, and its own
-        # comparison then escaped the check (U2-05).
-        groups["\x00declared"] = declared
+        groups[(True, "")] = declared
     computed = [
         {item.claim_id for item in calculation.inputs}
         for cid in finding.claim_ids
@@ -3526,6 +3533,25 @@ def build_graph(
                     # twice, and a retargeted objection may land in more
                     # than one section (U2-03).
                     for section in state.get("sections", []):
+                        if section.id != section_id and report.carries(
+                            section.text, block.text
+                        ):
+                            # The premise itself, not only what follows
+                            # from it: removing B's consequence while
+                            # leaving B's identical premise standing is
+                            # the same defect upside down (U2-03).
+                            issues, root = merge.open_issue(
+                                issues,
+                                problem.category,
+                                problem.severity,
+                                section.id,
+                                action,
+                                f"[{section.id}] carries the same wording "
+                                f"{issue.id} faulted",
+                                draft_version=version,
+                                text=block.text,
+                            )
+                            flagged.add(root.key)
                         for dependent in report.dependents_of_text(
                             section, block.text
                         ):
@@ -3558,6 +3584,7 @@ def build_graph(
                         update={
                             "status": "resolved",
                             "resolution": f"draft {version} reviewed clean",
+                            "resolved_by_draft": version,
                         }
                     )
                     update["route_log"].append(

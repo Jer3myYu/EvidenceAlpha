@@ -1062,10 +1062,12 @@ def test_u2_03_removal_never_corrupts_a_paragraph_that_quotes_its_premise():
     # Emphasis and ordinary consequence phrasing are both recognised.
     assert blocks[1].depends_on == blocks[0].id
     assert blocks[2].depends_on == blocks[1].id
+    # b2 quotes the premise, so redaction removes it as an occurrence
+    # rather than as a dependent; b3 falls behind it.
     assert [b.id for b in report.dependents_of(section, blocks[0].id)] == [
-        blocks[1].id,
-        blocks[2].id,
+        blocks[2].id
     ]
+    assert report.carries(blocks[1].text, premise)
     issues = [
         records.Issue(
             id=f"I{n}",

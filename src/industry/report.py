@@ -86,6 +86,51 @@ def _is_row(unit: str) -> bool:
     return unit.strip().startswith("|")
 
 
+def is_line_unit(unit: str) -> bool:
+    """Whether a unit is a whole line: a table row or a list item."""
+    stripped = unit.strip()
+    return bool(stripped) and (
+        stripped.startswith("|") or bool(_LIST_MARK.match(stripped))
+    )
+
+
+def unit_spans(text: str, unit: str) -> list[tuple[int, int]]:
+    """Every place ``unit`` occurs in ``text``, as (start, end) offsets.
+
+    The one definition of occurrence, so matching, removability and
+    removal cannot disagree -- which they did, three separate ways. A
+    row or a list item occurs only as a whole line: substring matching
+    made ``| A | 1 |`` occur inside ``| A | 1 | estimate |``, and
+    ``- Capacity: 10`` occur inside ``- Capacity: 100 units``, and
+    removal then wrote ``[X]0 units`` (U2-R2-01, U2-R3-01). Prose
+    occurs as a substring, which is what lets a sentence be removed from
+    inside a paragraph.
+    """
+    if not unit:
+        return []
+    if is_line_unit(unit):
+        wanted = unit.strip()
+        spans = []
+        offset = 0
+        for line in text.split("\n"):
+            if line.strip() == wanted:
+                start = offset + (len(line) - len(line.lstrip()))
+                spans.append((start, start + len(line.strip())))
+            offset += len(line) + 1
+        return spans
+    spans = []
+    start = text.find(unit)
+    while start >= 0:
+        spans.append((start, start + len(unit)))
+        start = text.find(unit, start + 1)
+    return spans
+
+
+def carries(text: str, unit: str) -> bool:
+    """Whether ``text`` holds this exact factual unit."""
+    return bool(unit_spans(text, unit))
+
+
 def _table_blocks(lines: list[str]) -> list[list[int]]:
     """The line indexes of each run of consecutive table lines."""
     blocks: list[list[int]] = []
@@ -202,13 +247,17 @@ def dependents_of_text(section: records.Section, text: str) -> list[Block]:
     if not text:
         return []
     blocks = blocks_of(section)
-    doomed = {b.id for b in blocks if b.text == text}
+    # Any block the removal touches, not only a block that *is* the
+    # removed text: redaction takes an occurrence embedded in a larger
+    # paragraph too, and seeding on equality left the consequence of
+    # "Separately, P" standing (U2-03).
+    doomed = {b.id for b in blocks if carries(b.text, text)}
     if not doomed:
         return []
     for block in blocks:
         if block.depends_on in doomed:
             doomed.add(block.id)
-    return [b for b in blocks if b.id in doomed and b.text != text]
+    return [b for b in blocks if b.id in doomed and not carries(b.text, text)]
 
 
 def resolve_section(sections: list[records.Section], target: str) -> str:
@@ -285,7 +334,7 @@ def unremovable_units(text: str, units: list[str]) -> list[str]:
         if not unit:
             continue
         if not _is_row(unit):
-            if unit not in text:
+            if not carries(text, unit):
                 unremovable.append(unit)
             continue
         found = {i for i, line in enumerate(stripped) if line == unit.strip()}
@@ -379,12 +428,9 @@ def _replace_spans(text: str, units: list[str], note: str) -> str:
     """
     spans: list[tuple[int, int]] = []
     for unit in sorted(set(units), key=len, reverse=True):
-        start = text.find(unit)
-        while start >= 0:
-            end = start + len(unit)
+        for start, end in unit_spans(text, unit):
             if not any(start < b and a < end for a, b in spans):
                 spans.append((start, end))
-            start = text.find(unit, start + 1)
     if not spans:
         return text
     out = []

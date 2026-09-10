@@ -4455,3 +4455,127 @@ def test_u2_05_a_metric_literally_named_declared_does_not_collide():
         graph_module.uncomputed_comparison(finding, claims, {"K1": capex})
         == "C1, C2"
     )
+
+
+def test_u2_01_a_resolution_names_the_body_that_authorised_it():
+    """`draft_version` names the draft that raised the issue and does not
+    move when a later one settles it (U2-01)."""
+    retained = records.Section(
+        id="intro", title="I", text="This market has no competing suppliers."
+    )
+    raised_here = records.Issue(
+        id="I1",
+        key="unsupported:intro",
+        category="unsupported",
+        severity="material",
+        target="intro",
+        requested_action="remove",
+        description="unsupported",
+        draft_version=1,
+        text="This market has no competing suppliers.",
+    )
+    candidate = records.DeliveryCandidate(
+        draft_version=1,
+        sections=[retained],
+        subject=records.ReviewSubject(digest="d"),
+        issues={"I1": raised_here},
+    )
+    # Draft 2 omits the sentence and reviews clean, resolving I1.
+    settled_by_two = raised_here.model_copy(
+        update={
+            "status": "resolved",
+            "resolution": "draft 2 reviewed clean",
+            "resolved_by_draft": 2,
+        }
+    )
+    applies = graph_module.issues_for_candidate(
+        candidate, {"I1": settled_by_two}
+    )
+    assert applies["I1"].status == "open", "draft 2 cannot clear draft 1"
+    # A resolution earned by this very body does stand.
+    settled_here = settled_by_two.model_copy(update={"resolved_by_draft": 1})
+    assert (
+        graph_module.issues_for_candidate(candidate, {"I1": settled_here})[
+            "I1"
+        ].status
+        == "resolved"
+    )
+
+
+def test_u2_r3_01_a_list_item_matches_whole_and_not_by_prefix():
+    short = "- Capacity: 10"
+    longer = "- Capacity: 100 units"
+    assert report.unit_spans(longer, short) == []
+    assert report.unit_spans(short, short) == [(0, len(short))]
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="s",
+        requested_action="remove",
+        text=short,
+    )
+    # The longer item survives untouched; the exact one is removable.
+    assert report.redact(longer, [issue], "s", "[X]") == longer
+    assert report.redact(short, [issue], "s", "[X]") == "[X]"
+
+
+def test_u2_05_a_json_null_escape_dimension_cannot_collide():
+    import json as _json
+
+    hostile = _json.loads('"\\u0000declared"')
+
+    def numeric(cid, value, metric):
+        return records.Claim(
+            id=cid,
+            statement=cid,
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension=metric,
+            quantity=_quantity(value),
+        )
+
+    claims = {
+        "C1": numeric("C1", 52.0, hostile),
+        "C2": numeric("C2", 40.0, hostile),
+        "C8": numeric("C8", 3.0, "capex"),
+        "C9": numeric("C9", 2.0, "capex"),
+    }
+    capex = records.Calculation(
+        id="K1",
+        kind="ratio",
+        label="capex",
+        formula="C8 / C9",
+        inputs=[
+            records.CalcInput(
+                claim_id=cid, claim_version=1, quantity=_quantity(1.0)
+            )
+            for cid in ("C8", "C9")
+        ],
+        status="ok",
+        result=1.5,
+    )
+    claims["C3"] = records.Claim(
+        id="C3",
+        statement="r",
+        kind="derived",
+        calculation_id="K1",
+        calculation_version=1,
+        evidence_ids=["E1"],
+    )
+    finding = records.Finding(
+        id="F1",
+        conclusion="A is twice B",
+        claim_ids=["C1", "C2", "C8", "C9", "C3"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        compares=["C1", "C2", "C8", "C9"],
+    )
+    assert (
+        graph_module.uncomputed_comparison(finding, claims, {"K1": capex})
+        == "C1, C2"
+    )

@@ -1149,6 +1149,11 @@ class Issue(Record):
     status: IssueStatus = "open"
     resolution: str | None = None
     draft_version: int | None = None
+    # The draft whose review authorised the resolution. ``draft_version``
+    # says which draft raised the issue and does not move when a later
+    # one settles it, so importing a resolution by that field alone
+    # authorised wording still standing in a retained body (U2-01).
+    resolved_by_draft: int | None = None
     # The exact factual unit (sentence, table row, list item) the issue
     # is about, when deterministic: the renderer removes it while the
     # issue is open, so it can never be delivered as fact.
