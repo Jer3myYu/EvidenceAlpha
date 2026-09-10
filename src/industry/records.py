@@ -859,6 +859,39 @@ def _merge_counts(
     return merged
 
 
+def provider_usage(usage: dict[str, Any], cost: float | None) -> dict[str, Any]:
+    """The provider-exposed counts, including what run 7 never captured.
+
+    ``input_tokens`` alone summed to 144 across run 7's whole archive
+    because the cache categories were dropped at this boundary, and a
+    field the record had was never written (plan D-U15, U1-N06). A call
+    that exposed no cache figures at all is recorded ``complete=False``:
+    zero and unmeasured are different, and only one of them is a fact.
+    """
+    cached = (
+        "cache_read_input_tokens" in usage
+        or "cache_creation_input_tokens" in usage
+    )
+    per_model = {
+        name: int(count)
+        for name, count in (usage.get("per_model") or {}).items()
+    }
+    return {
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(
+            usage.get("cache_creation_input_tokens", 0) or 0
+        ),
+        "cache_read_input_tokens": int(
+            usage.get("cache_read_input_tokens", 0) or 0
+        ),
+        "cost_usd": cost,
+        "cost_basis": "sdk_total_cost_usd" if cost is not None else "",
+        "per_model": per_model,
+        "complete": bool(usage) and cached,
+    }
+
+
 class Reservation(Record):
     """The allowance an attempt is charged until its usage is observed."""
 
@@ -1597,10 +1630,18 @@ class Limits(Record):
         return self.turns_per_exchange * self.single_call_turns
 
 
+# Which workflow a thread runs. ``C`` is the corrected existing route
+# and the default; ``S`` is the simplified candidate (plan D-U16). The
+# flag changes routing only -- never evidence truth, never the meaning
+# of a verdict, and never which safeguards apply.
+WorkflowRoute = Literal["C", "S"]
+
+
 class RunMeta(Record):
     """Versions, models, limits, and statuses of one thread."""
 
     workflow_version: str
+    route: WorkflowRoute = "C"
     schema_version: int = SCHEMA_VERSION
     prompt_version: str
     models: dict[str, str]

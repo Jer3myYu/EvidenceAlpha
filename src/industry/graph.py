@@ -123,8 +123,19 @@ class RolesApi(Protocol):
         instructions: str,
         max_turns: int,
         deadline: float,
+        owner: bool = False,
     ) -> tuple[roles.Draft, records.Usage]:
-        """The draft."""
+        """The draft; ``owner`` when the synthesis owner writes it."""
+
+    async def scope_and_plan(
+        self,
+        question: str,
+        limits: records.Limits,
+        slots: int,
+        max_turns: int,
+        deadline: float,
+    ) -> tuple[tuple[records.Brief, roles.TaskPlan], records.Usage]:
+        """Route S's combined brief and first task plan."""
 
     async def audit_findings(
         self, state: state_module.IndustryState, max_turns: int, deadline: float
@@ -142,11 +153,9 @@ def _usage_of(llm: crew.ClaudeLLM, started: float) -> records.Usage:
     usage = last.get("usage") or {}
     return records.Usage(
         turns=int(last.get("turns") or 0),
-        input_tokens=int(usage.get("input_tokens", 0) or 0),
-        output_tokens=int(usage.get("output_tokens", 0) or 0),
-        cost_usd=last.get("cost_usd"),
         duration_s=round(time.monotonic() - started, 3),
         unknown=not last,
+        **records.provider_usage(usage, last.get("cost_usd")),
     )
 
 
@@ -170,6 +179,22 @@ class LiveRoles:
             question, llm, max_turns, deadline, admission=self.admission
         )
         return brief, _usage_of(llm, started)
+
+    async def scope_and_plan(
+        self, question, limits, slots, max_turns, deadline
+    ):
+        llm = roles.llm_for("lead", max_turns)
+        started = time.monotonic()
+        out = await roles.scope_and_plan(
+            question,
+            limits,
+            slots,
+            llm,
+            max_turns,
+            deadline,
+            admission=self.admission,
+        )
+        return out, _usage_of(llm, started)
 
     async def plan_tasks(
         self, state, limits, slots, purpose, max_turns, deadline
@@ -225,8 +250,10 @@ class LiveRoles:
         )
         return out, _usage_of(llm, started)
 
-    async def write(self, state, instructions, max_turns, deadline):
-        llm = roles.llm_for("editor", max_turns)
+    async def write(
+        self, state, instructions, max_turns, deadline, owner=False
+    ):
+        llm = roles.llm_for("analyst" if owner else "editor", max_turns)
         started = time.monotonic()
         out = await roles.write(
             state,
@@ -235,6 +262,7 @@ class LiveRoles:
             max_turns,
             deadline,
             admission=self.admission,
+            owner=owner,
         )
         return out, _usage_of(llm, started)
 
@@ -255,6 +283,7 @@ def initial_state(
     limits: records.Limits,
     fixture: str | None = None,
     fixture_digest: str | None = None,
+    route: records.WorkflowRoute = "C",
 ) -> dict[str, Any]:
     """The graph input: the question and the run metadata.
 
@@ -268,6 +297,7 @@ def initial_state(
         "question": question,
         "meta": records.RunMeta(
             workflow_version=state_module.WORKFLOW_VERSION,
+            route=route,
             prompt_version=roles.PROMPT_VERSION,
             models=dict(roles.ROLE_MODELS),
             limits=limits,
@@ -1336,9 +1366,28 @@ def _compared_claims(
     carry a quantity for the same metric, is compared whatever the
     field says (U1-12).
     """
-    declared = {cid for cid in finding.compares if cid in claims}
-    if declared:
-        return declared
+    # A declaration is added to, never substituted for, the check. A
+    # `compares` naming one claim, or claims the conclusion does not
+    # cite, used to suppress the obligation entirely (U1-12).
+    declared = {
+        cid
+        for cid in finding.compares
+        if cid in claims and cid in finding.claim_ids
+    }
+    return declared | _stated_comparison(finding, claims)
+
+
+def _stated_comparison(
+    finding: records.Finding, claims: dict[str, records.Claim]
+) -> set[str]:
+    """Claims a conclusion's own words compare, whatever it declared.
+
+    Heuristic and conservative: it only ever *adds* an obligation, so a
+    false positive costs one issue and one calculation request while a
+    false negative ships an uncomputed comparison as fact. It does not
+    catch every phrasing -- "130% of B's revenue" is missed -- which is
+    why the Analyst is asked to declare them too.
+    """
     if not _COMPARATIVE.search(finding.conclusion):
         return set()
     by_metric: dict[str, set[str]] = {}
@@ -1348,7 +1397,7 @@ def _compared_claims(
             continue
         metric = " ".join(claim.dimension.split()).casefold()
         by_metric.setdefault(metric, set()).add(cid)
-    for cited in by_metric.values():
+    for cited in sorted(by_metric.values(), key=len, reverse=True):
         if len(cited) >= 2:
             return cited
     return set()
@@ -1481,11 +1530,12 @@ def acquisition_blocked(
 ) -> str:
     """Why no evidence-changing action can run, or "" if one can.
 
-    Three separate things have to be exhausted before re-analysis is
+    Four separate things have to be exhausted before re-analysis is
     genuinely pointless: the run's acquisition ceiling, the budget for
-    another research session, and the per-issue follow-up allowance.
-    Any one of them still open means new evidence is reachable and
-    remediation is worth another round (plan D-U14).
+    another research session, an affordable repair pair with a request
+    waiting for it, and the per-issue follow-up allowance. Any one of
+    them still open means new evidence is reachable and remediation is
+    worth another round (plan D-U14, U1-N04).
     """
     executions = sum(
         1
@@ -1497,6 +1547,14 @@ def acquisition_blocked(
     ):
         return ""
     if budget.dispatchable(state, limits, False):
+        return ""
+    if budget.admit_repair_pair(state, limits) and any(
+        request.status in ("pending", "admitted")
+        for request in state.get("repairs", {}).values()
+    ):
+        # A repair pair is admitted on its own earmark, not out of
+        # ordinary dispatch capacity, so ordinary capacity being gone
+        # does not mean no evidence-changing action can run (U1-N04).
         return ""
     workable = [
         issue
@@ -1790,11 +1848,13 @@ def canonical_targets(
         if key in by_normal:
             resolved.append(by_normal[key])
             continue
+        # Only in one direction. A short name abbreviates a longer
+        # official name (清溢 -> 清溢光电); a target *longer* than a
+        # participant is a different company whose name happens to start
+        # the same way, and resolving 丰田通商 onto 丰田 made Toyota's
+        # obligation vanish (U1-09).
         candidates = [
-            name
-            for name in names
-            if _normalised(name).startswith(key)
-            or key.startswith(_normalised(name))
+            name for name in names if _normalised(name).startswith(key)
         ]
         if len(candidates) == 1:
             resolved.append(candidates[0])
@@ -2098,6 +2158,7 @@ def build_graph(
       checkpointer: Where LangGraph saves state after each node.
     """
     limits = runtime.limits
+    route = runtime.route
     backend = backend or tools.LiveBackend()
     api = api or LiveRoles(runtime.admission)
 
@@ -2133,17 +2194,34 @@ def build_graph(
 
     async def scope(state: state_module.IndustryState) -> dict[str, Any]:
         question = state["question"]
+        combined = route == "S"
 
         async def call(max_turns: int, deadline: float):
+            if combined:
+                # Route S decides the boundary and names the first
+                # evidence tasks in one call: the second call had
+                # nothing to read but what the first had just written
+                # (plan D-U16).
+                return await api.scope_and_plan(
+                    question, limits, 1, max_turns, deadline
+                )
             return await api.scope(question, max_turns, deadline)
 
-        brief, update = await call_with_reservation(state, "scope", call)
+        outcome, update = await call_with_reservation(state, "scope", call)
+        plan = None
+        brief = outcome
+        if combined and outcome is not None:
+            brief, plan = outcome
         if brief is None:
             brief = roles.default_brief(question)
+            brief = brief.model_copy(update=roles.derive_obligations(brief))
             update.setdefault("route_log", []).append(
                 "scope: deterministic defaults used"
             )
-        meta = state.get("meta") or initial_state(question, limits)["meta"]
+        meta = (
+            state.get("meta")
+            or initial_state(question, limits, route=route)["meta"]
+        )
         update.update(
             {
                 "meta": meta,
@@ -2158,6 +2236,19 @@ def build_graph(
                 "follow_up_rounds": 0,
             }
         )
+        if plan is not None and plan.tasks:
+            seeded = {**state, "brief": brief, "map": records.IndustryMap()}
+            tasks, issues, log = _tasks_from_plan(
+                seeded, plan, 1, "research", limits
+            )
+            tasks, owned = _own_the_map(seeded, tasks, limits)
+            update["tasks"] = tasks
+            update["issues"] = issues
+            update.setdefault("route_log", []).extend(log)
+            if owned:
+                update["route_log"].append(
+                    f"scope_and_plan: {owned} owns the industry map"
+                )
         update.setdefault("route_log", []).append(
             f"scope: industry {brief.industry!r}, language {brief.language}, "
             f"mode {brief.mode}"
@@ -2430,12 +2521,26 @@ def build_graph(
     async def assess_coverage(
         state: state_module.IndustryState,
     ) -> dict[str, Any]:
-        async def call(max_turns: int, deadline: float):
-            return await api.assess_coverage(state, max_turns, deadline)
+        if route == "S":
+            # Missing fields are deterministic; whether an explanation
+            # is adequate is not, and that judgement belongs to the
+            # synthesis owner and the auditor, who both see the report
+            # (plan D-U16). `coverage.derive` already answers the
+            # deterministic half with no model at all.
+            assessment, update = None, {
+                "route_log": [
+                    "assess_coverage: deterministic obligations only "
+                    "(route S)"
+                ]
+            }
+        else:
 
-        assessment, update = await call_with_reservation(
-            state, "assess_coverage", call
-        )
+            async def call(max_turns: int, deadline: float):
+                return await api.assess_coverage(state, max_turns, deadline)
+
+            assessment, update = await call_with_reservation(
+                state, "assess_coverage", call
+            )
         derived = coverage_module.derive(state, assessment)
         issues = dict(state.get("issues", {}))
         missing = list(assessment.missing) if assessment else []
@@ -2513,14 +2618,17 @@ def build_graph(
             state, "audit_findings", call
         )
         update.setdefault("route_log", [])
-        if outcome is None:
-            update["route_log"].append(
-                "audit_findings: no audit; the analysis is unjudged"
-            )
-            return update
         findings = dict(state.get("findings", {}))
         issues = dict(state.get("issues", {}))
         failed = 0
+        if outcome is None:
+            # A skipped or refused audit is not a clean one. It used to
+            # return here, so the analysis went to the Editor unjudged
+            # with nothing recorded and nothing blocking (U1-N03).
+            update["route_log"].append(
+                "audit_findings: no audit ran; the analysis is unjudged"
+            )
+            outcome = records.FindingAudit()
         for judgement in outcome.judgements:
             finding = findings.get(judgement.finding_id)
             if finding is None:
@@ -3041,7 +3149,9 @@ def build_graph(
         instructions = write_instructions(state)
 
         async def call(max_turns: int, deadline: float):
-            return await api.write(state, instructions, max_turns, deadline)
+            return await api.write(
+                state, instructions, max_turns, deadline, owner=route == "S"
+            )
 
         draft, update = await call_with_reservation(state, "write", call)
         update.setdefault("route_log", [])
@@ -3098,6 +3208,13 @@ def build_graph(
     async def final_review(
         state: state_module.IndustryState,
     ) -> dict[str, Any]:
+        # Answer what the registry has already settled *before* the
+        # subject is frozen. An audit gap repaired between the audit and
+        # here was still standing in the appendix the verifier read and
+        # the reader received -- resolved a moment later, in a snapshot
+        # nobody re-rendered (U1-N03).
+        settled = resolve_issues(state)
+        state = {**state, "issues": settled["issues"]}
         # Freeze the subject before the call, so the appendix the
         # verifier reads is the one delivery renders. This node reopens
         # issues and re-derives coverage below, and `deliver` derives it
@@ -3113,6 +3230,7 @@ def build_graph(
             state, "final_review", call
         )
         update.setdefault("route_log", [])
+        update["route_log"] = settled["route_log"] + update["route_log"]
         issues = dict(state.get("issues", {}))
         version = state.get("draft_version", 0)
         if outcome is not None:
@@ -3433,7 +3551,12 @@ def build_graph(
         after_analyze,
         {
             "requests": "reserve_prepare_tasks",
-            "assess": "reserve_assess_coverage",
+            # Route S makes no model call there, so it takes no
+            # reservation either: reserving 480 s for a call that never
+            # happens would charge the candidate for a saving it made.
+            "assess": (
+                "assess_coverage" if route == "S" else "reserve_assess_coverage"
+            ),
         },
     )
     graph.add_conditional_edges(

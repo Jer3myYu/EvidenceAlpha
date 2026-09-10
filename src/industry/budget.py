@@ -136,8 +136,12 @@ def ledger(state: state_module.IndustryState) -> Ledger:
             unknown += 1
         total = total + charge
         observed = execution.observed
-        if observed is not None and not observed.unknown:
+        if observed is not None and observed.duration_s > 0:
+            # A transport failure that reported no tokens still ran for
+            # a measured time. Excluding it understated observed session
+            # time exactly where a run was going wrong (U1-N05).
             observed_seconds += observed.duration_s
+        if observed is not None and not observed.unknown:
             counted += 1
             if observed.cost_usd is not None:
                 costed += 1
@@ -520,6 +524,10 @@ class Runtime:
       floor: The Level-B usefulness bar delivery classifies against.
         One rule in one place, so it can be tuned -- and calibrated on
         fixtures -- without touching the delivery code.
+      route: ``C``, the corrected existing workflow and the default, or
+        ``S``, the simplified candidate (plan D-U16). Routing only:
+        both routes share this runtime, the same registry, merge,
+        admission, budget and delivery gate.
     """
 
     def __init__(
@@ -527,10 +535,12 @@ class Runtime:
         limits: records.Limits | None = None,
         reports_dir: str = "data/reports",
         floor: Any = None,
+        route: records.WorkflowRoute = "C",
     ) -> None:
         self.limits = limits or records.Limits()
         self.reports_dir = reports_dir
         self.floor = floor
+        self.route = route
         self.admission = admission_module.Admission(self.limits.concurrency)
         self.index_lock = asyncio.Lock()
         self._meters: dict[str, RunMeter] = {}

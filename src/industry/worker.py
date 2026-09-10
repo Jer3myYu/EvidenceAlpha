@@ -406,21 +406,18 @@ def _usage(
 ) -> records.Usage:
     admitted, denied = meter.counts(collector.attempt_id)
     result = session.result
+    exposed = (result.usage or {}) if result else {}
     usage = records.Usage(
         turns=result.num_turns if result else session.turns,
         tool_calls=admitted,
         denied_tool_calls=denied,
-        input_tokens=(
-            int((result.usage or {}).get("input_tokens", 0)) if result else 0
-        ),
-        output_tokens=(
-            int((result.usage or {}).get("output_tokens", 0)) if result else 0
-        ),
-        cost_usd=result.total_cost_usd if result else None,
         web_searches=collector.web_searches,
         fetches=collector.fetches,
         duration_s=round(time.monotonic() - started, 3),
         unknown=unknown,
+        **records.provider_usage(
+            exposed, result.total_cost_usd if result else None
+        ),
     )
     return usage
 

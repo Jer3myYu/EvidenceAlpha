@@ -162,6 +162,19 @@ class TaskPlan(records.Record):
     rationale: str = ""
 
 
+class ScopeAndPlan(records.Record):
+    """Scope and the first evidence tasks, in one call (plan D-U16).
+
+    Route S combines them because the question is already clear: the
+    Lead reads the brief, decides the boundary, and names the first
+    tasks in one structured output rather than two sessions whose
+    second one re-reads what the first just decided.
+    """
+
+    brief: BriefOutput
+    plan: TaskPlan
+
+
 class FindingSpec(records.Record):
     """One analytical finding as the Analyst returns it."""
 
@@ -327,6 +340,7 @@ EXPECTED = {
     "write": "The structured draft.",
     "final_review": "The structured draft review.",
     "audit_findings": "The structured audit of the analysis.",
+    "scope_and_plan": "The structured brief and the first task plan.",
 }
 ROLE_FOR = {
     "scope": crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, BriefOutput),
@@ -843,21 +857,7 @@ async def scope(
         deadline,
         admission=admission,
     )
-    updates: dict[str, Any] = {
-        "industry": output.industry or defaults.industry,
-        "boundary_in": output.boundary_in,
-        "boundary_out": output.boundary_out,
-        "boundary_alternatives": output.boundary_alternatives[:3],
-        "constraints": output.constraints,
-        "budget_policy": output.budget_policy,
-    }
-    if output.explicit_language in LANGUAGE_NAMES:
-        updates["language"] = output.explicit_language
-    if output.explicit_mode:
-        updates["mode"] = output.explicit_mode
-    if output.explicit_geography:
-        updates["geography"] = output.explicit_geography
-    brief = defaults.model_copy(update=updates)
+    brief = _brief_from(defaults, output)
     return brief.model_copy(update=derive_obligations(brief))
 
 
@@ -878,6 +878,75 @@ def scope_description(question: str) -> str:
         "explicit user constraints (companies, depth, exclusions). One "
         "sentence of budget policy."
     )
+
+
+async def scope_and_plan(
+    question: str,
+    limits: records.Limits,
+    slots: int,
+    llm: Any = None,
+    max_turns: int = 5,
+    deadline: float | None = None,
+    admission: Any = None,
+) -> tuple[records.Brief, TaskPlan]:
+    """Route S's combined scoping and first allocation."""
+    defaults = default_brief(question)
+    role = crew.Role(LEAD.name, LEAD.goal, LEAD.backstory, ScopeAndPlan)
+    output = await crew.run_task(
+        role,
+        scope_description(question)
+        + "\n\n"
+        + first_plan_description(limits, slots),
+        EXPECTED["scope_and_plan"],
+        llm or llm_for("lead", max_turns),
+        deadline,
+        admission=admission,
+    )
+    brief = _brief_from(defaults, output.brief)
+    return brief.model_copy(update=derive_obligations(brief)), output.plan
+
+
+def first_plan_description(limits: records.Limits, slots: int) -> str:
+    """The task-planning half of route S's combined call.
+
+    There is no registry yet, so this is the plan text without the
+    context the ordinary planning call renders: the brief the Lead is
+    deciding in the same call is the only input, which is exactly why
+    the two calls can be one.
+    """
+    return "\n\n".join(
+        [
+            remaining_line({"attempts": {}, "single_calls": {}}, limits),
+            f"Also create at most {slots} evidence task(s) (fewer is "
+            "fine) against the brief you just decided. Each task: a "
+            "key, a role (industry or company), an objective, a scope, "
+            "the named targets it must cover, required fields, and "
+            "acceptance criteria. The first industry task owns the "
+            "industry map. Name company targets only for companies the "
+            "brief already implies; discovery will find the rest.",
+        ]
+    )
+
+
+def _brief_from(
+    defaults: records.Brief, output: "BriefOutput"
+) -> records.Brief:
+    """The deterministic defaults with the Lead's narrowing applied."""
+    updates: dict[str, Any] = {
+        "industry": output.industry or defaults.industry,
+        "boundary_in": output.boundary_in,
+        "boundary_out": output.boundary_out,
+        "boundary_alternatives": output.boundary_alternatives[:3],
+        "constraints": output.constraints,
+        "budget_policy": output.budget_policy,
+    }
+    if output.explicit_language in LANGUAGE_NAMES:
+        updates["language"] = output.explicit_language
+    if output.explicit_mode:
+        updates["mode"] = output.explicit_mode
+    if output.explicit_geography:
+        updates["geography"] = output.explicit_geography
+    return defaults.model_copy(update=updates)
 
 
 async def plan_tasks(
@@ -1095,6 +1164,14 @@ def review_description(
     )
 
 
+SYNTHESIS_OWNER = crew.Role(
+    ANALYST.name,
+    ANALYST.goal,
+    ANALYST.backstory,
+    Draft,
+)
+
+
 async def write(
     state: state_module.IndustryState,
     instructions: str,
@@ -1102,13 +1179,22 @@ async def write(
     max_turns: int = 5,
     deadline: float | None = None,
     admission: Any = None,
+    owner: bool = False,
 ) -> Draft:
-    """The Editor's draft or revision."""
+    """The draft or revision.
+
+    With ``owner`` (route S), the Analyst writes it: the same
+    responsibility that produced the findings and requested the
+    calculations owns the narrative, instead of handing its
+    interpretation to an Editor with less source context (plan D-U16).
+    The independent audit still sits between the two, so nothing about
+    who reviews the reasoning changes.
+    """
     return await crew.run_task(
-        EDITOR,
+        SYNTHESIS_OWNER if owner else EDITOR,
         draft_description(state, instructions),
         EXPECTED["write"],
-        llm or llm_for("editor", max_turns),
+        llm or llm_for("analyst" if owner else "editor", max_turns),
         deadline,
         admission=admission,
     )

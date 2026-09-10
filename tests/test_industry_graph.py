@@ -367,6 +367,17 @@ class FakeRoles:
             USAGE,
         )
 
+    async def scope_and_plan(
+        self, question, limits, slots, max_turns, deadline
+    ):
+        del limits, max_turns, deadline
+        self.calls.append("scope_and_plan")
+        brief = roles.default_brief(question)
+        brief = brief.model_copy(update=roles.derive_obligations(brief))
+        plan = self.plans[0] if self.plans else roles.TaskPlan()
+        self.plans = self.plans[1:]
+        return (brief, roles.TaskPlan(tasks=plan.tasks[:slots])), USAGE
+
     async def audit_findings(self, state, max_turns, deadline):
         del max_turns, deadline
         self.calls.append("audit")
@@ -386,10 +397,14 @@ class FakeRoles:
             USAGE,
         )
 
-    async def write(self, state, instructions, max_turns, deadline):
+    async def write(
+        self, state, instructions, max_turns, deadline, owner=False
+    ):
         del state, max_turns, deadline
         self.calls.append(
-            "write:" + ("revise" if "Revise" in instructions else "full")
+            ("owner-" if owner else "")
+            + "write:"
+            + ("revise" if "Revise" in instructions else "full")
         )
         return (
             roles.Draft(
@@ -920,7 +935,7 @@ def test_editor_citations_of_unreviewed_claims_are_rejected(tmp_path):
     api.review_verdict = "supported"
     original_write = api.write
 
-    async def write(state, instructions, max_turns, deadline):
+    async def write(state, instructions, max_turns, deadline, owner=False):
         unreviewed = [
             c.id for c in state["claims"].values() if c.review == "unreviewed"
         ]
@@ -3816,3 +3831,189 @@ def test_u1_n03_an_unjudged_finding_keeps_its_own_limitation():
     assert "export licences" in roles._inference_note(qualified)
     state = {"findings": {"F1": qualified}, "claims": {}}
     assert "export licences" in roles.render_findings(state)
+
+
+def test_u1_09_canonicalisation_resolves_only_a_short_name():
+    """丰田通商 is a different company from 丰田, not an alias of it."""
+
+    def mapped(*names):
+        return records.IndustryMap(
+            segments=[
+                records.Segment(
+                    id="G1",
+                    name="mid",
+                    stage="midstream",
+                    description="d",
+                    claim_id="C1",
+                )
+            ],
+            participants=[
+                records.Participant(
+                    id=f"P{n}",
+                    name=name,
+                    segment_id="G1",
+                    role="supplier",
+                    selection_rationale="r",
+                    claim_id=f"C{n + 1}",
+                )
+                for n, name in enumerate(names)
+            ],
+        )
+
+    resolved, _ = graph_module.canonical_targets(["丰田通商"], mapped("丰田"))
+    assert resolved == ["丰田通商"]
+    # A short name still resolves to the participant it abbreviates.
+    resolved, notes = graph_module.canonical_targets(
+        ["清溢"], mapped("清溢光电")
+    )
+    assert resolved == ["清溢光电"] and notes
+    # And an ambiguous prefix is left alone rather than guessed.
+    resolved, notes = graph_module.canonical_targets(
+        ["清"], mapped("清溢光电", "清华紫光")
+    )
+    assert resolved == ["清"] and "2 participants" in notes[0]
+
+
+def test_u1_12_a_declaration_cannot_suppress_a_stated_comparison():
+    claims = {
+        cid: records.Claim(
+            id=cid,
+            statement=cid,
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(value),
+        )
+        for cid, value in (("C1", 52.0), ("C2", 40.0))
+    }
+    base = dict(
+        id="F1",
+        conclusion="A earns twice what B does",
+        claim_ids=["C1", "C2"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+    )
+    # One declared operand no longer hides the pair the words compare.
+    singleton = records.Finding(compares=["C1"], **base)
+    assert graph_module.uncomputed_comparison(singleton, claims, {}) == "C1, C2"
+    # Nor does a declaration naming claims the conclusion does not cite.
+    unrelated = records.Finding(compares=["C8", "C9"], **base)
+    assert graph_module.uncomputed_comparison(unrelated, claims, {}) == "C1, C2"
+
+
+def test_u1_n04_an_affordable_repair_is_not_a_blocked_acquisition():
+    limits = records.Limits()
+    waiting = records.RepairRequest(
+        id="RQ1",
+        claim_id="C1",
+        objective="open the original and read the passage",
+        status="pending",
+    )
+    state = charged(repair_state(pending=1), 2600)
+    state = {**state, "repair_window": "closed", "repairs": {"RQ1": waiting}}
+    assert budget.dispatchable(state, limits, False) == 0
+    assert budget.admit_repair_pair(state, limits) > 0
+    # Ordinary capacity is gone, but a repair pair is admitted from its
+    # own earmark, so evidence is still reachable (U1-N04).
+    assert graph_module.acquisition_blocked(state, limits) == ""
+    # With no repair waiting, it is genuinely blocked.
+    assert graph_module.acquisition_blocked({**state, "repairs": {}}, limits)
+
+
+def test_u1_n05_a_measured_duration_counts_even_when_tokens_are_unknown():
+    reservation = records.Reservation(turns=10, tool_calls=0, seconds=480.0)
+    done = records.Attempt(
+        id="T1.1",
+        task_id="T1",
+        status="done",
+        reserved=reservation,
+        observed=records.Usage(turns=3, duration_s=100.0),
+        started_at="2026-09-10T00:00:00+00:00",
+    )
+    failed = records.Attempt(
+        id="T2.1",
+        task_id="T2",
+        status="failed",
+        reserved=reservation,
+        observed=records.Usage(duration_s=123.0, unknown=True),
+        started_at="2026-09-10T00:00:00+00:00",
+    )
+    held = records.Attempt(
+        id="T3.1",
+        task_id="T3",
+        status="running",
+        reserved=reservation,
+        started_at="2026-09-10T00:00:00+00:00",
+    )
+    state = {
+        "attempts": {a.id: a for a in (done, failed, held)},
+        "single_calls": {},
+    }
+    spent = budget.ledger(state)
+    # Only the uninvoked reservation contributes no observed time.
+    assert spent.observed_session_s == 223.0
+    # Charged time still includes the reservation it never spent.
+    assert spent.wall_clock_s == 100.0 + 123.0 + 480.0
+    assert not spent.cost_complete
+
+
+def test_u1_n06_the_provider_cache_counts_are_captured():
+    full = records.provider_usage(
+        {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 1000,
+            "cache_creation_input_tokens": 500,
+        },
+        0.5,
+    )
+    assert full["cache_read_input_tokens"] == 1000
+    assert full["cache_creation_input_tokens"] == 500
+    assert full["cost_basis"] == "sdk_total_cost_usd" and full["complete"]
+    # A provider that exposed no cache figures is incomplete, not zero.
+    partial = records.provider_usage({"input_tokens": 10}, None)
+    assert partial["complete"] is False and partial["cost_usd"] is None
+    # And the counts add without losing a category.
+    total = records.Usage(**full) + records.Usage(**full)
+    assert total.cache_read_input_tokens == 2000
+
+
+def test_d_u16_route_s_shares_every_authority_and_saves_two_calls(tmp_path):
+    """The candidate is a routing flag, not a second workflow."""
+    runtime = budget.Runtime(
+        records.Limits(wall_clock_s=9000.0),
+        reports_dir=str(tmp_path / "reports"),
+        floor=OPEN_FLOOR,
+        route="S",
+    )
+    api = FakeRoles()
+    compiled = graph_module.build_graph(
+        runtime,
+        backend=object(),
+        api=api,
+        worker_fn=FakeWorker(),
+        checkpointer=MemorySaver(),
+    )
+    config = persist.thread_config("s1")
+    runtime.begin("s1")
+    state = run(compiled.ainvoke({"question": "光掩模产业调研"}, config))
+    assert state["meta"].route == "S"
+    calls = state["single_calls"]
+    # No separate coverage call, and the owner writes the draft.
+    assert "assess_coverage" not in {c.task_id for c in calls.values()}
+    assert any(c.startswith("owner-write") for c in api.calls)
+    assert any(
+        "deterministic obligations only (route S)" in line
+        for line in state["route_log"]
+    )
+    # The independent audit still runs, before the prose.
+    assert api.calls.index("audit") < next(
+        i for i, c in enumerate(api.calls) if c.startswith("owner-write")
+    )
+    # Coverage, delivery and the report are the same authorities.
+    assert len(state["coverage"]) == 8
+    assert state["delivery"] is not None
+    assert (tmp_path / "reports" / "s1.md").exists()
