@@ -16,6 +16,7 @@ missing question fails closed.
 
 import dataclasses
 
+from industry import comparison
 from industry import merge
 from industry import records
 from industry import report
@@ -305,36 +306,49 @@ def _q6(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
 
 
 def _q7(view: _View) -> tuple[records.CoverageStatus, list[str], list[str]]:
-    comparison = view.topic_claims("comparison")
+    """Whether the companies are actually compared, not merely labelled.
+
+    The old test asked whether two claims shared a ``dimension`` string
+    and differed in ``entity``, which passes when one company's
+    consolidated 2024 revenue in 亿元 sits beside another's segment
+    revenue for 2023 in 百万美元. It now asks the comparison projection,
+    which compares two entities only when the unit reduces to the same
+    base and the period and scope agree (plan D-U9).
+    """
+    claims = view.topic_claims("comparison")
     finding_ids = sorted(
-        {fid for c in comparison for fid in view.cited_by_finding(c.id)}
+        {fid for c in claims for fid in view.cited_by_finding(c.id)}
     )
-    # Covered: one current finding compares two entities on the same
-    # dimension, each through its own reviewed comparison claim.
+    projection = comparison.project(
+        {"claims": view.claims, "evidence": view.evidence}
+    )
     covered = False
     for finding in view.findings:
         if not view.finding_ok(finding):
             continue
-        by_dimension: dict[str, set[str]] = {}
-        for cid in finding.claim_ids:
-            claim = view.claims.get(cid)
-            if (
-                claim is None
-                or "comparison" not in claim.reviewed_topics
-                or not claim.entity
-                or not claim.dimension
-            ):
-                continue
-            key = " ".join(claim.dimension.split()).casefold()
-            by_dimension.setdefault(key, set()).add(claim.entity.casefold())
-        if any(len(entities) >= 2 for entities in by_dimension.values()):
-            covered = True
+        cited = set(finding.claim_ids)
+        for row in projection.rows:
+            for group in row.comparable():
+                if len({c.claim_id for c in group} & cited) >= 2:
+                    covered = True
+                    break
+            if covered:
+                break
+        if covered:
             break
-    entities_any = {
-        c.entity for c in view.claims.values() if c.entity and view.reviewed(c)
-    }
-    partial = len(entities_any) >= 2
-    return _status(covered, partial), [c.id for c in comparison], finding_ids
+    # Partial: entities are on the table even if no basis lines up yet.
+    partial = (
+        len(projection.entities()) >= 2
+        or len(
+            {
+                c.entity
+                for c in view.claims.values()
+                if c.entity and view.reviewed(c)
+            }
+        )
+        >= 2
+    )
+    return _status(covered, partial), [c.id for c in claims], finding_ids
 
 
 def _q8(view: _View) -> tuple[records.CoverageStatus, list[str]]:

@@ -19,6 +19,7 @@ import pydantic
 from industry import budget
 from industry import merge
 from industry import calc as calc_module
+from industry import comparison
 from industry import quantities
 from industry import records
 from industry import report
@@ -926,6 +927,7 @@ def analysis_description(
             render_map(
                 state.get("map", records.IndustryMap()), state.get("claims", {})
             ),
+            comparison.render(comparison.project(state)),
             render_claims(
                 state,
                 reviewed_claim_ids(state),
@@ -1039,6 +1041,7 @@ def draft_description(
                 state.get("map", records.IndustryMap()), state.get("claims", {})
             ),
             render_findings(state, reviewed_only=True),
+            comparison.render(comparison.project(state)),
             render_calculations(state),
             render_claims(
                 state,
