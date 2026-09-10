@@ -247,17 +247,25 @@ def dependents_of_text(section: records.Section, text: str) -> list[Block]:
     if not text:
         return []
     blocks = blocks_of(section)
-    # Any block the removal touches, not only a block that *is* the
-    # removed text: redaction takes an occurrence embedded in a larger
-    # paragraph too, and seeding on equality left the consequence of
-    # "Separately, P" standing (U2-03).
-    doomed = {b.id for b in blocks if carries(b.text, text)}
+    # A block that *is* the removed text disappears under redaction, so
+    # it seeds but does not need removing again.
+    equal = {b.id for b in blocks if b.text == text}
+    doomed = set(equal)
+    if equal:
+        # The removed text is a whole block somewhere here, so a
+        # paragraph that merely quotes it is repeating the same
+        # assertion and goes whole. Redacting in place left
+        # "Therefore: [X] Prices are dictated." standing, which is an
+        # unsupported consequence with a hole in it (U2-03).
+        doomed |= {
+            b.id for b in blocks if b.text != text and carries(b.text, text)
+        }
     if not doomed:
         return []
     for block in blocks:
         if block.depends_on in doomed:
             doomed.add(block.id)
-    return [b for b in blocks if b.id in doomed and not carries(b.text, text)]
+    return [b for b in blocks if b.id in doomed and b.text != text]
 
 
 def resolve_section(sections: list[records.Section], target: str) -> str:

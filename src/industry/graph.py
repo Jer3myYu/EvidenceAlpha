@@ -397,22 +397,6 @@ def stored_rank(candidate: records.DeliveryCandidate) -> tuple[int, int]:
     return (level_rank(candidate.level), _STATUS_RANK.get(candidate.status, 0))
 
 
-def _carries(section: records.Section, unit: str) -> bool:
-    """Whether the section holds this exact factual unit.
-
-    A table row is matched as a whole line, the way
-    ``report.unremovable_units`` matches it. Substring matching made
-    ``| A | 1 |`` "occur" inside ``| A | 1 | estimate |``, so an
-    objection spread into a section that could not give the row up and
-    took that whole section with it (U2-R2-01).
-    """
-    if unit.strip().startswith("|"):
-        return any(
-            line.strip() == unit.strip() for line in section.text.split("\n")
-        )
-    return unit in section.text
-
-
 def _as_of_this_body(issue: records.Issue, draft_version: int) -> records.Issue:
     """An imported objection, with the status that applies to this body.
 
@@ -461,7 +445,14 @@ def _reaching(
       because we cannot tell which one holds what it faulted, and the
       whole point of retaining a body is that it was already reviewed.
     """
-    holding = [s for s in sections if issue.text and _carries(s, issue.text)]
+    # `report.carries` is the one definition of occurrence: a row or a
+    # list item occurs only as a whole line. A local substring test here
+    # imported an objection to `- Capacity: 10` into a section holding
+    # `- Capacity: 100 units`, which could not give it up and was
+    # withheld whole (U2-R3-01).
+    holding = [
+        s for s in sections if issue.text and report.carries(s.text, issue.text)
+    ]
     if holding:
         return [issue.model_copy(update={"target": s.id}) for s in holding]
     if issue.target in ids:

@@ -4579,3 +4579,39 @@ def test_u2_05_a_json_null_escape_dimension_cannot_collide():
         graph_module.uncomputed_comparison(finding, claims, {"K1": capex})
         == "C1, C2"
     )
+
+
+def test_u2_r3_01_candidate_import_uses_the_one_matching_rule():
+    """A local substring test here imported an objection to a shorter
+    list item into a section holding a longer one (U2-R3-01)."""
+    longer = records.Section(
+        id="spec", title="S", text="- Capacity: 100 units\n- Uptime: 99%"
+    )
+    candidate = records.DeliveryCandidate(
+        draft_version=1,
+        sections=[longer],
+        subject=records.ReviewSubject(digest="d"),
+        issues={},
+    )
+    shorter = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="spec",
+        requested_action="remove",
+        text="- Capacity: 10",
+        draft_version=2,
+    )
+    applies = graph_module.issues_for_candidate(candidate, {"I1": shorter})
+    assert applies == {}, "the longer item does not hold the shorter one"
+    # So the section stays deliverable rather than being withheld whole.
+    assert report.blocking_issues(list(applies.values()), longer) == []
+    # And the exact item is still importable where it does occur.
+    exact = records.Section(
+        id="spec", title="S", text="- Capacity: 10\n- Uptime: 99%"
+    )
+    on_exact = graph_module.issues_for_candidate(
+        candidate.model_copy(update={"sections": [exact]}), {"I1": shorter}
+    )
+    assert [i.target for i in on_exact.values()] == ["spec"]

@@ -1062,10 +1062,11 @@ def test_u2_03_removal_never_corrupts_a_paragraph_that_quotes_its_premise():
     # Emphasis and ordinary consequence phrasing are both recognised.
     assert blocks[1].depends_on == blocks[0].id
     assert blocks[2].depends_on == blocks[1].id
-    # b2 quotes the premise, so redaction removes it as an occurrence
-    # rather than as a dependent; b3 falls behind it.
+    # b2 quotes the premise, so it repeats the same assertion and goes
+    # whole rather than being redacted in place; b3 falls behind it.
     assert [b.id for b in report.dependents_of(section, blocks[0].id)] == [
-        blocks[2].id
+        blocks[1].id,
+        blocks[2].id,
     ]
     assert report.carries(blocks[1].text, premise)
     issues = [
@@ -1140,3 +1141,61 @@ def test_u2_03_a_premise_written_twice_takes_its_consequence():
     assert "competing suppliers" not in out
     assert "dictate prices" not in out
     assert "An unrelated paragraph." in out
+
+
+def test_u2_03_a_dependent_that_quotes_its_premise_goes_whole():
+    """Redacting in place left "Therefore: [X] Prices are dictated."
+    standing -- an unsupported consequence with a hole in it (U2-03)."""
+    premise = "This market has no competing suppliers."
+    section = records.Section(
+        id="s",
+        title="T",
+        text=(
+            f"{premise}\n\nTherefore: {premise} Prices are dictated."
+            "\n\nAccordingly margins expand."
+        ),
+    )
+    falling = report.dependents_of_text(section, premise)
+    assert [b.text[:20] for b in falling] == [
+        "Therefore: This mark",
+        "Accordingly margins ",
+    ]
+    issues = [
+        records.Issue(
+            id=f"I{n}",
+            key=f"k{n}",
+            category="unsupported",
+            severity="material",
+            target="s",
+            requested_action="remove",
+            text=text,
+        )
+        for n, text in enumerate([premise] + [b.text for b in falling], 1)
+    ]
+    out = report.redact(section.text, issues, "s", "[X]")
+    assert "Prices are dictated" not in out
+    assert "margins expand" not in out
+
+
+def test_u2_03_a_sentence_inside_a_paragraph_is_still_redacted_in_place():
+    """The case whole-block removal could have broken: an objected unit
+    that is a sentence, never a whole block, is removed where it sits."""
+    section = records.Section(
+        id="s",
+        title="T",
+        text="A good sentence. A bad sentence. More context.\n\nTherefore X.",
+    )
+    # It is not a whole block anywhere, so nothing is dragged with it.
+    assert report.dependents_of_text(section, "A bad sentence.") == []
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="s",
+        requested_action="remove",
+        text="A bad sentence.",
+    )
+    out = report.redact(section.text, [issue], "s", "[X]")
+    assert "A good sentence. [X] More context." in out
+    assert "Therefore X." in out
