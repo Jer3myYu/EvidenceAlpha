@@ -59,6 +59,14 @@ def parse_args() -> argparse.Namespace:
         "DIR/sources.json (a temporary index; no network)",
     )
     parser.add_argument(
+        "--route",
+        choices=("C", "S"),
+        default="C",
+        help="workflow route: C the corrected existing one (default), "
+        "S the simplified candidate (plan D-U16). Routing only; both "
+        "share the registry, budget, review and delivery gate",
+    )
+    parser.add_argument(
         "--limit",
         action="append",
         default=[],
@@ -171,7 +179,7 @@ async def main() -> None:
         return
     if args.resume is None and not args.fixture:
         require_live_key()
-    runtime = budget.Runtime(limits_from(args.limit))
+    runtime = budget.Runtime(limits_from(args.limit), route=args.route)
     backend = fixture_backend(args.fixture) if args.fixture else None
     async with persist.open_checkpointer() as checkpointer:
         graph = graph_module.build_graph(
@@ -189,6 +197,7 @@ async def main() -> None:
                 runtime.limits,
                 fixture=args.fixture,
                 fixture_digest=backend.digest if backend else None,
+                route=args.route,
             )
         else:
             if args.limit:
@@ -209,7 +218,8 @@ async def main() -> None:
                     f"This thread was recorded with fixture {meta.fixture!r}; "
                     "a resume keeps it."
                 )
-            runtime = budget.Runtime(meta.limits)
+            # A resume keeps the route it was recorded with.
+            runtime = budget.Runtime(meta.limits, route=meta.route)
             if meta.fixture:
                 backend = fixture_backend(meta.fixture)
                 problem = check_fixture(meta, backend)
