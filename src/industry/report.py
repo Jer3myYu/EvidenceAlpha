@@ -11,10 +11,12 @@ appends the open issues as limitations and the status line.
 
 import dataclasses
 import hashlib
+import json
 import os
 import pathlib
 import re
 import tempfile
+from typing import Any
 
 from industry import merge
 from industry import records
@@ -613,11 +615,7 @@ def appendices(
     if unresolved:
         lines += ["## " + ("局限性" if zh else "Limitations"), ""]
         for issue in unresolved:
-            lines.append(
-                f"- [{issue.severity}] {issue.category} on {issue.target}: "
-                f"{issue.description}"
-                + (f" ({issue.resolution})" if issue.resolution else "")
-            )
+            lines.append(f"- {reader_limitation(issue, zh)}")
         lines.append("")
     note = deferred_note(state)
     if note:
@@ -639,6 +637,95 @@ def appendices(
         lines.append(f"- Q{item.question}: {item.status}")
     lines.append("")
     return lines
+
+
+_LIMITATION_LEAD = {
+    "missing_evidence": ("Not established", "尚未证实"),
+    "unsupported": ("Stated without support, and withheld", "缺乏支撑，已略去"),
+    "contradiction": (
+        "Unresolved conflict in the evidence",
+        "证据存在未解决的冲突",
+    ),
+    "weak_inference": ("The reasoning is not fully supported", "推理支撑不足"),
+    "unavailable": ("Could not be retrieved", "无法获取"),
+    "wording": ("Presentation", "表述"),
+}
+_INTERNAL_ID = re.compile(r"\s*\((?:claim\s+)?[CFIKRT]\d+(?:\.\d+)?\)\s*$")
+_SECTION_TAG = re.compile(r"^\[[^\]]+\]\s*")
+
+
+def reader_limitation(issue: records.Issue, zh: bool) -> str:
+    """One unresolved issue as the reader's remaining knowledge gap.
+
+    The reader owns the consequence, not the bookkeeping (plan D-U13).
+    Run 7 published ``[material] unsupported on economics: [economics]
+    '...' is an analytical inference stated as fact with no claim
+    citation`` -- a note to the run's own machinery, printed in a
+    report. What survives here is the gap and what it costs; the
+    severity, the category, the target id and the claim ids stay in the
+    audit record, where an auditor can still reach them.
+    """
+    lead = _LIMITATION_LEAD.get(issue.category, ("Open question", "待解问题"))
+    text = _SECTION_TAG.sub("", issue.description).strip()
+    text = _INTERNAL_ID.sub("", text).strip()
+    return f"{lead[1] if zh else lead[0]}: {text}" if text else lead[zh]
+
+
+def audit_record(
+    state: state_module.IndustryState,
+    coverage: list[records.Coverage],
+    delivery: records.DeliveryResult,
+) -> dict[str, Any]:
+    """The machine-readable audit beside the report (plan D-U13).
+
+    Every issue the run ever raised, resolved or not, with the ids and
+    categories the delivered report deliberately does not carry. History
+    belongs in the audit record; the report carries what the reader must
+    still act on.
+    """
+    issues = list(state.get("issues", {}).values())
+    findings = list(state.get("findings", {}).values())
+    return {
+        "thread": (
+            state.get("meta").thread_id
+            if getattr(state.get("meta"), "thread_id", None)
+            else None
+        ),
+        "delivery": delivery.model_dump(),
+        "coverage": [item.model_dump() for item in coverage],
+        "issues": [issue.model_dump() for issue in issues],
+        "resolved": sum(1 for i in issues if i.status == "resolved"),
+        "unresolved": sum(
+            1 for i in issues if i.status in records.UNRESOLVED_ISSUE_STATUSES
+        ),
+        "inference_audit": [
+            {
+                "finding_id": f.id,
+                "verdict": f.inference_review,
+                "reason": f.inference_reason,
+                "version_judged": f.inference_version,
+                "version_now": f.version,
+            }
+            for f in findings
+        ],
+        "deferred_review": [
+            {"claim_id": c.id, "partition": merge.material_partition(c)}
+            for c in deferred_review(state)
+        ],
+        "route_log": list(state.get("route_log", [])),
+    }
+
+
+def write_audit(thread_id: str, record: dict[str, Any], directory: str) -> str:
+    """Write the audit record beside the report, atomically."""
+    path = pathlib.Path(directory) / f"{thread_id}.audit.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(record, ensure_ascii=False, indent=1, default=str)
+    handle, temporary = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        out.write(payload)
+    os.replace(temporary, path)
+    return str(path)
 
 
 def map_omissions(state: state_module.IndustryState) -> str | None:

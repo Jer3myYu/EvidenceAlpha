@@ -9,6 +9,8 @@ fails closed.
 """
 
 import dataclasses
+import json
+import pathlib
 
 import quantity_support as support
 
@@ -16,6 +18,7 @@ from industry import coverage as coverage_module
 from industry import merge
 from industry import records
 from industry import report
+
 from industry import roles
 
 TABLE = (
@@ -953,3 +956,94 @@ def test_the_reviewer_is_shown_the_block_ids_it_must_name():
     assert "<economics:b2> Two." in labelled
     plain = roles.render_sections([section])
     assert "<economics:b1>" not in plain and "One." in plain
+
+
+def test_a16_the_reader_gets_the_gap_not_the_bookkeeping():
+    """D-U13: run 7 published `[material] unsupported on economics: ...`."""
+    issue = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="economics",
+        requested_action="remove",
+        description=(
+            "[economics] 'the margin ceiling is set upstream' is an "
+            "analytical inference stated as fact with no claim citation. "
+            "(claim C3)"
+        ),
+    )
+    line = report.reader_limitation(issue, zh=False)
+    assert line.startswith("Stated without support, and withheld:")
+    # No internal ids, no severity, no category name, no section tag.
+    for machinery in ("[economics]", "C3", "material", "unsupported"):
+        assert machinery not in line
+    assert "the margin ceiling is set upstream" in line
+    assert report.reader_limitation(issue, zh=True).startswith("缺乏支撑")
+
+
+def test_a16_history_stays_in_the_audit_record(tmp_path):
+    """Resolved issues belong to the auditor, not the reader."""
+    resolved = records.Issue(
+        id="I1",
+        key="k",
+        category="unsupported",
+        severity="material",
+        target="economics",
+        requested_action="remove",
+        description="an earlier draft said something wrong",
+        status="resolved",
+        resolution="rewritten",
+    )
+    open_issue = resolved.model_copy(
+        update={
+            "id": "I2",
+            "key": "k2",
+            "status": "open",
+            "category": "missing_evidence",
+            "description": "the 2024 filing was not retrieved",
+            "resolution": None,
+        }
+    )
+    finding = records.Finding(
+        id="F1",
+        conclusion="c",
+        claim_ids=[],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        inference_review="scope_change",
+        inference_reason="the conclusion widens the period",
+    )
+    rows = [
+        records.Coverage(question=q, status="partial", note="n")
+        for q in sorted(records.REQUIRED_QUESTIONS)
+    ]
+    state = {
+        "brief": records.Brief(industry="x", language="en"),
+        "issues": {"I1": resolved, "I2": open_issue},
+        "findings": {"F1": finding},
+        "claims": {},
+        "meta": None,
+        "route_log": ["deliver: done"],
+    }
+    lines = report.appendices(state, rows)
+    body = "\n".join(lines)
+    # The reader sees the live gap and not the resolved history.
+    assert "the 2024 filing was not retrieved" in body
+    assert "an earlier draft said something wrong" not in body
+
+    delivery = records.DeliveryResult(
+        level="partial", status="incomplete", reason="r", floor="f"
+    )
+    record = report.audit_record(state, rows, delivery)
+    assert record["resolved"] == 1 and record["unresolved"] == 1
+    ids = {issue["id"] for issue in record["issues"]}
+    assert ids == {"I1", "I2"}
+    assert record["inference_audit"][0]["verdict"] == "scope_change"
+    path = report.write_audit("t1", record, str(tmp_path))
+    assert pathlib.Path(path).name == "t1.audit.json"
+    written = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    assert written["resolved"] == 1

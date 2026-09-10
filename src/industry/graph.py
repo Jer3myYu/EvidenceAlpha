@@ -3101,6 +3101,23 @@ def build_graph(
         text = report.render(chosen, derived, status, delivery, plan)
         path = report.write_report(_thread_id(), text, runtime.reports_dir)
         pdf_note = _render_pdf(_thread_id(), text, runtime.reports_dir)
+        # The history the report deliberately does not carry: every
+        # issue with its ids and categories, the inference verdicts, and
+        # the deferred review (plan D-U13). A failure here never costs
+        # the delivered report.
+        audit_note = ""
+        try:
+            audit_path = report.write_audit(
+                _thread_id(),
+                report.audit_record(chosen, derived, delivery),
+                runtime.reports_dir,
+            )
+            audit_note = f"deliver: audit record {audit_path}"
+        except OSError as error:  # pragma: no cover - filesystem failure
+            audit_note = (
+                f"deliver: the audit record was not written "
+                f"({type(error).__name__}: {error})"
+            )
         meta = state["meta"].model_copy(
             update={
                 "execution_status": "completed",
@@ -3116,6 +3133,7 @@ def build_graph(
                 f"deliver: {delivery.level} ({status}); {delivery.reason}; "
                 f"report {path}",
                 pdf_note,
+                audit_note,
             ],
         }
         if released:
