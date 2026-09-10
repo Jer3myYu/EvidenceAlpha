@@ -64,7 +64,26 @@ import pydantic
 # instead of strengthening their targets; nothing infers a target,
 # attachment or disposition for it, so it replays read-only and is
 # refused for resume like every earlier schema.
-SCHEMA_VERSION = 11
+# 12: the research-quality upgrade. Materiality and review admission are
+# separate fields (``Claim.review_disposition``), question mapping
+# records its provenance (``question_mapping``), interpreted context is
+# a record of its own with the basis that supports it
+# (``ContextBinding``), a finding carries the pre-draft audit's verdict
+# on its reasoning (``inference_review``) and the claims it compares
+# numerically, a section issue names the exact unit it is about
+# (``SectionIssue.block_id``), a task names its targets, a result says
+# what its evidence is worth (``evidence_acceptance``), usage carries
+# the provider's cache categories, and a thread records which workflow
+# route it runs.
+#
+# Every field is additive with a schema-11 default, so an *completed*
+# v11 thread replays unchanged. A v11 thread is still refused for
+# resume, and here the reason is behavioural rather than structural: the
+# graph gained a mandatory pre-draft audit between coverage and the
+# Editor, and the reserves every earlier stage keeps changed with it.
+# Resuming a v11 thread would deliver a body whose reasoning this
+# program believes was audited and was not.
+SCHEMA_VERSION = 12
 
 STAGES = ("upstream", "midstream", "downstream", "adjacent")
 Stage = Literal["upstream", "midstream", "downstream", "adjacent"]

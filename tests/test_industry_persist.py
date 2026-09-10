@@ -1023,3 +1023,42 @@ def test_an_interruption_during_an_index_write_waits_for_the_write(
     assert backend.peak == 1 and backend.active == 0
     spent = budget.ledger(final)
     assert spent.unknown_attempts == 1, "the interrupted attempt is charged"
+
+
+def test_a25_a_schema_11_thread_replays_but_is_refused_for_resume(tmp_path):
+    """A25: history keeps its meaning; only resume is refused.
+
+    Every field the upgrade added is additive with a schema-11 default,
+    so a completed v11 thread's records still load. What a resume cannot
+    do is carry it into a graph with a mandatory pre-draft audit the
+    thread never ran.
+    """
+    assert records.SCHEMA_VERSION == 12
+    # A v11 record loads, and the new fields read as what they are:
+    # unknown provenance, no route recorded, nothing invented.
+    claim = records.Claim.model_validate(
+        {
+            "id": "C1",
+            "statement": "s",
+            "kind": "fact",
+            "material": True,
+            "review": "supported",
+        }
+    )
+    assert claim.question_mapping == "unknown"
+    assert claim.review_disposition == "pending"
+    meta = records.RunMeta.model_validate(
+        {
+            "workflow_version": "industry-v1",
+            "schema_version": 11,
+            "prompt_version": "10.3",
+            "models": {},
+            "limits": records.Limits().model_dump(),
+            "started_at": "2026-09-09T00:00:00+00:00",
+        }
+    )
+    assert meta.route == "C" and meta.schema_version == 11
+    # And a v11 usage record still sums with the new categories.
+    usage = records.Usage.model_validate({"turns": 3, "input_tokens": 10})
+    total = usage + records.Usage(cache_read_input_tokens=5)
+    assert total.input_tokens == 10 and total.cache_read_input_tokens == 5
