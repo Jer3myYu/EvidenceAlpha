@@ -1110,6 +1110,22 @@ def review_subject(
     )
 
 
+def has_body(sections: list[records.Section]) -> bool:
+    """Whether sections contain content, not only structural labels."""
+    return any(
+        (
+            any(
+                block.kind in ("sentence", "paragraph", "list_item", "row")
+                and block.text.strip()
+                for block in section.blocks
+            )
+            if section.blocks
+            else bool(section.text.strip())
+        )
+        for section in sections
+    )
+
+
 def certificate_applies(state: state_module.IndustryState) -> bool:
     """Whether the stored review still judges the current body.
 
@@ -1123,6 +1139,8 @@ def certificate_applies(state: state_module.IndustryState) -> bool:
     if subject is None or review is None:
         return False
     sections = state.get("sections", [])
+    if not has_body(sections):
+        return False
     if [s.id for s in sections] != subject.section_ids:
         return False
     return all(

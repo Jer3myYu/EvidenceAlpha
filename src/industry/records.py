@@ -831,8 +831,9 @@ class Usage(Record):
     # not an invoice. Recorded so a comparison cannot mistake two
     # different bases for one measurement.
     cost_basis: str = ""
-    # Whether the provider exposed a full usage record for this call,
-    # cache categories included. A schema-11 record loads ``False``:
+    # Whether usage is fully known: a complete provider record including
+    # cache categories, or an explicitly unused reservation. A schema-11
+    # record loads ``False``:
     # those runs captured ordinary input tokens only, so their totals
     # are a subtotal and saying otherwise would let a comparison read
     # 144 input tokens as a context volume.

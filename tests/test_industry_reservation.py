@@ -52,6 +52,28 @@ def _spent(seconds, turns=0):
     }
 
 
+def test_unused_release_preserves_known_usage_without_guessing():
+    observed = _call("review", 1, status="done").model_copy(
+        update={
+            "observed": records.Usage(turns=2, cost_usd=0.25, complete=True)
+        }
+    )
+    unused = _call("final_review", 1)
+    state = {"single_calls": {observed.id: observed, unused.id: unused}}
+    calls = graph_module._release(state, "final_review")
+    spent = budget.ledger({"single_calls": calls})
+    assert spent.cost_complete and spent.usage_complete
+    assert spent.turns == 2 and spent.cost_usd == 0.25
+    assert spent.unknown_attempts == 0
+    assert calls[unused.id].observed.cost_basis == "not_invoked"
+    # Missing timestamps and default zero counters are not proof of no call.
+    calls[unused.id] = unused.model_copy(
+        update={"status": "done", "observed": records.Usage()}
+    )
+    spent = budget.ledger({"single_calls": calls})
+    assert not spent.cost_complete and not spent.usage_complete
+
+
 def test_a_write_needs_its_review_to_fit_too():
     # The run-5 boundary: 707.808 s remained before write.3. One call
     # (480 s) fitted, so the write was admitted and the review was then

@@ -530,8 +530,13 @@ def delivery_coverage(
 ) -> list[records.Coverage]:
     """Coverage of what the delivered body says, not of the registry."""
     kept = delivered_claims(state, sections)
+    findings = {
+        fid: finding
+        for fid, finding in state.get("findings", {}).items()
+        if finding.claim_ids and set(finding.claim_ids) <= kept.keys()
+    }
     return derive(
-        {**state, "claims": kept},
+        {**state, "claims": kept, "findings": findings},
         state.get("assessment"),
         support=state.get("claims", {}),
     )
@@ -609,6 +614,22 @@ def classify_delivery(
     clear the usefulness floor. C withholds the body.
     """
     kept = [s.id for s in plan.sections]
+    if not report.has_body(plan.sections):
+        return records.DeliveryResult(
+            level="diagnostic_only",
+            status="incomplete",
+            reason=(
+                "no substantive body survived; "
+                + (
+                    "no final review was made of this draft"
+                    if state.get("final_review") is None
+                    else "the body cannot be certified"
+                )
+            ),
+            sections=[],
+            removed=list(plan.removed) + kept,
+            floor="no substantive body survived",
+        )
     if plan.certified and not plan.changed:
         status = report_status(coverage, state, verified=True)
         if status != "incomplete":

@@ -373,7 +373,7 @@ class FakeRoles:
             ),
         ]
         self.review_verdict = "supported"
-        self.draft_text = "掩模版市场规模 52亿元 [C1][C2]。"
+        self.draft_text = None
         self.final_issues: list[records.SectionIssue] = []
 
     async def scope(self, question, max_turns, deadline):
@@ -476,19 +476,28 @@ class FakeRoles:
     async def write(
         self, state, instructions, max_turns, deadline, owner=False
     ):
-        del state, max_turns, deadline
+        del max_turns, deadline
         self.calls.append(
             ("owner-" if owner else "")
             + "write:"
             + ("revise" if "Revise" in instructions else "full")
         )
+        draft_text = self.draft_text
+        if draft_text is None:
+            units = [
+                f"{claim.statement.strip().rstrip('.。')} [{cid}]。"
+                for cid, claim in state.get("claims", {}).items()
+            ]
+            draft_text = "".join(units)
+        else:
+            units = report.factual_units(draft_text)
         return (
             roles.Draft(
                 sections=[
                     roles.SectionSpec(
                         id="intro",
                         title="概览",
-                        text=self.draft_text,
+                        text=draft_text,
                         blocks=[
                             roles.BlockSpec(
                                 key=f"b{number}",
@@ -497,9 +506,7 @@ class FakeRoles:
                                 claim_ids=report.cited_claims(text),
                                 depends_on=[],
                             )
-                            for number, text in enumerate(
-                                report.factual_units(self.draft_text), 1
-                            )
+                            for number, text in enumerate(units, 1)
                         ],
                     )
                 ]
@@ -2193,6 +2200,104 @@ def test_a_role_deadline_charges_its_reservation_and_the_run_delivers(
     )
 
 
+@pytest.mark.parametrize("error_type", [crew.RoleTimeout, crew.RoleFailure])
+def test_empty_body_after_failed_write_cannot_be_verified_complete(
+    tmp_path, error_type
+):
+    runtime, api, _, compiled = make(tmp_path, floor=coverage.UsefulnessFloor())
+
+    async def fail(*args, **kwargs):
+        del args, kwargs
+        raise error_type("offline write failure")
+
+    api.write = fail
+    runtime.begin("empty-body")
+    state = run(
+        compiled.ainvoke({"question": "q"}, persist.thread_config("empty-body"))
+    )
+    assert all(
+        row.status == "covered"
+        for row in coverage.derive(state, state.get("assessment"))
+    ), "the registry alone could have passed the old fast path"
+    assert state["sections"] == []
+    assert state["delivery"].level == "diagnostic_only"
+    assert state["meta"].report_status == "incomplete"
+    assert state.get("final_review") is None
+    assert "final" not in api.calls
+    attempt = state["single_calls"]["final_review.1"]
+    assert attempt.status == "done" and attempt.observed.turns == 0
+    assert attempt.invoked_at is None
+
+
+def test_nonempty_placeholder_cannot_borrow_registry_coverage(tmp_path):
+    runtime, api, _, compiled = make(tmp_path, floor=coverage.UsefulnessFloor())
+    api.draft_text = "Overview."
+    runtime.begin("placeholder")
+    state = run(
+        compiled.ainvoke(
+            {"question": "q"}, persist.thread_config("placeholder")
+        )
+    )
+    assert all(
+        row.status == "covered"
+        for row in coverage.derive(state, state.get("assessment"))
+    )
+    assert state["final_review"].consistent
+    assert state["delivery"].level == "diagnostic_only"
+    assert state["meta"].report_status == "incomplete"
+    assert all(row.status == "uncovered" for row in state["coverage"])
+    assert state["coverage"] == coverage.delivery_coverage(state, [])
+
+
+def test_withheld_body_keeps_reviewed_appendix_and_releases_held_usage(
+    tmp_path,
+):
+    runtime, _, _, compiled = make(tmp_path, floor=coverage.UsefulnessFloor())
+    runtime.begin("withheld")
+    state = run(
+        compiled.ainvoke({"question": "q"}, persist.thread_config("withheld"))
+    )
+    assert state["delivery"].status == "complete"
+    frozen = state["review_subject"].appendix
+    state["issues"] = {
+        "I99": records.Issue(
+            id="I99",
+            key="post-review-objection",
+            category="unsupported",
+            severity="material",
+            target="intro",
+            requested_action="remove",
+            description="Unresolved scope requires withholding this section",
+            draft_version=state["draft_version"],
+        )
+    }
+    state["candidate"] = None
+    state["single_calls"] = {
+        "final_review.99": records.Attempt(
+            id="final_review.99",
+            task_id="final_review",
+            started_at=records.now_iso(),
+            reserved=records.Reservation(
+                turns=10, tool_calls=0, seconds=480, held=True
+            ),
+        )
+    }
+    delivered = run(compiled.nodes["deliver"].node.steps[0].afunc(state))
+    assert delivered["delivery"].level == "diagnostic_only"
+    assert delivered["coverage"] == coverage.delivery_coverage(state, [])
+    assert delivered["delivery"].drift
+    assert state["review_subject"].appendix == frozen
+    text = pathlib.Path(delivered["meta"].report_path).read_text(
+        encoding="utf-8"
+    )
+    assert all(part in text for part in frozen)
+    released = delivered["single_calls"]["final_review.99"]
+    assert released.status == "done" and not released.reserved.held
+    assert released.observed.cost_usd == 0
+    assert released.observed.complete
+    assert released.observed.cost_basis == "not_invoked"
+
+
 @pytest.mark.parametrize("known_usage", [False, True])
 def test_terminal_role_failure_settles_and_delivers_without_unchanged_retry(
     tmp_path, monkeypatch, known_usage
@@ -2371,6 +2476,12 @@ def test_failed_final_review_cannot_approve_rewrite_or_lose_prior_candidate(
     )
     assert "Unreviewed." not in text
     assert "reviewed draft" in delivered["delivery"].reason
+    assert delivered["coverage"] == coverage.delivery_coverage(
+        state, candidate.sections
+    )
+    assert delivered["coverage"] != coverage.delivery_coverage(
+        state, state["sections"]
+    )
 
 
 @pytest.mark.parametrize("known", [False, True])

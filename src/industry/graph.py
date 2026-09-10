@@ -676,7 +676,11 @@ def _release(
     reservation = running_reservation(state, node)
     if reservation is None:
         return dict(state.get("single_calls", {}))
-    return _complete(state, reservation, records.Usage())
+    return _complete(
+        state,
+        reservation,
+        records.Usage(cost_usd=0, cost_basis="not_invoked", complete=True),
+    )
 
 
 def _complete(
@@ -3537,6 +3541,11 @@ def build_graph(
     async def final_review(
         state: state_module.IndustryState,
     ) -> dict[str, Any]:
+        if not report.has_body(state.get("sections", [])):
+            return {
+                "single_calls": _release(state, "final_review"),
+                "route_log": ["final_review: no substantive body; no call"],
+            }
         # Answer what the registry has already settled *before* the
         # subject is frozen. An audit gap repaired between the audit and
         # here was still standing in the appendix the verifier read and
@@ -3549,7 +3558,10 @@ def build_graph(
         # issues and re-derives coverage below, and `deliver` derives it
         # again, which used to let the delivered limitations differ from
         # the reviewed ones with no new draft and no version change.
-        subject = report.review_subject(state, state.get("coverage") or [])
+        body_coverage = coverage_module.delivery_coverage(
+            state, state.get("sections", [])
+        )
+        subject = report.review_subject(state, body_coverage)
         inherited = report.accepted_units(state)
         subject = subject.model_copy(
             update={
@@ -3763,7 +3775,7 @@ def build_graph(
             update["final_review"] = outcome
             update["final_review_version"] = version
             update["review_subject"] = subject
-        derived = coverage_module.derive(state, state.get("assessment"))
+        derived = body_coverage
         update["coverage"] = derived
         resolved = resolve_issues(
             {**state, "issues": issues, "coverage": derived}
@@ -3802,8 +3814,8 @@ def build_graph(
         state: state_module.IndustryState,
     ) -> tuple[report.DeliveryPlan, records.DeliveryResult]:
         """Plan and classify a body with the unchanged §4.39 machinery."""
-        derived = coverage_module.derive(state, state.get("assessment"))
         plan = report.plan_delivery(state, report.removal_note(state))
+        derived = coverage_module.delivery_coverage(state, plan.sections)
         return plan, coverage_module.classify_delivery(
             state, derived, plan, _floor()
         )
@@ -3879,7 +3891,10 @@ def build_graph(
                     f"{delivery_of_later.level} "
                     f"({delivery_of_later.status})"
                 )
-        derived = coverage_module.derive(chosen, chosen.get("assessment"))
+        derived = coverage_module.delivery_coverage(
+            chosen,
+            plan.sections if delivery.level != "diagnostic_only" else [],
+        )
         if reason:
             delivery = delivery.model_copy(
                 update={"reason": f"{delivery.reason}; {reason}"}
@@ -3893,7 +3908,9 @@ def build_graph(
             cid: call.model_copy(
                 update={
                     "status": "done",
-                    "observed": records.Usage(),
+                    "observed": records.Usage(
+                        cost_usd=0, cost_basis="not_invoked", complete=True
+                    ),
                     "reserved": call.reserved.model_copy(
                         update={"held": False}
                     ),

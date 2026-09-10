@@ -284,6 +284,45 @@ def test_a_verified_unchanged_body_is_level_a():
     assert result.status == "complete"
 
 
+def test_empty_or_structural_only_body_cannot_gain_a_certificate_or_level_a():
+    caption = records.Block(
+        id="s:caption",
+        kind="caption",
+        text="A table",
+        sha256="unused",
+        depends_on=[],
+    )
+    cases = [
+        [],
+        [records.Section(id="s", title="Empty", text="")],
+        [records.Section(id="s", title="Blank", text=" \n")],
+        [
+            records.Section(
+                id="s", title="Caption", text=caption.text, blocks=[caption]
+            )
+        ],
+    ]
+    for sections in cases:
+        state = useful_state(BODY)
+        state["sections"] = sections
+        certify(state)
+        assert not report.has_body(sections)
+        assert not report.certificate_applies(state)
+        # Classification must defend itself even against supplied flags.
+        plan = report.DeliveryPlan(
+            sections=sections,
+            covered=True,
+            certified=True,
+            consistent=True,
+            changed=False,
+            removed=[],
+            reasons=[],
+        )
+        result = coverage_module.classify_delivery(state, rows(), plan)
+        assert result.level == "diagnostic_only"
+        assert result.status == "incomplete"
+
+
 def test_a_verified_body_with_disclosed_limitations_is_level_a():
     # A minor, disclosed issue is a limitation, not a redaction: the
     # body is untouched, so the certificate still covers it.
