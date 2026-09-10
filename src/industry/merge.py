@@ -80,6 +80,7 @@ class _Registry:
         self.claims = dict(state.get("claims", {}))
         self.relationships = dict(state.get("relationships", {}))
         self.industry_map = state.get("map", records.IndustryMap())
+        self.brief = state.get("brief")
         self.log: list[str] = []
         # Claims whose meaning changed in this merge; their dependants
         # (findings, sections) are marked stale by merge_results.
@@ -87,7 +88,19 @@ class _Registry:
 
     def material_quota(self, partition: str) -> bool:
         """Whether one more material claim fits ``partition``."""
-        return admit_material(self.claims, self.limits, partition)
+        return admit_material(
+            self.claims, self.limits, partition, self.relationships
+        )
+
+    def partition_of(self, questions: list[int]) -> str:
+        """The partition one new material claim is admitted to."""
+        return assign_partition(
+            questions,
+            self.brief,
+            self.claims,
+            self.limits,
+            self.relationships,
+        )
 
     def source_id(self, local: records.Source) -> str:
         """Find the canonical source for a local one, or register it."""
@@ -206,13 +219,26 @@ class _Registry:
                 )
                 break
             # The repeat's questions join the claim, but its partition is
-            # fixed at admission; a non-material claim becomes material
-            # only if its own partition still has room.
-            material = existing.material or (
-                claim.material
-                and self.material_quota(material_partition(existing))
-            )
+            # fixed at admission. A repeat that is material makes the
+            # claim material -- importance is not a queue -- and the
+            # partition decides only whether its review waits.
+            material = existing.material or claim.material
+            disposition = existing.review_disposition
+            deferred_reason = existing.review_deferred_reason
+            if material and not existing.material:
+                if self.material_quota(material_partition(existing)):
+                    disposition, deferred_reason = "pending", None
+                else:
+                    partition = material_partition(existing)
+                    disposition = "deferred"
+                    deferred_reason = f"{partition} at capacity"
+                    self.log.append(
+                        f"claim {existing.id}: a repeat made it material; "
+                        f"{partition} at capacity, review deferred"
+                    )
             update: dict[str, Any] = {
+                "review_disposition": disposition,
+                "review_deferred_reason": deferred_reason,
                 "questions": sorted(
                     set(existing.questions) | set(claim.questions)
                 ),
@@ -736,15 +762,33 @@ def _fold_finding(
         )
     if draft.milestone and not draft.milestone_date:
         limitations.append("undated_milestone")
-    material = draft.material
-    partition = partition_for(draft.questions)
-    if material and not registry.material_quota(partition):
-        # Beyond its quota a finding is kept as non-material: it stays
-        # in the registry but does not enter the bounded review.
-        material = False
+    questions, mapping = map_questions(draft)
+    if mapping == "derived":
         registry.log.append(
-            f"{attempt_id}: material quota of {partition} reached; kept "
-            f"non-material: {draft.statement[:60]}"
+            f"{attempt_id}: questions {questions} derived from topics "
+            f"{list(draft.topics)}: {draft.statement[:60]}"
+        )
+    elif mapping == "unresolved":
+        registry.log.append(
+            f"{attempt_id}: question mapping unresolved (topics "
+            f"{list(draft.topics)}): {draft.statement[:60]}"
+        )
+    material = draft.material
+    partition = registry.partition_of(questions)
+    disposition: records.ReviewDisposition = (
+        "pending" if material else "unnecessary"
+    )
+    deferred_reason: str | None = None
+    if material and not registry.material_quota(partition):
+        # A full queue is not a reassessment of importance: the finding
+        # stays material and waits for a slot, which
+        # ``reconsider_deferred`` gives it as soon as a claim in this
+        # partition is settled (plan D-U2).
+        disposition = "deferred"
+        deferred_reason = f"{partition} at capacity"
+        registry.log.append(
+            f"{attempt_id}: {partition} at capacity; kept material, review "
+            f"deferred: {draft.statement[:60]}"
         )
     kind = draft.kind
     if kind == "derived":
@@ -763,13 +807,16 @@ def _fold_finding(
             evidence_ids=evidence_ids,
             material=material,
             partition=partition,
+            question_mapping=mapping,
+            review_disposition=disposition,
+            review_deferred_reason=deferred_reason,
             entity=draft.entity,
             period=draft.period,
             quantity=quantity,
             milestone=draft.milestone,
             milestone_date=draft.milestone_date,
             limitations=limitations,
-            questions=draft.questions,
+            questions=questions,
             topics=draft.topics,
             dimension=draft.dimension,
             origin=attempt_id,
@@ -1520,9 +1567,105 @@ def issue_key(category: str, target: str, text: str | None = None) -> str:
 
 
 def partition_for(questions: list[int]) -> str:
-    """The partition of a non-map claim: its lowest central question."""
+    """The partition of a non-map claim: its lowest central question.
+
+    The schema-11 rule, kept verbatim because it is how every existing
+    claim's partition was computed: ``material_partition`` falls back to
+    it for a claim persisted before ``Claim.partition`` existed, and
+    reading history under a new rule would misstate it. New admissions
+    go through ``assign_partition``.
+    """
     central = [q for q in questions if q in records.CENTRAL_QUESTIONS]
     return f"q{min(central)}" if central else "other"
+
+
+def map_questions(
+    draft: records.FindingDraft,
+) -> tuple[list[int], records.QuestionMapping]:
+    """The questions a finding serves, and how they were arrived at.
+
+    Run 7 returned 47 ordinary findings with an empty ``questions`` list
+    and a populated ``topics`` list, so every one of them routed to the
+    six-slot overflow partition. The routing metadata was produced; only
+    the field the scheduler reads was empty (plan D-U1).
+
+    1. Ids the researcher declared are validated against the eight
+       required questions. Invalid ids are rejected, duplicates
+       normalised: ``declared``.
+    2. Otherwise the topics the researcher did tag are mapped through
+       ``records.TOPIC_QUESTIONS``, but only if that yields something:
+       ``derived``.
+    3. Otherwise ``unresolved`` with no questions. The finding stays
+       material and stays in the registry; coverage sees the unresolved
+       mapping rather than a silent ``other``.
+
+    A multi-question task never confers a blanket mapping: the
+    derivation is per finding, from that finding's own topics.
+    """
+    declared = sorted(
+        {q for q in draft.questions if q in records.REQUIRED_QUESTIONS}
+    )
+    if declared:
+        return declared, "declared"
+    derived = sorted(
+        {
+            q
+            for topic in draft.topics
+            for q in records.TOPIC_QUESTIONS.get(topic, ())
+        }
+    )
+    if derived:
+        return derived, "derived"
+    return [], "unresolved"
+
+
+def assign_partition(
+    questions: list[int],
+    brief: records.Brief | None,
+    claims: dict[str, records.Claim],
+    limits: records.Limits,
+    relationships: dict[str, records.Relationship] | None = None,
+) -> str:
+    """The partition one new material claim is admitted to.
+
+    Not the lowest question it serves. Measured against run 7's own
+    findings, lowest-id routing puts 27 of 47 into q1 -- ``product`` and
+    ``boundary`` both map to question 1 and win every tie -- and leaves
+    q7, the required company comparison, with no slots at all. So the
+    claim goes to the required question it serves that currently holds
+    the **fewest outstanding** admitted claims, tie-broken by the
+    brief's priority order and then by lowest id (plan D-U1).
+
+    A question whose partition still has room always beats a full one,
+    so a claim is never deferred while another question it genuinely
+    serves could review it now.
+
+    Deterministic given the registry, and fixed at admission
+    (``Claim.partition``), so a later repeat still cannot move a claim.
+    ``merge_results`` sorts results by task and attempt before folding,
+    so two workers completing in either order meet the same registry
+    loads and produce the same assignment.
+    """
+    required = records.required_ids(brief)
+    serves = [q for q in questions if q in required]
+    if not serves:
+        return "other"
+    rank = {q: i for i, q in enumerate(required)}
+    loads = {
+        q: outstanding_in(claims, f"q{q}", relationships or {}) for q in serves
+    }
+
+    def key(question: int) -> tuple[int, int, int, int]:
+        partition = f"q{question}"
+        full = loads[question] >= partition_cap(partition, limits)
+        return (
+            int(full),
+            loads[question],
+            rank.get(question, len(required)),
+            question,
+        )
+
+    return f"q{min(serves, key=key)}"
 
 
 def material_partition(claim: records.Claim) -> str:
@@ -1553,24 +1696,116 @@ def admit_material(
     claims: dict[str, records.Claim],
     limits: records.Limits,
     partition: str,
+    relationships: dict[str, records.Relationship] | None = None,
 ) -> bool:
     """The one authority admitting a material claim to a partition.
 
-    Findings, map items, and derived claims all pass through here. A
-    map segment, link, or participant counts against its own sub-quota
-    (participants per stage); any other claim against the lowest
-    central question it serves (``material_per_question`` each) or,
-    serving none, against ``material_other``. The partitions are
-    disjoint and fixed at admission (``Claim.partition``), so a full
-    map never starves an economics question and a repeat that adds
-    questions never moves a claim.
+    Findings, map items, and derived claims all pass through here, and
+    none of them may answer a refusal by writing ``material=False``: a
+    queue filling up is not a reassessment of importance (plan D-U2).
+    A refused claim is stored material and ``deferred``.
+
+    The cap bounds **outstanding review work**, not lifetime
+    membership. Counting settled claims too, as schema 11 did, meant six
+    supported q4 claims blocked a seventh forever and no amount of
+    batching could release the capacity. A claim that has its verdict
+    frees its slot; the run's real bound on total review is the budget,
+    which still holds the write and final-review reserve back.
+
+    The partitions stay disjoint and fixed at admission
+    (``Claim.partition``), so a full map never starves an economics
+    question and a repeat that adds questions never moves a claim.
     """
-    used = sum(
+    used = outstanding_in(claims, partition, relationships or {})
+    return used < partition_cap(partition, limits)
+
+
+def outstanding_in(
+    claims: dict[str, records.Claim],
+    partition: str,
+    relationships: dict[str, records.Relationship],
+) -> int:
+    """Material claims in ``partition`` the review still owes a verdict."""
+    return sum(
         1
         for c in claims.values()
-        if c.material and material_partition(c) == partition
+        if c.material
+        and c.review_disposition in ("pending", "admitted")
+        and material_partition(c) == partition
+        and claim_needs_attention(c, relationships)
     )
-    return used < partition_cap(partition, limits)
+
+
+def outstanding_review(
+    claims: dict[str, records.Claim],
+    relationships: dict[str, records.Relationship],
+) -> list[records.Claim]:
+    """The one definition of selectable review work (plan D-U2).
+
+    ``graph.reviewable``, ``graph.pending_review`` and
+    ``budget.review_batches`` all read this, so the reserve can never be
+    sized for work the reviewer cannot select. A deferred claim is not
+    here: it is material, it is owed a verdict, and it is waiting for a
+    slot -- which ``reconsider_deferred`` gives it as soon as one frees.
+    """
+    return [
+        c
+        for c in claims.values()
+        if c.material
+        and c.review_disposition in ("pending", "admitted")
+        and claim_needs_attention(c, relationships)
+    ]
+
+
+def reconsider_deferred(
+    claims: dict[str, records.Claim],
+    limits: records.Limits,
+    brief: records.Brief | None = None,
+    relationships: dict[str, records.Relationship] | None = None,
+) -> tuple[dict[str, records.Claim], list[str]]:
+    """Promote deferred claims into slots that have since freed.
+
+    Called after every review batch and every budget change. A settled
+    claim releases its partition slot, so deferral is a wait, not the
+    demotion it replaced. Priority order is the brief's, then the claim
+    id, so the promotion is deterministic.
+    """
+    relationships = relationships or {}
+    deferred = [
+        c
+        for c in claims.values()
+        if c.material and c.review_disposition == "deferred"
+    ]
+    if not deferred:
+        return claims, []
+    required = records.required_ids(brief)
+    rank = {f"q{q}": i for i, q in enumerate(required)}
+    deferred.sort(
+        key=lambda c: (
+            rank.get(material_partition(c), len(required)),
+            claim_number(c.id),
+        )
+    )
+    updated = dict(claims)
+    log: list[str] = []
+    for claim in deferred:
+        partition = material_partition(claim)
+        if not admit_material(updated, limits, partition, relationships):
+            continue
+        updated[claim.id] = claim.model_copy(
+            update={
+                "review_disposition": "pending",
+                "review_deferred_reason": None,
+            }
+        )
+        log.append(f"{claim.id}: admitted to {partition}; a slot freed")
+    return updated, log
+
+
+def claim_number(claim_id: str) -> int:
+    """The numeric part of ``C12``, for a stable order."""
+    digits = "".join(ch for ch in claim_id if ch.isdigit())
+    return int(digits) if digits else 0
 
 
 def derived_fields(

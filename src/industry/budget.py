@@ -159,12 +159,15 @@ DOWNSTREAM_CALLS = {
 def review_batches(
     state: state_module.IndustryState, limits: records.Limits
 ) -> int:
-    """How many review batches the unreviewed material claims need."""
+    """How many review batches the unreviewed material claims need.
+
+    ``merge.outstanding_review`` is the same selection ``graph.
+    reviewable`` uses, so a deferred claim does not inflate the reserve
+    for a batch the reviewer could not take (plan D-U2).
+    """
     relationships = state.get("relationships", {})
-    unreviewed = sum(
-        1
-        for c in state.get("claims", {}).values()
-        if c.material and merge.claim_needs_attention(c, relationships)
+    unreviewed = len(
+        merge.outstanding_review(state.get("claims", {}), relationships)
     )
     return -(-unreviewed // limits.review_batch)
 

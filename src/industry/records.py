@@ -151,6 +151,41 @@ QUESTION_4_TOPICS = (
     "bargaining_power",
 )
 
+# The one mapping from a finding's topic to the required question it
+# serves, used to route a finding whose ``questions`` the researcher
+# left empty (plan D-U1). Questions 2 and 3 are map-derived and no topic
+# implies them; ``other`` implies nothing, so a finding tagged only
+# ``other`` stays unresolved rather than being routed anywhere.
+#
+# This decides *scheduling* only. Coverage still counts a topic solely
+# when the verifier confirmed it (``Claim.reviewed_topics``), so a
+# derived tag can never manufacture a covered question.
+TOPIC_QUESTIONS: dict[str, tuple[int, ...]] = {
+    "product": (1,),
+    "boundary": (1,),
+    "payer_flow": (4,),
+    "demand_driver": (4,),
+    "cost_structure": (4,),
+    "differentiation": (4,),
+    "cost_differentiation": (4,),
+    "bargaining_power": (4,),
+    "barrier": (5,),
+    "commercialization": (5,),
+    "global_china": (6,),
+    "comparison": (7,),
+    "other": (),
+}
+
+# How a claim came by its ``questions``. ``unknown`` is what a thread
+# persisted before schema 12 loads as: it never declared anything, and
+# inventing that provenance is what document 01 s9 forbids.
+QuestionMapping = Literal["declared", "derived", "unresolved", "unknown"]
+
+# Whether the bounded review still owes this claim a verdict. Separate
+# from ``material``, which is importance and which a full queue may
+# never overwrite (plan D-U2).
+ReviewDisposition = Literal["pending", "admitted", "deferred", "unnecessary"]
+
 # The eight learning questions of the brief, by number.
 REQUIRED_QUESTIONS = {
     1: "What is the product or service, why is it needed, and what belongs "
@@ -171,6 +206,23 @@ REQUIRED_QUESTIONS = {
     "what should the reader monitor next?",
 }
 CENTRAL_QUESTIONS = (1, 2, 3, 4, 5)
+
+
+def required_ids(brief: "Brief | None") -> tuple[int, ...]:
+    """The questions a brief must answer, in priority order.
+
+    A schema-11 brief carries no ids and behaves exactly as before:
+    ``CENTRAL_QUESTIONS``. A schema-12 brief that names its own
+    obligations governs admission, coverage, status, and the delivery
+    floor alike (plan D-U4), so a scope excluding China acquires no Q6
+    obligation and a brief naming a company comparison cannot deliver
+    without one.
+    """
+    if brief is None or not brief.required_ids:
+        return CENTRAL_QUESTIONS
+    ordered = [q for q in brief.priority if q in brief.required_ids]
+    ordered += [q for q in brief.required_ids if q not in ordered]
+    return tuple(ordered)
 
 
 def now_iso() -> str:
@@ -488,6 +540,16 @@ class Claim(Record):
     # admit_material``); fixed at admission, so a repeat that adds
     # questions never moves a claim into another partition.
     partition: str | None = None
+    # How ``questions`` was arrived at (plan D-U1). A claim loaded from
+    # a schema-11 thread is ``unknown``: nothing recorded whether the
+    # researcher declared its tags or left them empty.
+    question_mapping: QuestionMapping = "unknown"
+    # What the bounded review owes this claim (plan D-U2). ``material``
+    # stays importance; when a partition is full the claim is deferred,
+    # never demoted, and admission is reconsidered after every review
+    # batch and every budget change.
+    review_disposition: ReviewDisposition = "pending"
+    review_deferred_reason: str | None = None
 
     @pydantic.model_validator(mode="after")
     def _quantity_ownership(self) -> "Claim":
@@ -822,6 +884,12 @@ class Brief(Record):
     geography: str = "global structure with a China comparison"
     cutoff: str = ""
     required_questions: list[str] = pydantic.Field(default_factory=list)
+    # The questions this brief must answer, and their order of
+    # importance (plan D-U4). Empty on a schema-11 thread, which then
+    # behaves exactly as before: ``CENTRAL_QUESTIONS`` is the required
+    # set. ``required_questions`` above keeps its text and is untouched.
+    required_ids: list[int] = pydantic.Field(default_factory=list)
+    priority: list[int] = pydantic.Field(default_factory=list)
     evidence_expectations: str = ""
     constraints: list[str] = pydantic.Field(default_factory=list)
     budget_policy: str = ""

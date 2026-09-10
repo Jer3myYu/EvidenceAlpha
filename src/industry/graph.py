@@ -620,7 +620,10 @@ def reviewable(
 
     One selection, so the node and its router can never disagree:
     ``pending_review`` orders and truncates this list and
-    ``review_remaining`` counts it. A claim whose producer chain is not
+    ``review_remaining`` counts it. ``merge.outstanding_review`` is the
+    one definition of selectable work, shared with
+    ``budget.review_batches`` so the reserve is never sized for work the
+    reviewer cannot select. A claim whose producer chain is not
     intact is not among them -- only ``calc.recompute_stale`` can settle
     that one -- so a router that asks for another review round can never
     ask for a batch the node would find empty.
@@ -630,10 +633,8 @@ def reviewable(
     relationships = state.get("relationships", {})
     return [
         c
-        for c in claims.values()
-        if merge.claim_needs_attention(c, relationships)
-        and c.material
-        and merge.producer_chain_intact(c, claims, calculations)
+        for c in merge.outstanding_review(claims, relationships)
+        if merge.producer_chain_intact(c, claims, calculations)
     ]
 
 

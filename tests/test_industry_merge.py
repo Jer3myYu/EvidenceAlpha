@@ -695,7 +695,7 @@ def test_meaning_change_stales_dependants_and_conflicts_are_kept():
     assert "conflicting_repeat:period" in update["claims"]["C1"].limitations
 
 
-def test_material_findings_beyond_the_question_quota_stay_non_material():
+def test_material_findings_beyond_the_quota_are_deferred_not_demoted():
     state = base_state()
     limits = records.Limits(
         **{**LIMITS.model_dump(), "material_per_question": 2}
@@ -723,9 +723,202 @@ def test_material_findings_beyond_the_question_quota_stay_non_material():
     added = [
         c for c in update["claims"].values() if c.statement.startswith("fact ")
     ]
-    assert sum(c.material for c in added) == 2 and len(added) == 4
+    # A02: every candidate is retained and every one stays material. The
+    # queue decides who waits, never who matters (plan D-U2).
+    assert len(added) == 4 and all(c.material for c in added)
+    assert sum(c.review_disposition == "pending" for c in added) == 2
+    deferred = [c for c in added if c.review_disposition == "deferred"]
+    assert len(deferred) == 2
+    assert all(c.review_deferred_reason == "q4 at capacity" for c in deferred)
     assert any(
-        "material quota of q4 reached" in line for line in update["route_log"]
+        "q4 at capacity; kept material, review deferred" in line
+        for line in update["route_log"]
+    )
+    # The reviewer is offered only the admitted two, so the reserve and
+    # the selection agree.
+    outstanding = merge.outstanding_review(update["claims"], {})
+    assert {c.id for c in outstanding} == {
+        c.id for c in added if c.review_disposition == "pending"
+    }
+
+
+def test_a01_untagged_material_finding_is_routed_by_its_topics():
+    """A01: routing metadata was produced, in the field beside the empty one."""
+    draft = records.FindingDraft(
+        statement="mask blanks are supplied by two Japanese vendors",
+        material=True,
+        evidence_refs=["E1"],
+        questions=[],
+        topics=["bargaining_power", "global_china"],
+    )
+    questions, mapping = merge.map_questions(draft)
+    assert (questions, mapping) == ([4, 6], "derived")
+
+
+def test_a01_a_finding_with_no_usable_topic_is_unresolved_not_other():
+    for topics in ([], ["other"]):
+        draft = records.FindingDraft(
+            statement="something",
+            material=True,
+            evidence_refs=["E1"],
+            questions=[],
+            topics=topics,
+        )
+        assert merge.map_questions(draft) == ([], "unresolved")
+
+
+def test_a03_invalid_and_duplicate_question_ids_are_normalised():
+    """A03: ids are validated; having ids is not the same as meaning them."""
+    draft = records.FindingDraft(
+        statement="s",
+        material=True,
+        evidence_refs=["E1"],
+        questions=[4, 4, 0, 9, -1, 2],
+        topics=["comparison"],
+    )
+    # The valid declared ids win outright; topics are not mixed in.
+    assert merge.map_questions(draft) == ([2, 4], "declared")
+
+
+def test_a03_only_invalid_ids_fall_through_to_the_topics():
+    draft = records.FindingDraft(
+        statement="s",
+        material=True,
+        evidence_refs=["E1"],
+        questions=[0, 99],
+        topics=["comparison"],
+    )
+    assert merge.map_questions(draft) == ([7], "derived")
+
+
+def test_a04_a_q7_only_finding_gets_a_partition_when_the_brief_needs_it():
+    """A04/A18: Q6 and Q7 are not second class when the brief requires them."""
+    brief = records.Brief(
+        industry="x", required_ids=[1, 4, 7], priority=[7, 1, 4]
+    )
+    limits = records.Limits()
+    assert merge.assign_partition([7], brief, {}, limits) == "q7"
+    # And with no brief ids the schema-11 default still holds: q7 is not
+    # a central question, so a q7-only claim lands in `other`.
+    assert merge.assign_partition([7], None, {}, limits) == "other"
+
+
+def test_partition_assignment_is_least_loaded_not_lowest_id():
+    """The q1 flood: `product` and `boundary` both map to 1 and would win
+    every tie under `min()`, leaving the required comparison starved."""
+    brief = records.Brief(
+        industry="x", required_ids=[1, 4, 7], priority=[1, 4, 7]
+    )
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "material_per_question": 6}
+    )
+    claims = {}
+    # Three claims that each serve q1 and q7 spread across both.
+    for n in range(4):
+        partition = merge.assign_partition([1, 7], brief, claims, limits)
+        claims[f"C{n}"] = records.Claim(
+            id=f"C{n}",
+            statement=f"s{n}",
+            kind="fact",
+            material=True,
+            partition=partition,
+            review_disposition="pending",
+        )
+    assigned = [c.partition for c in claims.values()]
+    assert assigned == ["q1", "q7", "q1", "q7"]
+    assert sorted(set(assigned)) == ["q1", "q7"]
+
+
+def test_partition_assignment_is_deterministic_under_reversed_arrival():
+    """A05/A22: `merge_results` sorts by task and attempt before folding, so
+    two workers completing in either order meet the same registry loads."""
+    state = base_state()
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "material_per_question": 6}
+    )
+    state = {
+        **state,
+        "brief": records.Brief(
+            industry="x", required_ids=[1, 4, 7], priority=[1, 4, 7]
+        ),
+    }
+
+    def result(attempt, task, names):
+        return records.TaskResult(
+            attempt_id=attempt,
+            task_id=task,
+            status="done",
+            usage=records.Usage(turns=3),
+            sources=[source("S1", "https://a.example/x", "A page")],
+            source_versions=[version("va", "S1", "hash-a")],
+            evidence=[evidence("E1", "S1", "fact text", "va")],
+            findings=[
+                records.FindingDraft(
+                    statement=name,
+                    material=True,
+                    evidence_refs=["E1"],
+                    topics=["product", "comparison"],
+                )
+                for name in names
+            ],
+        )
+
+    a = result("T1.1", "T1", ["a1", "a2", "a3"])
+    b = result("T2.1", "T2", ["b1", "b2", "b3"])
+    forward = merge.merge_results(state, [a, b], limits)["claims"]
+    reverse = merge.merge_results(state, [b, a], limits)["claims"]
+    assert {c.statement: c.partition for c in forward.values()} == {
+        c.statement: c.partition for c in reverse.values()
+    }
+
+
+def test_a_settled_claim_frees_its_slot_and_a_deferred_one_takes_it():
+    """A02 continued: deferral is a wait, not a demotion by another name."""
+    state = base_state()
+    limits = records.Limits(
+        **{**LIMITS.model_dump(), "material_per_question": 2}
+    )
+    drafts = [
+        records.FindingDraft(
+            statement=f"fact {n}",
+            material=True,
+            evidence_refs=["E1"],
+            questions=[4],
+        )
+        for n in range(4)
+    ]
+    result = records.TaskResult(
+        attempt_id="T1.1",
+        task_id="T1",
+        status="done",
+        usage=records.Usage(turns=3),
+        sources=[source("S1", "https://a.example/x", "A page")],
+        source_versions=[version("va", "S1", "hash-a")],
+        evidence=[evidence("E1", "S1", "fact text", "va")],
+        findings=drafts,
+    )
+    claims = merge.merge_results(state, [result], limits)["claims"]
+    admitted = [c for c in claims.values() if c.review_disposition == "pending"]
+    assert len(admitted) == 2
+
+    # Nothing frees while the admitted two are still unreviewed.
+    same, log = merge.reconsider_deferred(claims, limits)
+    assert log == [] and same == claims
+
+    # Settle one. Exactly one deferred claim is promoted, in id order.
+    settled = admitted[0].model_copy(
+        update={"review": "supported", "review_disposition": "admitted"}
+    )
+    claims = {**claims, settled.id: settled}
+    promoted, log = merge.reconsider_deferred(claims, limits)
+    now_pending = [
+        c for c in promoted.values() if c.review_disposition == "pending"
+    ]
+    assert len(now_pending) == 2 and len(log) == 1
+    assert all(c.material for c in promoted.values())
+    assert not any(
+        c.review_disposition == "deferred" and c.review_deferred_reason is None
+        for c in promoted.values()
     )
 
 
@@ -887,7 +1080,7 @@ def test_map_items_beyond_their_sub_quota_are_not_added():
     assert any("segments is the cap" in line for line in update["route_log"])
 
 
-def test_repeat_cannot_promote_a_claim_past_its_partition():
+def test_a_repeat_cannot_move_a_claim_out_of_its_partition():
     state = base_state()
     limits = records.Limits(
         **{**LIMITS.model_dump(), "material_per_question": 1}
@@ -913,8 +1106,9 @@ def test_repeat_cannot_promote_a_claim_past_its_partition():
                 evidence_refs=["E1"],
                 questions=[4],
             ),
-            # A repeat of B, now also claiming Q1: it joins B (non-material,
-            # Q4 full) and may not become material through Q1.
+            # A repeat of B, now also claiming Q1: it joins B, whose
+            # partition is fixed at q4. The repeat makes B material --
+            # importance is not a queue -- but q4 is full, so B waits.
             records.FindingDraft(
                 statement="fact B",
                 material=True,
@@ -926,9 +1120,15 @@ def test_repeat_cannot_promote_a_claim_past_its_partition():
     update = merge.merge_results(state, [first], limits)
     by_text = {c.statement: c for c in update["claims"].values()}
     assert by_text["fact A"].material and by_text["fact A"].partition == "q4"
-    assert not by_text["fact B"].material
+    assert by_text["fact A"].review_disposition == "pending"
+    # B stays material and stays in q4; only its review waits.
+    assert by_text["fact B"].material
+    assert by_text["fact B"].review_disposition == "deferred"
+    assert by_text["fact B"].review_deferred_reason == "q4 at capacity"
     assert by_text["fact B"].questions == [1, 4]
     assert merge.material_partition(by_text["fact B"]) == "q4"
+    # And the repeat's extra question did not move it into q1.
+    assert by_text["fact B"].partition == "q4"
 
 
 def test_relationships_are_revoked_when_the_parent_stops_being_supported():
