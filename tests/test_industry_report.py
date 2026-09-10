@@ -1047,3 +1047,60 @@ def test_a16_history_stays_in_the_audit_record(tmp_path):
     assert pathlib.Path(path).name == "t1.audit.json"
     written = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     assert written["resolved"] == 1
+
+
+def test_u2_03_removal_never_corrupts_a_paragraph_that_quotes_its_premise():
+    """Sequential replacement delivered "Therefore: [REMOVED] ..." (U2-03)."""
+    premise = "This market has no competing suppliers."
+    text = (
+        f"{premise}\n\n"
+        f"Therefore: {premise} Prices are dictated.\n\n"
+        "**Accordingly** margins expand."
+    )
+    section = records.Section(id="intro", title="I", text=text)
+    blocks = report.blocks_of(section)
+    # Emphasis and ordinary consequence phrasing are both recognised.
+    assert blocks[1].depends_on == blocks[0].id
+    assert blocks[2].depends_on == blocks[1].id
+    assert [b.id for b in report.dependents_of(section, blocks[0].id)] == [
+        blocks[1].id,
+        blocks[2].id,
+    ]
+    issues = [
+        records.Issue(
+            id=f"I{n}",
+            key=f"k{n}",
+            category="unsupported",
+            severity="material",
+            target="intro",
+            requested_action="remove",
+            text=unit,
+        )
+        for n, unit in enumerate([premise, blocks[1].text], start=1)
+    ]
+    out = report.redact(text, issues, "intro", "[REMOVED]")
+    # The dependent goes whole; no half-removed sentence survives.
+    assert "Prices are dictated" not in out
+    assert "competing suppliers" not in out
+    assert "margins expand" in out
+
+
+def test_u2_03_ordinary_consequence_phrasings_are_recognised():
+    for opener in (
+        "Accordingly",
+        "For this reason",
+        "**Therefore**",
+        "> Consequently",
+        "因此",
+        "据此",
+    ):
+        section = records.Section(
+            id="s", title="T", text=f"A premise.\n\n{opener}, B follows."
+        )
+        blocks = report.blocks_of(section)
+        assert blocks[1].depends_on == blocks[0].id, opener
+    # And an unrelated paragraph does not depend on the one before it.
+    plain = records.Section(
+        id="s", title="T", text="A premise.\n\nSeparately, C is true."
+    )
+    assert report.blocks_of(plain)[1].depends_on is None

@@ -397,6 +397,37 @@ def stored_rank(candidate: records.DeliveryCandidate) -> tuple[int, int]:
     return (level_rank(candidate.level), _STATUS_RANK.get(candidate.status, 0))
 
 
+def _reaching(
+    issue: records.Issue,
+    sections: list[records.Section],
+    ids: set[str],
+) -> list[records.Issue]:
+    """The retained sections an objection raised since applies to.
+
+    Sections are renamed between drafts, so an objection's target need
+    not name anything in the body being retained. Three cases, and none
+    of them may let the objection lapse (U2-01, U2-02):
+
+    - it carries exact text, and some retained section holds that text:
+      it applies to that section, under that section's id;
+    - it names a retained section: it applies there;
+    - it names nothing this body has: it applies to **every** section,
+      because we cannot tell which one holds what it faulted, and the
+      whole point of retaining a body is that it was already reviewed.
+    """
+    if issue.text:
+        holding = [s for s in sections if issue.text in s.text]
+        return [issue.model_copy(update={"target": s.id}) for s in holding]
+    if issue.target in ids:
+        return [issue]
+    if issue.severity != "material" or issue.category not in (
+        "unsupported",
+        "contradiction",
+    ):
+        return []
+    return [issue.model_copy(update={"target": s.id}) for s in sections]
+
+
 def issues_for_candidate(
     candidate: records.DeliveryCandidate,
     current: dict[str, records.Issue],
@@ -415,15 +446,20 @@ def issues_for_candidate(
     the later draft's review had faulted (U2-01).
     """
     applies = dict(candidate.issues)
-    body = "\n".join(section.text for section in candidate.sections)
-    sections = {section.id for section in candidate.sections}
+    sections = list(candidate.sections)
+    ids = {section.id for section in sections}
     for issue_id, issue in current.items():
         if issue_id not in applies:
-            reaches = (
-                issue.text in body if issue.text else issue.target in sections
-            )
-            if reaches:
-                applies[issue_id] = issue
+            reaching = _reaching(issue, sections, ids)
+            for retargeted in reaching:
+                # One retarget keeps the issue's own id; only a
+                # spread across several sections needs distinct keys.
+                key = (
+                    issue_id
+                    if len(reaching) == 1
+                    else f"{issue_id}@{retargeted.target}"
+                )
+                applies[key] = retargeted
             continue
         if (
             issue.status != applies[issue_id].status
@@ -1353,6 +1389,19 @@ def uncomputed_comparison(
         claim = claims[cid]
         metric = " ".join((claim.dimension or "").split()).casefold()
         groups.setdefault(metric, set()).add(cid)
+    # A declared comparison across metrics -- "capex is 10% of revenue"
+    # -- is a real obligation that per-metric grouping splits into two
+    # singletons and then ignores. It is kept as a group of its own
+    # (U2-05).
+    declared = {
+        cid
+        for cid in finding.compares
+        if cid in claims
+        and cid in finding.claim_ids
+        and claims[cid].quantity is not None
+    }
+    if len(declared) >= 2:
+        groups["declared"] = declared
     computed = [
         {item.claim_id for item in calculation.inputs}
         for cid in finding.claim_ids
@@ -2094,16 +2143,17 @@ def resolve_issues(state: state_module.IndustryState) -> dict[str, Any]:
         resolved = None
         target = issue.target
         drafted = {section.id for section in state.get("sections", [])}
-        if target.startswith("Q") and target[1:].isdigit():
+        if target in drafted:
+            # A section named `C1` is a section, not claim C1, and a
+            # section named `Q1` is not question 1. Reading either as
+            # the other cleared a section's unsupported-wording
+            # objection because an unrelated claim was supported, or an
+            # unrelated question covered (U2-02). A draft target closes
+            # only on a clean later review.
+            resolved = None
+        elif target.startswith("Q") and target[1:].isdigit():
             if coverage.get(int(target[1:])) == "covered":
                 resolved = "question covered"
-        elif target in drafted:
-            # A section named `C1` is a section, not claim C1. Reading it
-            # as one resolved a section's unsupported-wording objection
-            # because an unrelated claim happened to be supported
-            # (U2-02). A draft target closes only on a clean later
-            # review, which the branch below already does.
-            resolved = None
         elif target in claims:
             claim = claims[target]
             if issue.category == "contradiction" and claim.is_reviewed():
@@ -3093,13 +3143,25 @@ def build_graph(
         update["issues"] = issues
         if created:
             update["phase"] = "acquisition"
+        before_claims = state.get("claims", {})
         settled = sum(
             1
             for cid in pending
             if cid in reviewed_claims
             and not reviewed_claims[cid].needs_review()
-            and state.get("claims", {}).get(cid) is not None
-            and state["claims"][cid].needs_review()
+            and before_claims.get(cid) is not None
+            and before_claims[cid].needs_review()
+        )
+        # A round that confirmed only relationships settled something:
+        # counting claims alone called it a stall and cut off a review
+        # that was making progress (U2 recheck).
+        before_relations = state.get("relationships", {})
+        settled += sum(
+            1
+            for rid, relation in applied["relationships"].items()
+            if relation.review != "unreviewed"
+            and rid in before_relations
+            and before_relations[rid].review == "unreviewed"
         )
         stalls = 0 if settled else state.get("review_stalls", 0) + 1
         update["review_stalls"] = stalls
@@ -3172,15 +3234,6 @@ def build_graph(
         stage = issue_stage(open_material) or "write"
         cycle = state.get("cycle", 0) + 1
         blocked = acquisition_blocked(state, limits)
-        if stage == "write" and blocked and not _evidence_moved(state):
-            # The one editorial correction over unchanged evidence has
-            # been taken. Rewording the objection is not new evidence,
-            # however many new issue ids it mints (U2-09).
-            log.append(
-                "remediate: the editorial correction over this evidence is "
-                "spent; delivering what stands"
-            )
-            stage = "deliver"
         if stage in ("research", "analyze") and blocked:
             # No evidence-changing action can run, so re-analysing the
             # same evidence is not remediation -- it is the loop run 7
@@ -3193,6 +3246,18 @@ def build_graph(
                 f"acquired ({blocked}); routing to a bounded correction"
             )
             stage = "write"
+        # Checked *after* that redirect, or a persistent analysis issue
+        # buys a fresh correction every cycle by arriving as "analyze"
+        # and being rewritten to "write" (U2-09, U2 recheck).
+        if stage == "write" and blocked and not _evidence_moved(state):
+            # The one editorial correction over unchanged evidence has
+            # been taken. Rewording the objection is not new evidence,
+            # however many new issue ids it mints.
+            log.append(
+                "remediate: the editorial correction over this evidence is "
+                "spent; delivering what stands"
+            )
+            stage = "deliver"
         return {
             "issues": issues,
             "cycle": cycle,
@@ -3334,7 +3399,10 @@ def build_graph(
                 section_id = report.resolve_section(
                     state.get("sections", []), problem.section_id
                 )
-                if section_id != problem.section_id:
+                unresolved = section_id not in {
+                    s.id for s in state.get("sections", [])
+                }
+                if section_id != problem.section_id or unresolved:
                     update["route_log"].append(
                         f"final_review: section {problem.section_id!r} "
                         + (
@@ -3367,6 +3435,31 @@ def build_graph(
                     text=block.text if block is not None else None,
                 )
                 flagged.add(issue.key)
+                if (
+                    unresolved
+                    and problem.severity == "material"
+                    and (problem.category in ("unsupported", "contradiction"))
+                ):
+                    # The objection names no section of this draft, so
+                    # nothing can locate what it faulted. It stands
+                    # against every section rather than against none
+                    # (U2-02).
+                    for section in state.get("sections", []):
+                        issues, spread = merge.open_issue(
+                            issues,
+                            problem.category,
+                            problem.severity,
+                            section.id,
+                            action,
+                            f"[{problem.section_id}] names no section of "
+                            f"this draft: {problem.description}",
+                            draft_version=version,
+                        )
+                        flagged.add(spread.key)
+                    update["route_log"].append(
+                        f"final_review: {problem.section_id!r} stands "
+                        "against every section"
+                    )
                 if block is not None and problem.category in (
                     "unsupported",
                     "contradiction",

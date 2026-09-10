@@ -4231,3 +4231,99 @@ def test_u2_11_the_sdk_per_model_record_fills_the_cache_categories():
     # One category alone is not a cache report.
     half = records.provider_usage({"cache_read_input_tokens": 7}, None)
     assert half["complete"] is False
+
+
+def test_u2_01_a_renamed_section_does_not_shed_its_objection():
+    """Draft 2 renamed the section; the objection must still bind (U2-01)."""
+    retained = records.Section(
+        id="intro", title="I", text="This market has one supplier [C1]."
+    )
+    candidate = records.DeliveryCandidate(
+        draft_version=1,
+        sections=[retained],
+        subject=records.ReviewSubject(
+            digest="d", sections={"intro": "s"}, section_ids=["intro"]
+        ),
+        issues={},
+    )
+    exact = records.Issue(
+        id="I1",
+        key="unsupported:new_intro",
+        category="unsupported",
+        severity="material",
+        target="new_intro",
+        requested_action="remove",
+        description="unsupported",
+        draft_version=2,
+        text="This market has one supplier [C1].",
+    )
+    applies = graph_module.issues_for_candidate(candidate, {"I1": exact})
+    assert applies["I1"].target == "intro", "retargeted to the retained id"
+    assert report.blocking_issues([], retained) == []
+    assert (
+        report.redact(retained.text, [applies["I1"]], "intro", "[X]") == "[X]"
+    )
+    # A coarse objection that names nothing in this body reaches every
+    # section of it, rather than lapsing.
+    coarse = exact.model_copy(update={"id": "I2", "text": None})
+    spread = graph_module.issues_for_candidate(candidate, {"I2": coarse})
+    assert [i.target for i in spread.values()] == ["intro"]
+    assert report.blocking_issues(list(spread.values()), retained)
+
+
+def test_u2_02_a_section_named_q1_is_not_question_one():
+    section = records.Section(id="Q1", title="Overview", text="text [C2].")
+    issue = records.Issue(
+        id="I1",
+        key="unsupported:Q1",
+        category="unsupported",
+        severity="material",
+        target="Q1",
+        requested_action="remove",
+        description="unsupported wording",
+        draft_version=1,
+    )
+    state = {
+        "sections": [section],
+        "claims": {},
+        "issues": {"I1": issue},
+        "findings": {},
+        "coverage": [records.Coverage(question=1, status="covered", note="n")],
+        "evidence": {},
+    }
+    assert graph_module.resolve_issues(state)["issues"]["I1"].status == "open"
+
+
+def test_u2_05_a_declared_cross_metric_comparison_is_its_own_obligation():
+    claims = {
+        "C1": records.Claim(
+            id="C1",
+            statement="revenue",
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="revenue",
+            quantity=_quantity(52.0),
+        ),
+        "C2": records.Claim(
+            id="C2",
+            statement="capex",
+            kind="fact",
+            evidence_ids=["E1"],
+            dimension="capex",
+            quantity=_quantity(5.2),
+        ),
+    }
+    finding = records.Finding(
+        id="F1",
+        conclusion="Capex is 10% of revenue",
+        claim_ids=["C1", "C2"],
+        mechanism="m",
+        implication="i",
+        counterargument="c",
+        uncertainty="u",
+        monitor="mo",
+        compares=["C1", "C2"],
+    )
+    # Two metrics, one declared comparison: per-metric grouping alone
+    # made two singletons and returned nothing (U2-05).
+    assert graph_module.uncomputed_comparison(finding, claims, {}) == "C1, C2"

@@ -57,12 +57,26 @@ class CitationProblem:
 
 # Words that make a paragraph a consequence of the one before it. If
 # the premise goes, so does the conclusion drawn from it.
+_EMPHASIS = re.compile(r"^[*_>\s]+")
 _CONSEQUENCE = re.compile(
-    r"^(?:therefore|so\b|thus|hence|as a result|consequently|that means|"
-    r"this means|it follows)"
-    r"|^(?:因此|所以|这意味着|由此|故而|从而|可见)",
+    r"^(?:therefore|so\b|thus|hence|accordingly|consequently|"
+    r"as a result|for (?:this|that) reason|that means|this means|"
+    r"it follows|which means|meaning that|the (?:result|upshot) is|"
+    r"in consequence)"
+    r"|^(?:因此|所以|这意味着|由此|故而|从而|可见|因而|据此|于是)",
     re.IGNORECASE,
 )
+
+
+def _is_consequence(text: str) -> bool:
+    """Whether a paragraph's own opening makes it follow from the last.
+
+    Markdown emphasis and quoting are stripped first: a bold
+    ``**Therefore**`` is the same word (U2-03).
+    """
+    return bool(_CONSEQUENCE.match(_EMPHASIS.sub("", text.strip())))
+
+
 _SEPARATOR_ROW = re.compile(r"^\|?\s*:?-{2,}")
 _LIST_MARK = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 
@@ -154,7 +168,7 @@ def blocks_of(section: records.Section) -> list[Block]:
             if previous is not None
             and kind == "paragraph"
             and previous.kind == "paragraph"
-            and _CONSEQUENCE.match(text.strip())
+            and _is_consequence(text)
             else None
         )
         blocks.append(
@@ -326,12 +340,43 @@ def redact(
     units = removable_issue_units(issues, section_id)
     blocked = set(unremovable_units(text, units))
     rows = [u for u in units if _is_row(u) and u not in blocked]
-    for unit in units:
-        if not _is_row(unit) and unit not in blocked:
-            text = text.replace(unit, note)
+    prose = [u for u in units if not _is_row(u) and u not in blocked]
+    if prose:
+        text = _replace_spans(text, prose, note)
     if rows:
         text = _drop_rows(text, rows, note)
     return text
+
+
+def _replace_spans(text: str, units: list[str], note: str) -> str:
+    """Replace every unit, all located in the *original* text.
+
+    Sequential ``str.replace`` corrupted overlapping units: a dependent
+    paragraph often quotes its premise verbatim, so removing the premise
+    first rewrote the dependent, and the dependent's own replacement
+    then matched nothing -- delivering "Therefore: [REMOVED] Suppliers
+    can dictate prices" (U2-03). Every span is found against the text as
+    it arrived; where two overlap the longer one wins, because it is the
+    larger claim about what must go.
+    """
+    spans: list[tuple[int, int]] = []
+    for unit in sorted(set(units), key=len, reverse=True):
+        start = text.find(unit)
+        while start >= 0:
+            end = start + len(unit)
+            if not any(start < b and a < end for a, b in spans):
+                spans.append((start, end))
+            start = text.find(unit, start + 1)
+    if not spans:
+        return text
+    out = []
+    cursor = 0
+    for start, end in sorted(spans):
+        out.append(text[cursor:start])
+        out.append(note)
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def blocking_issues(
