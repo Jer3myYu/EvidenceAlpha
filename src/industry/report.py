@@ -199,12 +199,28 @@ def blocks_of(section: records.Section) -> list[Block]:
         lines = [line for line in paragraph.split("\n") if line.strip()]
         if not lines:
             continue
-        if all(_is_row(line) for line in lines):
-            units.extend(("row", line.strip()) for line in lines)
-        elif all(_LIST_MARK.match(line.strip()) for line in lines):
-            units.extend(("list_item", line.strip()) for line in lines)
-        else:
-            units.append(("paragraph", paragraph.strip()))
+        # Segmented by line kind, not by blank line. A table fused to
+        # the sentence above it by a single newline is not one
+        # reviewable unit: treating it as one made removing the
+        # sentence take every row of the table with it, including rows
+        # nobody objected to (U2-03).
+        prose: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            kind = (
+                "row"
+                if _is_row(line)
+                else "list_item" if _LIST_MARK.match(stripped) else "paragraph"
+            )
+            if kind == "paragraph":
+                prose.append(line)
+                continue
+            if prose:
+                units.append(("paragraph", "\n".join(prose).strip()))
+                prose = []
+            units.append((kind, stripped))
+        if prose:
+            units.append(("paragraph", "\n".join(prose).strip()))
     blocks: list[Block] = []
     for number, (kind, text) in enumerate(units, start=1):
         previous = blocks[-1] if blocks else None
@@ -216,6 +232,14 @@ def blocks_of(section: records.Section) -> list[Block]:
             and _is_consequence(text)
             else None
         )
+        if depends is None and kind == "paragraph" and _is_consequence(text):
+            # A conclusion stated before its evidence -- "Therefore X",
+            # then the table that is supposed to show it -- is an
+            # ordinary way to write a report, and the link runs forward.
+            # Marked with the next block's id and resolved against that
+            # block's whole run, so removing any row of the table takes
+            # the conclusion drawn from it (U2-03).
+            depends = f"{section.id}:b{number + 1}"
         blocks.append(
             Block(
                 id=f"{section.id}:b{number}",
@@ -262,10 +286,41 @@ def dependents_of_text(section: records.Section, text: str) -> list[Block]:
         }
     if not doomed:
         return []
-    for block in blocks:
-        if block.depends_on in doomed:
-            doomed.add(block.id)
+    runs = _runs(blocks)
+    changed = True
+    while changed:
+        changed = False
+        for block in blocks:
+            if block.id in doomed or block.depends_on is None:
+                continue
+            # Either the block it names, or any block in that block's
+            # run: a conclusion drawn from a table depends on the table,
+            # not on whichever row happens to be listed first.
+            if doomed & runs.get(block.depends_on, {block.depends_on}):
+                doomed.add(block.id)
+                changed = True
     return [b for b in blocks if b.id in doomed and b.text != text]
+
+
+def _runs(blocks: list[Block]) -> dict[str, set[str]]:
+    """Each block's run of consecutive same-kind neighbours."""
+    runs: dict[str, set[str]] = {}
+    current: list[Block] = []
+    for block in blocks + [None]:  # type: ignore[list-item]
+        if (
+            block is not None
+            and current
+            and block.kind == current[-1].kind
+            and block.kind in ("row", "list_item")
+        ):
+            current.append(block)
+            continue
+        if current:
+            ids = {b.id for b in current}
+            for one in current:
+                runs[one.id] = ids
+        current = [block] if block is not None else []
+    return runs
 
 
 def resolve_section(sections: list[records.Section], target: str) -> str:

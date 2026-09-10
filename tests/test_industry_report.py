@@ -1294,3 +1294,53 @@ def test_u2_03_removal_is_one_pass_over_the_original_text():
     assert "| [X] |" not in out
     for line in out.split("\n"):
         assert not (line.strip() == "[X]" and False)
+
+
+def test_u2_03_a_table_fused_to_a_sentence_is_not_one_unit():
+    """Grouping by blank line made a table fused to the sentence above it
+    a single block, so removing the sentence took every row with it,
+    including rows nobody objected to (U2-03)."""
+    premise = "This market has no competing suppliers."
+    first = (
+        "| Basis | Implication |\n|---|---|\n"
+        f"| {premise} | Suppliers can dictate prices. |\n"
+        "| Contract terms | Payment is due on acceptance. |\n"
+        "| Warranty | Warranty claims remain valid after acceptance. |"
+    )
+    second = (
+        "| Basis | Implication |\n|---|---|\n"
+        f"| {premise} | Suppliers can dictate prices. |\n"
+        "| Contract terms | Payment is due on acceptance. |"
+    )
+    text = f"Therefore suppliers can dictate prices.\n{first}\n\n{second}"
+    section = records.Section(id="s", title="T", text=text)
+    kinds = [b.kind for b in report.blocks_of(section)]
+    assert kinds[0] == "paragraph" and set(kinds[1:]) == {"row"}
+    row = next(
+        b
+        for b in report.blocks_of(section)
+        if b.kind == "row" and premise in b.text
+    )
+    # The conclusion precedes its table, so the dependency runs forward.
+    falling = report.dependents_of_text(section, row.text)
+    assert [b.id for b in falling] == ["s:b1"]
+    issues = [
+        records.Issue(
+            id=f"I{n}",
+            key=f"k{n}",
+            category="unsupported",
+            severity="material",
+            target="s",
+            requested_action="remove",
+            text=unit,
+        )
+        for n, unit in enumerate([row.text] + [b.text for b in falling], 1)
+    ]
+    assert report.blocking_issues(issues, section) == []
+    out = report.redact(text, issues, "s", "[X]")
+    # All four at once: the conclusion and both disputed rows go, and
+    # every row nobody objected to survives.
+    assert "Therefore suppliers" not in out
+    assert premise not in out
+    assert "Warranty claims remain valid after acceptance." in out
+    assert out.count("Payment is due on acceptance.") == 2
