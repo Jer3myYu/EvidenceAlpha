@@ -695,6 +695,13 @@ class EvidenceAttachment(Record):
     note: str = ""
 
 
+# What the returned evidence is worth, judged in Python from the records
+# the session actually produced -- separate from whether the session ran
+# (plan D-U6). Run 7's T2 finished successfully having fetched nothing:
+# 17 findings on 37 search snippets, and it was recorded ``done``.
+EvidenceAcceptance = Literal["accepted", "partial", "insufficient"]
+
+
 class Task(Record):
     """A bounded unit of research work with dependencies and acceptance."""
 
@@ -707,6 +714,12 @@ class Task(Record):
     references: list[str] = pydantic.Field(default_factory=list)
     required_fields: list[str] = pydantic.Field(default_factory=list)
     acceptance: str = ""
+    # The entities or areas this task must actually cover (plan D-U5).
+    # Run 7's first task asked for nine areas and at least ten companies
+    # in one session; nothing checked that against the session's own
+    # tool allowance before dispatching it. Naming the targets is what
+    # makes feasibility checkable in Python.
+    targets: list[str] = pydantic.Field(default_factory=list)
     status: TaskStatus = "pending"
     attempts: int = 0
     issue_id: str | None = None
@@ -867,6 +880,14 @@ class TaskResult(Record):
     gaps: list[str] = pydantic.Field(default_factory=list)
     usage: Usage = pydantic.Field(default_factory=Usage)
     error: str | None = None
+    # Whether the evidence behind this result is good enough for what
+    # the task asked, decided in Python from the records above (plan
+    # D-U6). ``status`` stays execution: a session can succeed and be
+    # insufficient. ``unmet`` names the finding statements whose support
+    # is snippets alone, so the gap is targeted rather than making the
+    # whole task run again.
+    evidence_acceptance: EvidenceAcceptance = "accepted"
+    unmet: list[str] = pydantic.Field(default_factory=list)
 
 
 class Brief(Record):
@@ -1270,6 +1291,10 @@ class Limits(Record):
     follow_up_rounds: int = pydantic.Field(default=2, ge=0)
     max_turns: int = pydantic.Field(default=12, gt=0)
     tools_per_attempt: int = pydantic.Field(default=24, gt=0)
+    # Tool calls one named target is assumed to need before a task is
+    # judged feasible (plan D-U5): a search and a fetch at least, and a
+    # passage retrieval from what was fetched.
+    tools_per_target: int = pydantic.Field(default=3, gt=0)
     concurrency: int = pydantic.Field(default=2, gt=0)
     # The reservation of one attempt. Headline runs 1 and 3 observed
     # 31-670 s per attempt (map attempts 484-550 s), so 900 s bounds them.

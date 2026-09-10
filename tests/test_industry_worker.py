@@ -705,3 +705,110 @@ def test_the_run_never_delivers_over_a_surviving_write(tmp_path):
     assert backend.writes >= 2
     assert all(a.status == "failed" for a in state["attempts"].values())
     assert budget.ledger(state).wall_clock_s >= backend.writes * 0.4
+
+
+def _acceptance_task(**kw):
+    return records.Task(
+        id="T1",
+        kind="research",
+        role="company",
+        objective="profile the comparison companies",
+        **kw,
+    )
+
+
+def test_a06_a_task_can_finish_and_still_be_evidence_insufficient():
+    """A06: run 7's T2 returned 17 findings on 37 snippets and was `done`."""
+    task = _acceptance_task(required_fields=["revenue", "period"])
+    collector = tools.Collector("T1.1", "T1")
+    source = collector.source_for("https://a.example/x", "A page", "web_search")
+    snippet = collector.add_evidence(
+        source, "text", "search snippet", "snippet", "search_snippet"
+    )
+    output = worker.TaskOutput(
+        summary="s",
+        findings=[
+            records.FindingDraft(
+                statement="company A had revenue of 1.2bn",
+                evidence_refs=[f"[{snippet.id}]"],
+                material=True,
+            )
+        ],
+    )
+    assessed = worker.assess_evidence(task, output, collector)
+    assert assessed["evidence_acceptance"] == "insufficient"
+    assert assessed["unmet"] == ["company A had revenue of 1.2bn"]
+
+
+def test_a06_a_passage_backed_finding_is_accepted():
+    task = _acceptance_task(required_fields=["revenue", "period"])
+    collector = tools.Collector("T1.1", "T1")
+    source = collector.source_for("https://a.example/x", "A filing", "pdf")
+    passage = collector.add_evidence(
+        source,
+        "revenue was 1.2bn in FY2025",
+        "page 12",
+        "passage",
+        "pdf_text",
+        version_id="v1",
+    )
+    output = worker.TaskOutput(
+        summary="s",
+        findings=[
+            records.FindingDraft(
+                statement="company A had revenue of 1.2bn",
+                evidence_refs=[passage.id],
+                material=True,
+            )
+        ],
+    )
+    assert worker.assess_evidence(task, output, collector) == {
+        "evidence_acceptance": "accepted",
+        "unmet": [],
+    }
+
+
+def test_a06_a_qualitative_task_is_not_held_to_the_original_context_rule():
+    """Document 01 forbids making PDF fetching a universal rule."""
+    task = _acceptance_task(required_fields=["boundary", "terminology"])
+    collector = tools.Collector("T1.1", "T1")
+    source = collector.source_for("https://a.example/x", "A page", "web_search")
+    snippet = collector.add_evidence(
+        source, "text", "search snippet", "snippet", "search_snippet"
+    )
+    output = worker.TaskOutput(
+        summary="s",
+        findings=[
+            records.FindingDraft(
+                statement="the boundary excludes FPD masks",
+                evidence_refs=[snippet.id],
+            )
+        ],
+    )
+    assert (
+        worker.assess_evidence(task, output, collector)["evidence_acceptance"]
+        == "accepted"
+    )
+
+
+def test_a06_a_mixed_result_is_partial_not_insufficient():
+    task = _acceptance_task(required_fields=["revenue"])
+    collector = tools.Collector("T1.1", "T1")
+    web = collector.source_for("https://a.example/x", "A page", "web_search")
+    snippet = collector.add_evidence(
+        web, "t", "search snippet", "snippet", "search_snippet"
+    )
+    doc = collector.source_for("https://a.example/f.pdf", "A filing", "pdf")
+    passage = collector.add_evidence(
+        doc, "t", "page 3", "passage", "pdf_text", version_id="v1"
+    )
+    output = worker.TaskOutput(
+        summary="s",
+        findings=[
+            records.FindingDraft(statement="thin", evidence_refs=[snippet.id]),
+            records.FindingDraft(statement="solid", evidence_refs=[passage.id]),
+        ],
+    )
+    assessed = worker.assess_evidence(task, output, collector)
+    assert assessed["evidence_acceptance"] == "partial"
+    assert assessed["unmet"] == ["thin"]

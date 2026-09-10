@@ -1441,7 +1441,7 @@ def _tasks_from_plan(
     evidence = state.get("evidence", {})
     log: list[str] = []
     key_to_id: dict[str, str] = {}
-    accepted: list[roles.TaskSpec] = []
+    accepted: list[tuple[str, roles.TaskSpec]] = []
     next_number = schedule.task_number(merge.next_id("T", tasks))
     for spec in plan.tasks:
         if spec.key in key_to_id:
@@ -1472,11 +1472,34 @@ def _tasks_from_plan(
             issues[issue.id] = issue.model_copy(
                 update={"attempts": issue.attempts + 1, "evidence_added": False}
             )
-        key_to_id[spec.key] = f"T{next_number}"
-        next_number += 1
-        accepted.append(spec)
-    for spec in accepted:
-        task_id = key_to_id[spec.key]
+        chunks = schedule.decompose(spec.targets, limits)
+        if len(chunks) > 1:
+            # Infeasible as proposed: the session's tool allowance
+            # cannot evidence this many named targets. Decompose, and
+            # say plainly what did not fit rather than dispatching a
+            # scope the session cannot meet (plan D-U5).
+            log.append(
+                f"prepare_tasks: {spec.key!r} names {len(spec.targets)} "
+                f"targets; one session can evidence "
+                f"{schedule.target_capacity(limits)}, so it is split into "
+                f"{len(chunks)}"
+            )
+        for index, chunk in enumerate(chunks):
+            named = ", ".join(chunk) or "no targets"
+            if len(accepted) >= slots:
+                log.append(
+                    f"prepare_tasks: {spec.key!r} part {index + 1} of "
+                    f"{len(chunks)} ({named}) has no slot; recorded as an "
+                    "explicit partial plan"
+                )
+                continue
+            part = spec.model_copy(update={"targets": chunk})
+            key = spec.key if index == 0 else f"{spec.key}#{index + 1}"
+            key_to_id[key] = f"T{next_number}"
+            next_number += 1
+            accepted.append((key, part))
+    for key, spec in accepted:
+        task_id = key_to_id[key]
         depends = []
         for dep in spec.depends_on:
             resolved = key_to_id.get(dep, dep if dep in tasks else None)
@@ -1496,6 +1519,7 @@ def _tasks_from_plan(
             references=references,
             required_fields=spec.required_fields,
             acceptance=spec.acceptance,
+            targets=spec.targets,
             issue_id=issue_id,
         )
         log.append(f"{task_id} ({spec.role}): {spec.objective[:80]}")
@@ -1505,6 +1529,62 @@ def _tasks_from_plan(
             "beyond the budget were not created"
         )
     return tasks, issues, log
+
+
+def company_obligation(
+    state: state_module.IndustryState,
+    tasks: dict[str, records.Task],
+    issues: dict[str, records.Issue],
+    reason: str,
+) -> tuple[dict[str, records.Issue], list[str]]:
+    """A required comparison gets company tasks, or a recorded failure.
+
+    Run 7 defined a Company Researcher role, gave it a focus and a
+    prompt, and never created a single task for it: T1 and T2 were both
+    ``industry`` and T3-T6 were repairs. Q7 could then be judged on
+    whatever entities happened to turn up. A role definition is not a
+    comparison (plan D-U5, A18).
+
+    So when the brief requires Q7 and the map has named participants,
+    either a company task exists or this records an explicit admission
+    failure naming what stopped it. What it never does is let the
+    obligation disappear: the issue is material, it reaches coverage and
+    the reader, and it says which budget dimension was binding.
+    """
+    brief = state.get("brief")
+    if 7 not in records.required_ids(brief):
+        return issues, []
+    if any(task.role == "company" for task in tasks.values()):
+        return issues, []
+    industry_map = state.get("map", records.IndustryMap())
+    if not industry_map.participants:
+        # Nothing has been discovered to compare yet; the obligation is
+        # real but not yet actionable.
+        return issues, []
+    key = "q7:no-company-task"
+    if any(issue.key == key for issue in issues.values()):
+        return issues, []
+    updated = dict(issues)
+    issue_id = merge.next_id("I", updated)
+    updated[issue_id] = records.Issue(
+        id=issue_id,
+        key=key,
+        category="missing_evidence",
+        severity="material",
+        target="Q7",
+        description=(
+            "The brief requires a company comparison and no company "
+            f"evidence task was created. {reason}"
+        ),
+        requested_action="research",
+        next_step=(
+            "Assign a company task for the selected comparison companies."
+        ),
+    )
+    return updated, [
+        f"{issue_id}: Q7 requires company evidence and no company task "
+        f"was created ({reason})"
+    ]
 
 
 def followups_exhausted(issue: records.Issue, limits: records.Limits) -> bool:
@@ -1920,6 +2000,17 @@ def build_graph(
                         log.append(
                             f"prepare_tasks: {owned} owns the industry map"
                         )
+                if not first:
+                    # The handoff that plans work against the merged map
+                    # is where a company comparison is either funded or
+                    # explicitly recorded as unfunded (plan D-U5).
+                    issues, obligation = company_obligation(
+                        state,
+                        tasks,
+                        issues,
+                        f"the plan filled {slots} slot(s) with other work",
+                    )
+                    log.extend(obligation)
                 update.update({"tasks": tasks, "issues": issues})
                 update["route_log"].extend(log)
                 if plan.rationale:

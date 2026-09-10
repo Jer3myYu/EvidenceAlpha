@@ -2980,3 +2980,84 @@ def test_d_u6b_a_review_batch_groups_claims_that_share_a_source():
         "C1",
         "C3",
     ]
+
+
+def test_a18_a_required_comparison_gets_a_task_or_a_recorded_failure():
+    """A18: a role definition is not a comparison (plan D-U5).
+
+    Run 7 defined a Company Researcher, gave it a focus and a prompt, and
+    never created one task for it.
+    """
+    industry_map = records.IndustryMap(
+        segments=[
+            records.Segment(
+                id="G1",
+                name="midstream",
+                stage="midstream",
+                description="d",
+                claim_id="C1",
+            )
+        ],
+        participants=[
+            records.Participant(
+                id="P1",
+                name="清溢光电",
+                segment_id="G1",
+                role="supplier",
+                selection_rationale="listed",
+                claim_id="C2",
+            )
+        ],
+    )
+    brief = records.Brief(
+        industry="光掩模", required_ids=[1, 7], priority=[1, 7]
+    )
+    state = {"brief": brief, "map": industry_map}
+    industry_only = {
+        "T1": records.Task(
+            id="T1", kind="research", role="industry", objective="o"
+        )
+    }
+    issues, log = graph_module.company_obligation(
+        state, industry_only, {}, "the plan filled 2 slot(s) with other work"
+    )
+    assert len(issues) == 1 and log
+    issue = next(iter(issues.values()))
+    assert issue.severity == "material" and issue.target == "Q7"
+    assert issue.category == "missing_evidence"
+    assert "the plan filled 2 slot(s)" in issue.description
+
+    # A company task satisfies it; so does a brief that does not ask.
+    with_company = {
+        **industry_only,
+        "T2": records.Task(
+            id="T2", kind="research", role="company", objective="o"
+        ),
+    }
+    assert graph_module.company_obligation(state, with_company, {}, "r") == (
+        {},
+        [],
+    )
+    narrow = {**state, "brief": records.Brief(industry="x", required_ids=[1])}
+    assert graph_module.company_obligation(narrow, industry_only, {}, "r") == (
+        {},
+        [],
+    )
+    # And it is recorded once, not once per planning round.
+    again, log2 = graph_module.company_obligation(
+        state, industry_only, issues, "r"
+    )
+    assert again == issues and log2 == []
+
+
+def test_a_task_naming_more_targets_than_a_session_can_cover_is_split():
+    """A05/D-U5: run 7's first task asked for nine areas and ten companies."""
+    limits = records.Limits(tools_per_attempt=6, tools_per_target=3)
+    assert schedule.target_capacity(limits) == 2
+    assert schedule.decompose(["a", "b", "c", "d", "e"], limits) == [
+        ["a", "b"],
+        ["c", "d"],
+        ["e"],
+    ]
+    # Deterministic: the Lead's order is preserved for replay.
+    assert schedule.decompose([], limits) == [[]]

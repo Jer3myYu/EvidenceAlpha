@@ -1216,6 +1216,22 @@ def merge_results(
         if result.status == "done":
             status: records.TaskStatus = "done"
             _fold_result(registry, result, task)
+            if result.evidence_acceptance != "accepted":
+                # The session ran and finished. Its evidence is another
+                # question, and the answer targets the findings that are
+                # short rather than making the whole task run again
+                # (plan D-U6).
+                registry.log.append(
+                    f"{task.id}: completed, evidence "
+                    f"{result.evidence_acceptance}: "
+                    f"{len(result.unmet)} finding(s) rest on search "
+                    "snippets alone and need original context"
+                )
+                for statement in result.unmet:
+                    registry.log.append(
+                        f"{task.id}: original context needed for "
+                        f"{statement}"
+                    )
         elif (
             not (result.error or "").startswith("schema")
             and task.attempts < limits.task_attempts

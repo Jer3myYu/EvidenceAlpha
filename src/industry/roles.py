@@ -148,6 +148,9 @@ class TaskSpec(records.Record):
     references: list[str] = pydantic.Field(default_factory=list)
     required_fields: list[str] = pydantic.Field(default_factory=list)
     acceptance: str = ""
+    # The named companies, segments, or areas this task must cover.
+    # Checked against the session's tool allowance before dispatch.
+    targets: list[str] = pydantic.Field(default_factory=list)
     issue_id: str | None = None
 
 

@@ -116,3 +116,23 @@ def ready(
         and all(updated[dep].status == "done" for dep in task.depends_on)
     ]
     return updated, ready_tasks
+
+
+def target_capacity(limits: records.Limits) -> int:
+    """How many named targets one attempt can plausibly evidence."""
+    return max(1, limits.tools_per_attempt // limits.tools_per_target)
+
+
+def decompose(targets: list[str], limits: records.Limits) -> list[list[str]]:
+    """Split a task's targets into chunks one session can actually do.
+
+    Run 7's first task requested nine areas and at least ten companies
+    in one session with a 24-call tool allowance. Nothing checked that
+    before dispatch, so the session did what it could and the plan's
+    stated scope silently became a fiction (plan D-U5).
+
+    Deterministic: the order the Lead gave is preserved, so a replay
+    decomposes identically.
+    """
+    size = target_capacity(limits)
+    return [targets[i : i + size] for i in range(0, len(targets), size)] or [[]]

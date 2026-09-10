@@ -463,7 +463,87 @@ def _result(
         gaps=output.gaps if output else [],
         usage=usage,
         error=error,
+        **assess_evidence(work.task, output, collector),
     )
+
+
+# Words that mark a finding as making a factual claim about a number or
+# a commercialization milestone -- the kind a search snippet cannot
+# settle. Matched on the required fields the task itself declared, not
+# on the prose, so this stays a check on the task's own contract.
+_ORIGINAL_CONTEXT_FIELDS = (
+    "revenue",
+    "profit",
+    "margin",
+    "share",
+    "capacity",
+    "price",
+    "capex",
+    "financial",
+    "metric",
+    "milestone",
+    "qualification",
+    "production",
+    "shipment",
+    "营收",
+    "收入",
+    "利润",
+    "毛利",
+    "份额",
+    "产能",
+    "价格",
+    "量产",
+)
+
+
+def needs_original_context(task: records.Task) -> bool:
+    """Whether this task's own required fields demand more than snippets."""
+    declared = " ".join(task.required_fields).casefold()
+    return any(word in declared for word in _ORIGINAL_CONTEXT_FIELDS)
+
+
+def assess_evidence(
+    task: records.Task,
+    output: TaskOutput | None,
+    collector: tools.Collector,
+) -> dict[str, Any]:
+    """Judge the evidence this session returned, separately from whether
+    it ran (plan D-U6, A06).
+
+    Run 7's T2 returned 17 findings backed by 37 search snippets, fetched
+    no source at all, and was recorded ``done``. Execution completion and
+    evidence acceptance were the same field, so nothing downstream could
+    tell a finished task from a supported one.
+
+    The judgement is Python's, over the records the session produced --
+    never the model's own report of how it did. A task whose required
+    fields name a metric or a milestone, whose findings rest on snippet
+    evidence alone, is ``insufficient``, and each such finding is named
+    so the gap can be repaired where it is rather than by running the
+    whole task again.
+    """
+    findings = output.findings if output else []
+    if not findings or not needs_original_context(task):
+        return {"evidence_acceptance": "accepted", "unmet": []}
+    kind_of = {item.id: item.kind for item in collector.evidence}
+    unmet = []
+    for finding in findings:
+        kinds = {
+            kind_of.get(_label(ref))
+            for ref in finding.evidence_refs
+            if _label(ref) in kind_of
+        }
+        if kinds and kinds <= {"snippet"}:
+            unmet.append(finding.statement[:120])
+    if not unmet:
+        return {"evidence_acceptance": "accepted", "unmet": []}
+    acceptance = "insufficient" if len(unmet) == len(findings) else "partial"
+    return {"evidence_acceptance": acceptance, "unmet": unmet}
+
+
+def _label(ref: str) -> str:
+    """``[E3]`` and ``E3`` name the same evidence."""
+    return ref.strip().strip("[]").strip()
 
 
 def _describe(watch: sdk_children.Watch, outstanding: tools.Outstanding) -> str:
