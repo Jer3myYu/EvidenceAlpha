@@ -6,7 +6,7 @@ import pathlib
 
 RUNTIME_MODEL = "gpt-5.6-sol"
 REHEARSAL_MODEL = "gpt-5.5"
-PROMPT_VERSION = "redesign-1"
+PROMPT_VERSION = "redesign-2-focused"
 LIMITS = {
     "session_seconds": 28800,
     "isolated_attempts": 10,
@@ -57,7 +57,7 @@ class Settings:
     context_documents: int = 2
     context_characters: int = 12000
     stage_seconds: int = 360
-    stage_allocations: tuple[int, ...] = (120, 600, 480, 240, 120, 120)
+    stage_allocations: tuple[int, ...] = (120, 480, 420, 240, 300, 120)
     export_seconds: int = 120
 
     def __post_init__(self) -> None:
@@ -102,3 +102,17 @@ class Settings:
 def load(path: pathlib.Path | None = None) -> Settings:
     """Load one explicit config file; never load credential files."""
     return Settings(**json.loads(path.read_text())) if path else Settings()
+
+
+# Explicit additive user authorization; historical LIMITS and ledger unchanged.
+DIAGNOSTIC_CASE_SECONDS = {"A": 180, "B": 180, "C": 300}
+DIAGNOSTIC_LIMITS = {
+    "session_seconds": 1800,
+    "invocation_seconds": 660,
+    "observable_tokens": 16000,
+    "isolated_attempts": 3,
+    "full_attempts": 0,
+    "research_workers": 1,
+    "search_calls": 0,
+    "fetch_attempts": 0,
+}

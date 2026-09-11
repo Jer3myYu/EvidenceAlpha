@@ -30,3 +30,7 @@ Stage 2 outcome and current navigation: `COMPLETION.md`, `NEXT_SESSION.md`,
 embedding indexes, builds passages per source, and preserves CRLF spans.
 `workflow.py` shares one absolute research deadline across active/queued workers.
 `RUNTIME_NOTES.md` records the measured CLI-loop decision, separate permission checks and remaining runtime limitations.
+
+## Focused additive diagnosis
+
+`docs/redesign/focused/` contains the saved-case freeze/one-case driver and predeclared outcomes. `budget.DiagnosticLedger` enforces the separately authorized A/B/C allowance while leaving historical Stage 2 limits and counters intact. Review material findings now carry `original_passages`; source tool identity/window context and failed-worker unsynthesized handoff remain in the existing tools/store/StageRunner. See `focused/OFFLINE_CHANGES.md`. No full-report acceptance is implied.

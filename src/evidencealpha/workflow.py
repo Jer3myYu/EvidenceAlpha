@@ -19,6 +19,28 @@ from evidencealpha import render
 from evidencealpha import tools
 
 
+class ResearchHandoffError(providers.ProviderError):
+    """A failed worker with bounded original evidence, not final findings."""
+
+    def __init__(self, message: str, handoff: dict) -> None:
+        super().__init__(message)
+        self.handoff = handoff
+
+
+def revision_input(review: dict, findings: dict) -> dict:
+    """Keep the draft, requirements and originals; omit upstream repetition."""
+    return {
+        **{
+            key: value
+            for key, value in review.items()
+            if key not in ("notes", "plan", "gaps", "unsynthesized_evidence")
+        },
+        "findings": findings,
+        "instruction": "Correct supported material issues; reject unsupported "
+        "objections against originals. Disclose unresolved conclusions.",
+    }
+
+
 class StageRunner:
     """Own tool rounds."""
 
@@ -90,15 +112,53 @@ class StageRunner:
             deadline if deadline is not None else float("inf"),
             time.monotonic() + record["seconds"],
         )
+        started_stage = time.monotonic()
+        duration = max(0, deadline - started_stage)
+        # Revision allocation: evidence <=60, writing <=210, margin 30.
+        # Shorter enclosing deadlines reduce evidence first, never extend it.
+        if role == "revision":
+            margin = min(30, duration * 0.1)
+            evidence_end = started_stage + min(
+                60, max(0, duration - margin - 210)
+            )
+            writing_seconds = min(210, duration - margin)
+        elif role in ("company", "industry"):
+            margin = min(5, duration * 0.05)
+            writing_seconds = min(60, duration * 0.35)
+            evidence_end = deadline - margin - writing_seconds
+        else:
+            margin, writing_seconds, evidence_end = 0, duration, deadline
+        final_end = deadline - margin
+        artifacts.write(
+            folder / "timing.json",
+            {
+                "stage_deadline_monotonic": deadline,
+                "evidence_deadline_monotonic": evidence_end,
+                "final_deadline_monotonic": final_end,
+                "writing_seconds": writing_seconds,
+                "margin_seconds": margin,
+            },
+        )
+        gathered = {}
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
             for turn in range(self.settings.tool_rounds):
-                remaining = deadline - time.monotonic()
+                final_turn = (
+                    turn == self.settings.tool_rounds - 1
+                    or time.monotonic()
+                    >= evidence_end - min(15, duration * 0.05)
+                    or (role == "revision" and turn >= 2)
+                )
+                call_deadline = (
+                    min(final_end, time.monotonic() + writing_seconds)
+                    if final_turn
+                    else evidence_end
+                )
+                remaining = call_deadline - time.monotonic()
                 if remaining <= 0:
                     raise providers.ProviderError("Stage deadline expired")
                 call_dir = folder / f"call-{turn}"
-                final_turn = turn == self.settings.tool_rounds - 1
                 available_tools = {} if final_turn else record["tools"]
                 prompt = json.dumps(
                     {
@@ -128,7 +188,7 @@ class StageRunner:
                     settings,
                     call_dir.resolve(),
                     remaining,
-                    deadline,
+                    call_deadline,
                     tuple(available_tools),
                 )
                 artifacts.write(call_dir / "request.txt", prompt)
@@ -199,6 +259,16 @@ class StageRunner:
                 output = parse_output(result.text, role)
                 messages.append({"role": "assistant", "content": result.text})
                 if not output.get("tool_calls"):
+                    if role in ("review", "recheck"):
+                        for issue in output["issues"]:
+                            for ref in issue.get("original_passages", []):
+                                original = self.tools.store.open_source(
+                                    ref["source_id"], ref["chunk_id"]
+                                )
+                                if ref["quote"] not in original["text"]:
+                                    raise ValueError(
+                                        "Review quote is absent from original"
+                                    )
                     status = "complete"
                     artifacts.write(folder / "output.json", output)
                     artifacts.write(folder / "output.md", output["content"])
@@ -208,16 +278,22 @@ class StageRunner:
                         "output_hash": artifacts.digest(output),
                         "output": output,
                     }
+                if final_turn:
+                    raise providers.ProviderError(
+                        "Final response requested tools"
+                    )
                 for call in output["tool_calls"]:
-                    if time.monotonic() >= deadline:
-                        raise providers.ProviderError("Stage deadline expired")
+                    if time.monotonic() >= evidence_end:
+                        break
                     source_versions = {
                         s["id"]: s["hash"] for s in self.tools.store.sources()
                     }
                     tool_started = time.monotonic()
                     try:
                         value = self.tools.call(
-                            call["name"], call["arguments"], deadline=deadline
+                            call["name"],
+                            call["arguments"],
+                            deadline=evidence_end,
                         )
                     except (OSError, ValueError, RuntimeError) as exc:
                         value = {"error": str(exc), "type": type(exc).__name__}
@@ -230,6 +306,28 @@ class StageRunner:
                         result=value,
                         seconds=time.monotonic() - tool_started,
                     )
+                    passages = value if isinstance(value, list) else [value]
+                    for passage in passages:
+                        if (
+                            isinstance(passage, dict)
+                            and passage.get("spans")
+                            and passage.get("text")
+                            and passage.get("source_id")
+                        ):
+                            key = (
+                                passage["source_id"],
+                                passage.get("chunk_id"),
+                            )
+                            if key not in gathered and len(gathered) < 12:
+                                if (
+                                    sum(
+                                        len(p["text"])
+                                        for p in gathered.values()
+                                    )
+                                    + len(passage["text"])
+                                    <= 16000
+                                ):
+                                    gathered[key] = passage
                     messages.append(
                         {
                             "role": "user",
@@ -249,6 +347,19 @@ class StageRunner:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+            if role in ("company", "industry"):
+                handoff = {
+                    "status": "unsynthesized_evidence",
+                    "limitation": "No final notes; not verified findings",
+                    "selection": (
+                        "At most 12 passages / 16000 characters; "
+                        "full retrievals remain in events.jsonl"
+                    ),
+                    "passages": list(gathered.values()),
+                    "error": str(exc),
+                }
+                artifacts.write(folder / "handoff.json", handoff)
+                raise ResearchHandoffError(str(exc), handoff) from exc
             raise
         finally:
             artifacts.write(
@@ -312,6 +423,20 @@ def parse_output(text: str, role: str) -> dict:
                 for key in ("location", "evidence", "impact", "suggestion")
             ):
                 raise ValueError("Malformed review finding")
+            refs = issue.get("original_passages", [])
+            if issue["severity"] == "material" and not refs:
+                raise ValueError(
+                    "Material objections require original passages"
+                )
+            if not isinstance(refs, list) or any(
+                not isinstance(ref, dict)
+                or any(
+                    not isinstance(ref.get(key), str) or not ref[key].strip()
+                    for key in ("source_id", "chunk_id", "quote")
+                )
+                for ref in refs
+            ):
+                raise ValueError("Malformed original passage reference")
     return value
 
 
@@ -322,13 +447,15 @@ def _source_inputs(store: documents.SourceStore, ids: list[str]) -> list[dict]:
         source = item["source"]
         result.append(
             {
-                "source_id": source_id,
+                **store.source_context(source_id),
                 "hash": source["hash"],
                 "text_hash": source["text_hash"],
                 "url": source["url"],
                 "chunk_count": len(source["chunks"]),
                 "identifying_passage": (
-                    store.open_source(source_id, source["chunks"][0]["id"])
+                    store.concise_passage(
+                        store.open_source(source_id, source["chunks"][0]["id"])
+                    )
                     if source["chunks"]
                     else None
                 ),
@@ -522,6 +649,10 @@ def run(
                     save(name, future.result())
                 except (OSError, ValueError, RuntimeError, KeyError) as exc:
                     manifest.setdefault("research_gaps", {})[name] = str(exc)
+                    if isinstance(exc, ResearchHandoffError):
+                        manifest.setdefault("unsynthesized_evidence", {})[
+                            name
+                        ] = exc.handoff
         if settings.contextualize:
             for index, source in enumerate(
                 store.sources()[: settings.context_documents]
@@ -560,6 +691,9 @@ def run(
                 if name in manifest["stages"]
             },
             "gaps": manifest.get("research_gaps", {}),
+            "unsynthesized_evidence": manifest.get(
+                "unsynthesized_evidence", {}
+            ),
         }
         previous_synthesis = manifest["stages"].get("synthesis", {}).get("path")
         synthesis = stage(
@@ -613,19 +747,13 @@ def run(
             i for i in review["output"]["issues"] if i["severity"] == "material"
         ]
         if material:
-            revision_input = {
-                **synthesis_input,
-                **review_input(current),
-                "findings": review["output"],
-                "instruction": (
-                    "Correct material issues or contest with evidence; "
-                    "disclose unresolved conclusions."
-                ),
-            }
+            revision_portable = revision_input(
+                review_input(current), review["output"]
+            )
             revision = stage(
                 "revision",
                 "revision",
-                revision_input,
+                revision_portable,
                 settings.stage_allocations[4],
             )
             save("revision", revision)

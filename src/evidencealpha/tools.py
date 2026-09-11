@@ -26,6 +26,7 @@ TOOL_DEFINITIONS = {
     "open_source": {
         "source_id": "string",
         "chunk_id": "optional exact returned ID, e.g. c30, not 30",
+        "surrounding": "0..2 neighboring paragraph/table chunks per side",
     },
     "search_web": {"query": "string"},
     "fetch_source": {"url": "public HTTP(S) URL"},
@@ -81,29 +82,40 @@ class EvidenceTools:
                     raise ValueError("Conflicting source scopes")
                 source_id = scopes[0]
                 query = re.sub(r"\bsource_id:[a-f0-9]{64}\b", "", query).strip()
-            return self.store.search_evidence(
-                query,
-                self.settings.retrieval_limit,
-                self.settings.embedding_model,
-                source_id,
-            )
+            return [
+                self.store.concise_passage(passage)
+                for passage in self.store.search_evidence(
+                    query,
+                    self.settings.retrieval_limit,
+                    self.settings.embedding_model,
+                    source_id,
+                )
+            ]
         if name == "open_source":
-            result = self.store.open_source(**arguments)
-            if arguments.get("chunk_id") is None:
-                if len(result["text"]) > self.settings.source_open_characters:
-                    raise ValueError(
-                        "Source exceeds full-text tool limit; use "
-                        "search_evidence then open_source with chunk_id. "
-                        "No source text has been truncated."
-                    )
-                # The text is already present; repeating block text and the
-                # complete chunk index inflated the measured tool transcript.
-                result["source"] = {
-                    key: value
-                    for key, value in result["source"].items()
-                    if key not in ("blocks", "chunks")
-                }
-            return result
+            source_id = arguments["source_id"]
+            chunk_id = arguments.get("chunk_id")
+            surrounding = arguments.get("surrounding") or 0
+            if chunk_id is not None:
+                passages = self.store.surrounding_passages(
+                    source_id, chunk_id, surrounding
+                )
+                return passages if surrounding else passages[0]
+            if surrounding:
+                raise ValueError("Surrounding retrieval requires a chunk_id")
+            result = self.store.open_source(source_id)
+            if len(result["text"]) > self.settings.source_open_characters:
+                raise ValueError(
+                    "Source exceeds full-text tool limit; use "
+                    "search_evidence then open_source with chunk_id. "
+                    "No source text has been truncated."
+                )
+            return {
+                **self.store.source_context(source_id),
+                "text": result["text"],
+                "spans": [
+                    {"start": 0, "end": len(result["text"]), "page": None}
+                ],
+            }
         if name == "calculate":
             values = [decimal.Decimal(str(v)) for v in arguments["values"]]
             if len(values) != 2 or not all(v.is_finite() for v in values):

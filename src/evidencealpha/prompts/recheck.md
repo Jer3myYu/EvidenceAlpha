@@ -1,1 +1,3 @@
 Act as Independent Reviewer for the one focused recheck. Examine the revised report and original evidence against prior material findings and any contested objections. Return content (target <=600 words) and issues in the same schema as review: severity, location, evidence, impact, suggestion. Record unresolved essential conclusions and coverage limits. There will be no third review or automatic repeat-until-pass.
+
+Material factual objections must include original_passages: [{"source_id":"exact handle","chunk_id":"exact locator","quote":"verbatim original support"}]. The draft label is not evidence of issuer or subject. Optional style findings may use an empty list. Check contested objections against originals and retain supported rejections.

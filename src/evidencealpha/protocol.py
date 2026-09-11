@@ -27,6 +27,7 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
         "open_source": {
             "source_id": string,
             "chunk_id": {"type": ["string", "null"]},
+            "surrounding": {"type": "integer", "minimum": 0, "maximum": 2},
         },
         "calculate": {
             "operation": choice(["add", "subtract", "multiply", "divide"]),
@@ -86,6 +87,15 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
                         "severity": choice(["material", "optional"]),
                         "location": string,
                         "evidence": string,
+                        "original_passages": array(
+                            record(
+                                {
+                                    "source_id": string,
+                                    "chunk_id": string,
+                                    "quote": string,
+                                }
+                            )
+                        ),
                         "impact": string,
                         "suggestion": string,
                     }

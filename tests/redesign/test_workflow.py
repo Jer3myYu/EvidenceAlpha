@@ -67,6 +67,9 @@ def test_optional_polish_and_unresolved_recheck_are_bounded(tmp_path):
     assert result["status"] == "reviewed"
     assert not any(c.stage == "revision" for c in provider.calls)
     issue["severity"] = "material"
+    issue["original_passages"] = artifacts.read(
+        FIXTURES / "manufacturing.json"
+    )["outputs"]["review"]["issues"][0]["original_passages"]
     other = tmp_path / "second"
     result, provider, _ = _run(
         other,

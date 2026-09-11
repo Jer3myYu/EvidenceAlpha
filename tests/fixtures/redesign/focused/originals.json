@@ -1,0 +1,485 @@
+{
+  "sources": [
+    {
+      "company": "清溢光电",
+      "original_source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "passages": [
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "chunk_id": "c0",
+          "text": "深圳清溢光电股份有限公司2025 年年度报告",
+          "spans": [
+            {
+              "start": 0,
+              "end": 22,
+              "page": 1,
+              "bbox": [
+                223.44000244140625,
+                42.65599822998047,
+                396.8399963378906,
+                54.697998046875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "chunk_id": "c1",
+          "text": "公司代码：688138\n公司简称：清溢光电",
+          "spans": [
+            {
+              "start": 24,
+              "end": 45,
+              "page": 1,
+              "bbox": [
+                89.87999725341797,
+                82.29629516601562,
+                493.9291076660156,
+                96.00669860839844
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "chunk_id": "c695",
+          "text": "2025 年，公司半导体芯片掩膜版业务实现稳步增长，当期营业收入达2.04 亿元，较上年同",
+          "spans": [
+            {
+              "start": 22896,
+              "end": 22941,
+              "page": 23,
+              "bbox": [
+                110.87999725341797,
+                118.62935638427734,
+                531.4869384765625,
+                129.079345703125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "chunk_id": "c5393",
+          "text": "项目 | 附注 | 2025 年度 | 2024 年度\n一、营业总收入 |  | 1,239,670,132.81 | 1,112,249,605.01",
+          "spans": [
+            {
+              "start": 131596,
+              "end": 131623,
+              "page": 134,
+              "bbox": [
+                89.94999885559082,
+                305.4199981689453,
+                542.4249877929688,
+                768.7899780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 131624,
+              "end": 131672,
+              "page": 134,
+              "bbox": [
+                89.94999885559082,
+                305.4199981689453,
+                542.4249877929688,
+                768.7899780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+          "generated_context": null
+        }
+      ]
+    },
+    {
+      "company": "路维光电",
+      "original_source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "passages": [
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c0",
+          "text": "深圳市路维光电股份有限公司",
+          "spans": [
+            {
+              "start": 0,
+              "end": 13,
+              "page": 1,
+              "bbox": [
+                216.95899963378906,
+                92.22200012207031,
+                373.55670166015625,
+                104.4020004272461
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c1",
+          "text": "2025年度“提质增效重回报”行动方案评估报告暨2026年度“提质增效重回报”",
+          "spans": [
+            {
+              "start": 15,
+              "end": 54,
+              "page": 1,
+              "bbox": [
+                85.08000183105469,
+                115.62200164794922,
+                506.7590026855469,
+                127.802001953125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c30",
+          "text": "报告期内，公司实现营业收入115,523.17 万元，较上年同期增加31.94%。",
+          "spans": [
+            {
+              "start": 1027,
+              "end": 1068,
+              "page": 2,
+              "bbox": [
+                109.08000183105469,
+                119.33843994140625,
+                505.44000244140625,
+                131.33843994140625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c36",
+          "text": "利能力得以加强；报告期内，公司实现归属于上市公司股东的净利润25,198.43",
+          "spans": [
+            {
+              "start": 1265,
+              "end": 1304,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                259.3784484863281,
+                505.44000244140625,
+                271.3784484863281
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c43",
+          "text": "公司投资建设的路芯半导体掩膜版项目进展顺利，制程节点布局居于国内厂",
+          "spans": [
+            {
+              "start": 1540,
+              "end": 1573,
+              "page": 2,
+              "bbox": [
+                109.08000183105469,
+                422.8184509277344,
+                505.4386291503906,
+                434.8184509277344
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c44",
+          "text": "商前列。该项目一期产品覆盖130-40nm 制程节点半导体掩膜版，2025 年已逐步",
+          "spans": [
+            {
+              "start": 1575,
+              "end": 1617,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                446.21844482421875,
+                505.4385986328125,
+                458.21844482421875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c45",
+          "text": "实现产品量产，实现90nm 及以上成套掩膜版客户端验证通过并供货，40nm 和28nm",
+          "spans": [
+            {
+              "start": 1619,
+              "end": 1662,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                469.4974365234375,
+                505.44000244140625,
+                481.4974365234375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "chunk_id": "c46",
+          "text": "单片掩膜版客户端验证通过并供货，并持续推进40nm 成套掩膜版客户端送样工作；",
+          "spans": [
+            {
+              "start": 1664,
+              "end": 1703,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                492.7784423828125,
+                517.4400024414062,
+                504.7784423828125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+          "generated_context": null
+        }
+      ]
+    },
+    {
+      "company": "龙图光罩",
+      "original_source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "passages": [
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c0",
+          "text": "深圳市龙图光罩股份有限公司2025 年年度报告摘要",
+          "spans": [
+            {
+              "start": 0,
+              "end": 25,
+              "page": 1,
+              "bbox": [
+                210.60000610351562,
+                42.65599822998047,
+                411.0,
+                54.697998046875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c185",
+          "text": "2025 年，在行业格局深度调整背景下，公司在技术能力与市场拓展方面取得了稳步进展：技",
+          "spans": [
+            {
+              "start": 5328,
+              "end": 5371,
+              "page": 8,
+              "bbox": [
+                111.0,
+                672.3372802734375,
+                531.489990234375,
+                686.0476684570312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c186",
+          "text": "术制程方面，公司持续深耕成熟制程，90nm 产品已成功实现量产，逐步向高端制程领域迈进；在",
+          "spans": [
+            {
+              "start": 5373,
+              "end": 5418,
+              "page": 8,
+              "bbox": [
+                90.0,
+                695.7373046875,
+                531.489990234375,
+                709.4476928710938
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c206",
+          "text": "程，以及功率器件、MEMS 传感器、先进封装等特色工艺制程。目前珠海工厂90nm PSM 产品已",
+          "spans": [
+            {
+              "start": 6087,
+              "end": 6135,
+              "page": 9,
+              "bbox": [
+                90.0,
+                432.3373107910156,
+                531.4892578125,
+                446.0476989746094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c207",
+          "text": "实现量产，65nm 产品已开始送样验证，并已完成40nm 工艺节点的生产设备布局，多项工艺优化",
+          "spans": [
+            {
+              "start": 6137,
+              "end": 6184,
+              "page": 9,
+              "bbox": [
+                90.0,
+                455.7373046875,
+                531.4883422851562,
+                469.44769287109375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c280",
+          "text": " | 2025年 | 2024年 | 本年比上年\n营业收入 | 246,658,302.88 | 246,503,467.92 | 0.06 | 218,292,698.54",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8858,
+              "end": 8920,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        },
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "chunk_id": "c283",
+          "text": " | 2025年 | 2024年 | 本年比上年\n东的净利润 | 56,088,527.42 | 91,832,934.36 | -38.92 | 83,608,662.12",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8993,
+              "end": 9055,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "section": "",
+          "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+          "generated_context": null
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "luxin_issuer": "路维光电",
+    "split_subject": "龙图光罩",
+    "split_status": "90nm PSM 产品已实现量产",
+    "third_party_document_issuer": "Fixture Publisher",
+    "third_party_subject": "Another Company",
+    "false_luxin_objection": "依据草稿的发行人标签，将路芯项目从路维光电改归清溢光电。",
+    "revision_rejection": "拒绝该异议：草稿标签不是原文证据。路芯项目保留归属路维光电；原文见 {source_id}:{chunk_id}。"
+  }
+}

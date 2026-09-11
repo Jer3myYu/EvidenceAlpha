@@ -41,7 +41,7 @@ class Ledger:
         artifacts.write(
             self.path,
             {
-                "limits": config.LIMITS,
+                "limits": self.limits,
                 "profile": "low_claude_quota",
                 "campaign_started": None,
                 "attempts": [],
@@ -66,20 +66,24 @@ class Ledger:
             },
         )
 
-    @staticmethod
-    def _check(data: dict) -> float:
-        if data["limits"] != config.LIMITS:
+    @property
+    def limits(self) -> dict:
+        """Return the fixed policy for this ledger type."""
+        return config.LIMITS
+
+    def _check(self, data: dict) -> float:
+        if data["limits"] != self.limits:
             raise BudgetExceeded("Ledger limits differ from policy; reconcile")
         started = data["campaign_started"]
         if started is None:
             raise BudgetExceeded("Stage 2 has not been explicitly started")
-        remaining = config.LIMITS["session_seconds"] - (time.time() - started)
+        remaining = self.limits["session_seconds"] - (time.time() - started)
         if remaining <= 0:
             raise BudgetExceeded("Session window exhausted")
         tokens = sum(
             x.get("observable_tokens") or 0 for x in data["invocations"]
         )
-        if tokens >= config.LIMITS["observable_tokens"]:
+        if tokens >= self.limits["observable_tokens"]:
             raise BudgetExceeded("Observable token allowance exhausted")
         return remaining
 
@@ -101,15 +105,13 @@ class Ledger:
             count = sum((a["kind"] == "full") == full for a in attempts)
             if (
                 count
-                >= config.LIMITS[
-                    "full_attempts" if full else "isolated_attempts"
-                ]
+                >= self.limits["full_attempts" if full else "isolated_attempts"]
             ):
                 raise BudgetExceeded("Attempt allowance exhausted")
             if (
                 kind in ("peer", "claude")
                 and sum(a["kind"] == kind for a in attempts)
-                >= config.LIMITS[f"{kind}_attempts"]
+                >= self.limits[f"{kind}_attempts"]
             ):
                 raise BudgetExceeded(f"{kind} sub-budget exhausted")
             if full and any(
@@ -123,9 +125,9 @@ class Ledger:
                 kind != "claude" or data["claude_disabled"]
             ):
                 raise BudgetExceeded("Claude allowed only in bounded probes")
-            cap = config.LIMITS["full_seconds" if full else "isolated_seconds"]
+            cap = self.limits["full_seconds" if full else "isolated_seconds"]
             if kind == "claude":
-                cap = config.LIMITS["claude_attempt_seconds"]
+                cap = self.limits["claude_attempt_seconds"]
             entry = {
                 "id": uuid.uuid4().hex,
                 "kind": kind,
@@ -145,6 +147,11 @@ class Ledger:
                 for a in data["attempts"]
             ):
                 raise BudgetExceeded("Attempt is not active")
+            if (
+                sum(x["status"] == "running" for x in data["invocations"])
+                >= self.limits["research_workers"]
+            ):
+                raise BudgetExceeded("Invocation concurrency exhausted")
             used = sum(
                 x.get("seconds", x["reserved_seconds"])
                 for x in data["invocations"]
@@ -153,7 +160,7 @@ class Ledger:
                 seconds,
                 window,
                 attempt["deadline"] - time.time(),
-                config.LIMITS["invocation_seconds"] - used,
+                self.limits["invocation_seconds"] - used,
             )
             if provider == "claude":
                 if data["claude_disabled"] or attempt["kind"] != "claude":
@@ -163,7 +170,7 @@ class Ledger:
                     for x in data["invocations"]
                     if x["provider"] == "claude"
                 )
-                cap = min(cap, config.LIMITS["claude_seconds"] - used_claude)
+                cap = min(cap, self.limits["claude_seconds"] - used_claude)
             if cap <= 0:
                 raise BudgetExceeded("Invocation time exhausted")
             entry = {
@@ -221,7 +228,7 @@ class Ledger:
             raise ValueError("Unknown acquisition kind")
         with self.locked() as data:
             self._check(data)
-            if data[kind] >= config.LIMITS[kind]:
+            if data[kind] >= self.limits[kind]:
                 raise BudgetExceeded(f"{kind} exhausted")
             data[kind] += 1
 
@@ -231,3 +238,82 @@ class Ledger:
             data["claude_disabled"] = True
             data["profile"] = "low_claude_quota"
             data["fallback_reason"] = reason
+
+
+class DiagnosticLedger(Ledger):
+    """The separately authorized A/B/C allowance; never admits full reports."""
+
+    @property
+    def limits(self) -> dict:
+        """Return the additive diagnostic ceilings, not Stage 2 ceilings."""
+        return config.DIAGNOSTIC_LIMITS
+
+    def initialize_linked(self, parent: pathlib.Path) -> None:
+        """Create once and bind to the exhausted historical ledger bytes."""
+        if self.path.exists():
+            return
+        self.initialize()
+        with self.locked() as data:
+            data.pop("stage1_smoke", None)
+            data["parent"] = str(parent.resolve())
+            data["parent_hash"] = artifacts.digest(parent.read_bytes())
+            data["authorization"] = "User additive focused A/B/C diagnosis only"
+
+    def _check(self, data: dict) -> float:
+        if (
+            artifacts.digest(pathlib.Path(data["parent"]).read_bytes())
+            != data["parent_hash"]
+        ):
+            raise BudgetExceeded("Historical ledger changed; reconcile")
+        if any(
+            x["status"] not in ("running", "complete", "adequate")
+            for x in data["attempts"] + data["invocations"]
+        ):
+            raise BudgetExceeded("Diagnostic failure stops charged work")
+        if any(
+            x["status"] == "complete" and x.get("observable_tokens") is None
+            for x in data["invocations"]
+        ):
+            raise BudgetExceeded(
+                "Unknown diagnostic usage requires reconciliation"
+            )
+        return super()._check(data)
+
+    def admit(self, kind: str, provider: str = "codex") -> dict:
+        """Admit A then B then conditional C, exactly once and sequentially."""
+        with self.locked() as data:
+            remaining = self._check(data)
+            cases = config.DIAGNOSTIC_CASE_SECONDS
+            previous = data["attempts"]
+            if (
+                provider != "codex"
+                or len(previous) >= 3
+                or kind != list(cases)[len(previous)]
+                or any(x["status"] != "adequate" for x in previous)
+            ):
+                raise BudgetExceeded(
+                    "Only the next adequately preceded case is allowed"
+                )
+            entry = {
+                "id": uuid.uuid4().hex,
+                "kind": kind,
+                "started": time.time(),
+                "deadline": time.time() + min(cases[kind], remaining),
+                "status": "running",
+            }
+            previous.append(entry)
+            return dict(entry)
+
+    def reserve(self, attempt: dict, provider: str, seconds: float) -> dict:
+        """Refuse concurrency, provider switches and retries after failure."""
+        with self.locked() as data:
+            self._check(data)
+            if provider != "codex" or any(
+                x["status"] == "running" for x in data["invocations"]
+            ):
+                raise BudgetExceeded("One Codex invocation at a time")
+        return super().reserve(attempt, provider, seconds)
+
+    def acquire(self, kind: str) -> None:
+        """External acquisition is outside this allowance."""
+        raise BudgetExceeded(f"Diagnostic acquisition prohibited: {kind}")

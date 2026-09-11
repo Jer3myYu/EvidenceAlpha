@@ -46,10 +46,10 @@ def test_research_queue_shares_deadline_and_writer_runs(tmp_path, fake_clock):
         if request.stage.startswith("research-"):
             limits.append(request.seconds)
             if fake_clock:
-                clock[0] += request.seconds
+                clock[0] = 100.12
             else:
                 active.wait(timeout=2)
-                time.sleep(request.seconds)
+                time.sleep(0.12)
             raise providers.ProviderError("Provider deadline expired")
         return original(request)
 
@@ -256,7 +256,9 @@ def test_large_source_tool_requires_original_chunks_without_truncation(
     result = evidence.call(
         "open_source", {"source_id": source["id"], "chunk_id": "c0"}
     )
-    assert result == store.open_source(source["id"], "c0")
+    assert result == store.concise_passage(
+        store.open_source(source["id"], "c0")
+    )
 
 
 def test_strict_output_schema_preserves_roles_and_limits_tool_names():
@@ -364,8 +366,8 @@ def test_source_inventory_carries_original_identifying_passage(tmp_path):
     store = documents.SourceStore(root / "sources")
     for item in portable["sources"]:
         passage = item["identifying_passage"]
-        assert passage == store.open_source(
-            item["source_id"], passage["chunk_id"]
+        assert passage == store.concise_passage(
+            store.open_source(item["source_id"], passage["chunk_id"])
         )
         assert passage["spans"]
         assert "identifying aid" in request.prompt

@@ -297,6 +297,74 @@ class SourceStore:
             )
         return self._passage(source, text, chunk, self._context(folder))
 
+    def source_context(self, source_id: str) -> dict:
+        """Return compact identity; annotations must quote this original.
+
+        Issuer identifies the document, never the subject of every statement.
+        Unannotated documents expose an unknown issuer, not a guessed company.
+        """
+        source, _ = self._validated_source(source_id)
+        path = self.root / source_id / "identity.json"
+        identity = artifacts.read(path) if path.exists() else {}
+        for field in ("title", "issuer"):
+            entry = identity.get(field)
+            if entry:
+                original = self.open_source(source_id, entry["chunk_id"])
+                if not entry["value"] or entry["value"] not in original["text"]:
+                    raise ValueError(
+                        "Identity annotation lacks original support"
+                    )
+        return {
+            "source_id": source_id,
+            "title": identity.get("title"),
+            "issuer": identity.get("issuer"),
+            "url": source["url"],
+            "identity_scope": "Document issuer; passage subjects may differ",
+        }
+
+    def concise_passage(self, passage: dict) -> dict:
+        """Present exact original text and locators without index metadata."""
+        return {
+            **self.source_context(passage["source_id"]),
+            "chunk_id": passage["chunk_id"],
+            "text": passage["text"],
+            "spans": [
+                {key: span[key] for key in ("start", "end", "page")}
+                for span in passage["spans"]
+            ],
+        }
+
+    def surrounding_passages(
+        self, source_id: str, chunk_id: str, surrounding: int = 0
+    ) -> list[dict]:
+        """Open up to two neighboring paragraph/table chunks on each side.
+
+        Each chunk retains its own exact locator. Large tables require a more
+        specific chunk; no original passage is silently truncated.
+        """
+        if (
+            not isinstance(surrounding, int)
+            or isinstance(surrounding, bool)
+            or not 0 <= surrounding <= 2
+        ):
+            raise ValueError("surrounding must be an integer from 0 to 2")
+        source, _ = self._validated_source(source_id)
+        ids = [chunk["id"] for chunk in source["chunks"]]
+        if chunk_id not in ids:
+            raise ValueError("Unknown chunk; use the exact chunk_id")
+        index = ids.index(chunk_id)
+        passages = [
+            self.concise_passage(self.open_source(source_id, item))
+            for item in ids[
+                max(0, index - surrounding) : index + surrounding + 1
+            ]
+        ]
+        if sum(len(item["text"]) for item in passages) > 8000:
+            raise ValueError(
+                "Window exceeds 8000 characters; narrow the window"
+            )
+        return passages
+
     @staticmethod
     def _context(folder: pathlib.Path) -> str | None:
         path = folder / "context.json"

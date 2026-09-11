@@ -1,0 +1,27 @@
+# Focused correction: pre-execution expectations
+
+Authorization: the user's new additive allowance for A/B/C only, linked to the exhausted Stage 2 ledger. No full run, external acquisition, retry, provider fallback or further patch/model cycle. This document is frozen before any evaluation call. The historical clock and counters remain unchanged.
+
+## Expected material outcomes
+
+A (company, 180 seconds): deliver completed, source-located notes and a useful comparison. Keep 2025 total revenue separate: 清溢 1,239,670,132.81 CNY (12.3967亿元), 路维 115,523.17万元 (11.552317亿元), 龙图 246,658,302.88 CNY (2.466583亿元). 清溢 semiconductor revenue 2.04亿元 is not 路维's revenue. Do not manufacture an undisclosed comparable semiconductor split for other companies. Keep 路芯 with 路维; keep 清溢's 佛山 project separate. Longtu's split c206/c207 states 90nm PSM mass production, 65nm sampling, 40nm equipment layout. 路维's c45/c46 distinguishes 90nm sets supplied, 40/28nm single masks and 40nm sets sampling; later plans are not mass production. Attribute any company discussed in a document by the passage's subject, not automatically by its issuer. Disclose coverage gaps; no false confidence. A material swap, contradictory milestone, lost final output or essential missing comparison stops charged work.
+
+B (review, 180 seconds): examine the exact preserved F2 faulty draft and figure data/hashes. Identify the material financial/technical issuer swaps and Longtu milestone error against original passages. Do not repeat the false objection moving 路芯 from 路维 to 清溢. Every material objection supplies source_id, chunk_id and a verbatim supporting quote plus its reasoning. Do not use the draft's issuer label as evidence. Report omissions and review coverage. The reviewer has text and figure data/hashes, not native pixels; no visual-layout acceptance is claimed. A false material objection, failure to identify the central issuer swaps, or incomplete final output stops charged work.
+
+C (revision, 300 seconds): conditional on A and B being adequate. Use the preserved F2 draft AND preserved F2 findings, including the false 路芯 objection; do not silently replace that negative test with new findings. Reject that unsupported reassignment using original passages; correct supported financial and technical attribution errors. Deliver a complete retained/revised report and figures, with unresolved essentials disclosed. No recheck or full-report acceptance follows from this case.
+
+These are manually assessed semantic outcomes, not company rules in production or per-claim certification gates. The originals, saved inputs and successful earlier outputs remain reusable. Offline fixtures exercise transport, source references and time behavior; only the charged outcomes can establish whether the model uses them correctly.
+
+## Fixed execution and stop policy
+
+GPT-5.6 Sol medium through the diagnosed subscription Codex CLI; fixed-corpus tools only. At most three stage attempts, A/B 180s each, C 300s; 660 summed model-invocation seconds; 16,000 observable output/reasoning tokens without double counting; 30 minutes from first diagnostic admission; one concurrent call; no retries. Invocation reservations survive interruption and unknown usage remains unknown. A complete stage is held as completed_unassessed until its semantic assessment is recorded; that status cannot admit the next case.
+
+The existing CLI reports token usage at completed-turn boundaries. Admission stops at the observable ceiling; there is no verified CLI hard token-generation limit, and in-flight/failed unknown usage cannot be certified below that number. Compact output targets leave headroom (A/B <=2500 tokens each; C <=7000). Do not add overlapping reasoning counts to output tokens. Stop on a reported overrun, missing usage requiring reconciliation, provider failure, material failure or wall/time cap. A cap or failure ends model work, not the useful offline record.
+
+Revision uses at most two evidence rounds within 60 seconds, then a tool-free final call of up to 210 seconds, with 30 seconds margin. A shorter enclosing deadline removes evidence time first. No evidence call is retried if it times out. Research reserves up to 60 seconds for final notes; failures preserve up to 12 distinct original passages / 16,000 characters explicitly as unsynthesized evidence, with full retrieval history remaining in its original event file.
+
+## Freeze and reproducibility
+
+`prepare.py` requires a clean candidate commit and creates a new read-only snapshot of code, prompts, settings, all five original source files/indexes, source-backed identity annotations, inputs, preserved report assets and this expectation document. It does not mutate the prior diagnosis freeze or historical source corpus. `execute_case.py` imports that frozen code and verifies hashes/permissions before and after each case. Outputs and the additive ledger are outside the snapshot. Package versions and CLI version are recorded; installed binaries and remote routing cannot be made immutable by a source snapshot. No evaluated input or code is edited during the experiment.
+
+Identity annotations are exact header excerpts with source chunk references, checked against original text on retrieval. They establish document identity, not every statement's subject. Unannotated sources return null identity fields; establishing an unknown issuer remains a source-reading task. No company names or expected values are present in generic production logic.

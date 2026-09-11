@@ -78,7 +78,14 @@
           "location": "comparison table",
           "evidence": "62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c: periods differ",
           "impact": "A ranking would be misleading",
-          "suggestion": "Explain the period mismatch explicitly"
+          "suggestion": "Explain the period mismatch explicitly",
+          "original_passages": [
+            {
+              "source_id": "62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c",
+              "chunk_id": "c0",
+              "quote": "合成机制测试：材料制造"
+            }
+          ]
         }
       ]
     },
