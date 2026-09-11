@@ -20,10 +20,11 @@ body { font-family: sans-serif; font-size: 10pt;
        line-height: 1.5; color: #182434; }
 h1 { font-size: 20pt; color: #123b55; }
 h2 { font-size: 14pt; color: #123b55; margin-top: 18pt; }
-table { width: 100%; border-spacing: 0; margin: 10pt 0; }
+table { width: 100%; table-layout: fixed; border-spacing: 0; margin: 10pt 0; }
 th { background-color: #e6eef4; }
 th, td { border: 0.5pt solid #a6b5bf; padding: 5pt; font-size: 9pt; }
 img { max-width: 100%; }
+.report-image { page-break-before: always; }
 a { color: #086788; }
 """
 
@@ -152,6 +153,34 @@ def export(markdown_path: pathlib.Path) -> dict:
         if not path.is_file():
             name = image["src"]
             raise ValueError(f"Missing report asset: {name}")
+        # Story otherwise shrinks a tall image into the space remaining at
+        # a page bottom. Give report figures a page and explicit dimensions.
+        pixmap = pymupdf.Pixmap(str(path))
+        scale = min(500 / pixmap.width, 450 / pixmap.height, 1)
+        image["style"] = (
+            f"width: {pixmap.width * scale}pt; "
+            f"height: {pixmap.height * scale}pt;"
+        )
+        image.parent["class"] = ["report-image"]
+    for table in soup.find_all("table"):
+        for node in list(table.find_all(string=True)):
+            node.replace_with(
+                re.sub(
+                    r"[A-Za-z0-9]{40,}",
+                    lambda match: "\u200b".join(
+                        match[0][i : i + 12]
+                        for i in range(0, len(match[0]), 12)
+                    ),
+                    str(node),
+                )
+            )
+        for row in table.find_all("tr"):
+            cells = row.find_all(["th", "td"], recursive=False)
+            columns = sum(int(cell.get("colspan", 1)) for cell in cells)
+            for cell in cells:
+                width = 100 * int(cell.get("colspan", 1)) / columns
+                cell["style"] = f"width: {width}%;"
+    body = str(soup)
     artifacts.write(
         markdown_path.with_suffix(".html"), f"<style>{CSS}</style>{body}"
     )
@@ -186,7 +215,7 @@ def export(markdown_path: pathlib.Path) -> dict:
             writer.close()
         with pymupdf.open(stream=buffer.getvalue(), filetype="pdf") as document:
             packed = re.sub(
-                r"\s",
+                r"[\s\u200b]",
                 "",
                 unicodedata.normalize(
                     "NFKC", "".join(page.get_text() for page in document)
@@ -198,7 +227,7 @@ def export(markdown_path: pathlib.Path) -> dict:
                 image.decompose()
             for node in soup.find_all(string=True):
                 fragment = re.sub(
-                    r"\s",
+                    r"[\s\u200b]",
                     "",
                     unicodedata.normalize("NFKC", html.unescape(str(node))),
                 )

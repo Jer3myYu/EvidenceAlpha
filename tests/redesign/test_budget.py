@@ -143,7 +143,9 @@ def test_process_timeout_preserves_raw_and_terminates_children(tmp_path):
     pid = int((tmp_path / "raw.jsonl").read_text().strip())
     status = pathlib.Path(f"/proc/{pid}/status")
     # A killed grandchild can remain a zombie briefly until init reaps it.
-    assert not status.exists() or "State:\tZ" in status.read_text(
-        encoding="utf-8"
-    )
+    try:
+        state = status.read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return  # Already reaped, including during the read.
+    assert "State:\tZ" in state
     assert (tmp_path / "events.jsonl").exists()

@@ -5,6 +5,7 @@ import dataclasses
 import json
 import math
 import pathlib
+import re
 import shutil
 import time
 import uuid
@@ -352,14 +353,21 @@ def _prepare_report(
     artifacts.write(reports / "figures.json", manifest)
     body = output["content"].replace("](" + "figures/", f"]({version}/figures/")
     for index, figure in enumerate(manifest, 1):
-        if figure["path"] not in body:
-            body += f'\n\n![{figure["title"]}]({figure["path"]})\n'
-        body += (
+        caption = (
             f'\n图 {index}：{figure["caption"]} '
             f'({figure["period"]}; {figure["unit"]})。'
             f'{figure["caveats"]}\n'
         )
-        body += "来源：" + ", ".join(figure["source_ids"]) + "\n"
+        caption += "来源：" + ", ".join(figure["source_ids"]) + "\n"
+        pattern = r"(!\[[^\]]*\]\(" + re.escape(figure["path"]) + r"\))"
+        body, count = re.subn(
+            pattern,
+            lambda match, caption=caption: match[0] + "\n" + caption,
+            body,
+            count=1,
+        )
+        if not count:
+            body += f'\n\n![{figure["title"]}]({figure["path"]})\n' + caption
     missing_sources = [s for s in store.sources() if s["url"] not in body]
     if missing_sources:
         body += "\n\n## Sources / 来源\n\n"

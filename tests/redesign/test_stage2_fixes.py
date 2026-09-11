@@ -12,6 +12,7 @@ from unittest import mock
 import claude_agent_sdk
 import jsonschema
 import numpy
+import pymupdf
 import pytest
 
 from evidencealpha import claude_runner
@@ -21,6 +22,7 @@ from evidencealpha import config
 from evidencealpha import documents
 from evidencealpha import providers
 from evidencealpha import protocol
+from evidencealpha import render
 from evidencealpha import workflow
 from evidencealpha import tools
 
@@ -367,3 +369,41 @@ def test_source_inventory_carries_original_identifying_passage(tmp_path):
         )
         assert passage["spans"]
         assert "identifying aid" in request.prompt
+
+
+def test_tall_figure_and_long_table_source_survive_pdf_layout(tmp_path):
+    """Figures cannot collapse into the page remainder; hashes must wrap."""
+    nodes = [f"Research stage {i}" for i in range(6)]
+    render.figures(
+        [
+            {
+                "kind": "diagram",
+                "title": "Stages",
+                "caption": "Stages in order",
+                "source_ids": ["source"],
+                "period": "fixture",
+                "unit": "stage",
+                "caveats": "Synthetic",
+                "nodes": nodes,
+                "edges": list(zip(nodes, nodes[1:])),
+            }
+        ],
+        tmp_path,
+        {"source"},
+    )
+    source_hash = "abcdef0123456789" * 4
+    report = tmp_path / "report.md"
+    report.write_text(
+        ("Paragraph of introductory context.\n\n" * 24)
+        + "![Stages](figures/figure-1.png)\n\n"
+        + "| Company | Amount | Evidence |\n|---|---|---|\n"
+        + f"| Example company | 123.45 | Original {source_hash} |\n"
+    )
+    result = render.export(report)
+    assert result["pdf_status"] == "complete"
+    with pymupdf.open(result["pdf"]) as pdf:
+        images = [i for page in pdf for i in page.get_image_info()]
+        assert len(images) == 1
+        rect = pymupdf.Rect(images[0]["bbox"])
+        assert rect.width > 80
+        assert rect.height > 300
