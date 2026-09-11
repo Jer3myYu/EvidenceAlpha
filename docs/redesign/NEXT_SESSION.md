@@ -44,3 +44,11 @@ quality has not been tested. Actual local embeddings, Claude live behavior and
 native-pixel reviewer access also remain unvalidated. Reviewer text/spec/hash
 checks do not establish visual readability. Existing source bytes, historical
 runs, fixture reports and all failed attempts must remain preserved.
+
+
+Offline trace diagnosis is now available in STAGE2_DIAGNOSIS.md. It includes the
+first incorrect attribution points, per-stage/per-tool context measurements,
+revision deadline reconstruction, a verified frozen evaluation snapshot and a
+proposal for at most three additional isolated diagnostic cases. That proposal
+is **not authorized execution** and does not replenish this campaign. Follow its
+snapshot rule: never edit code, prompts, settings or inputs used by an active run.

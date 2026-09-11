@@ -1,0 +1,89 @@
+{
+  "runs": {
+    "F1": "7b9f8b808c7648f68a9be24c56be69db",
+    "F2": "57bd6a8282dd494db15e13394ba3c4fc"
+  },
+  "stages": {
+    "F1.plan": {
+      "path": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/plan/c2041282564b",
+      "input": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/plan/c2041282564b/input.json",
+      "events": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/plan/c2041282564b/events.jsonl",
+      "output": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/plan/c2041282564b/output.json"
+    },
+    "F1.research-0": {
+      "path": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-0/64f77870e4d1",
+      "input": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-0/64f77870e4d1/input.json",
+      "events": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-0/64f77870e4d1/events.jsonl",
+      "output": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-0/64f77870e4d1/output.json"
+    },
+    "F1.research-1": {
+      "path": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-1/4019ae253c64",
+      "input": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-1/4019ae253c64/input.json",
+      "events": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-1/4019ae253c64/events.jsonl",
+      "output": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/research-1/4019ae253c64/output.json"
+    },
+    "F1.review": {
+      "path": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/review/66cde46ce1ab",
+      "input": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/review/66cde46ce1ab/input.json",
+      "events": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/review/66cde46ce1ab/events.jsonl",
+      "output": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/review/66cde46ce1ab/output.json"
+    },
+    "F1.revision": {
+      "path": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/revision/57d9e1beb917",
+      "input": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/revision/57d9e1beb917/input.json",
+      "events": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/revision/57d9e1beb917/events.jsonl",
+      "output": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/revision/57d9e1beb917/output.json"
+    },
+    "F1.synthesis": {
+      "path": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/synthesis/467117bc298a",
+      "input": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/synthesis/467117bc298a/input.json",
+      "events": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/synthesis/467117bc298a/events.jsonl",
+      "output": "data/redesign/runs/7b9f8b808c7648f68a9be24c56be69db/stages/synthesis/467117bc298a/output.json"
+    },
+    "F2.plan": {
+      "path": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/plan/5a903b1b11b5",
+      "input": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/plan/5a903b1b11b5/input.json",
+      "events": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/plan/5a903b1b11b5/events.jsonl",
+      "output": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/plan/5a903b1b11b5/output.json"
+    },
+    "F2.research-0": {
+      "path": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-0/ffd61590f3a9",
+      "input": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-0/ffd61590f3a9/input.json",
+      "events": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-0/ffd61590f3a9/events.jsonl",
+      "output": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-0/ffd61590f3a9/output.json"
+    },
+    "F2.research-1": {
+      "path": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-1/b8d6a606cbfd",
+      "input": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-1/b8d6a606cbfd/input.json",
+      "events": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-1/b8d6a606cbfd/events.jsonl",
+      "output": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/research-1/b8d6a606cbfd/output.json"
+    },
+    "F2.review": {
+      "path": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/review/7f3fb0629188",
+      "input": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/review/7f3fb0629188/input.json",
+      "events": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/review/7f3fb0629188/events.jsonl",
+      "output": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/review/7f3fb0629188/output.json"
+    },
+    "F2.revision": {
+      "path": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/revision/1161e229dee3",
+      "input": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/revision/1161e229dee3/input.json",
+      "events": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/revision/1161e229dee3/events.jsonl",
+      "output": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/revision/1161e229dee3/output.json"
+    },
+    "F2.synthesis": {
+      "path": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/synthesis/faa76040a6ac",
+      "input": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/synthesis/faa76040a6ac/input.json",
+      "events": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/synthesis/faa76040a6ac/events.jsonl",
+      "output": "data/redesign/runs/57bd6a8282dd494db15e13394ba3c4fc/stages/synthesis/faa76040a6ac/output.json"
+    }
+  },
+  "source_ids": {
+    "Qingyi_annual": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+    "Luw_assessment": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+    "Longtu_summary": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+    "Qingyi_investor_record": "134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08",
+    "Photronics_release": "8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd"
+  },
+  "measurement_artifact": "data/redesign/stage2-diagnosis/measurements.json",
+  "line_convention": "1-based JSONL lines. call-N/normalized.json stores the provider text; output.json is final stage content. Missing failed-stage output paths are intentional."
+}
