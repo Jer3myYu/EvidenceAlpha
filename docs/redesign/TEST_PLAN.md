@@ -46,3 +46,41 @@ Other prepared cases: `industry.json`, `company.json`, `synthesis.json` in the s
 `cases/full-report.json` has an empty readiness list and is rejected until the fresh session records actual stage-readiness artifacts after inspecting their usefulness/source fidelity. Full attempts force the all-GPT profile. Fill source pack/brief as needed within acquisition ceilings. Full attempts are sequential, use one review/revision/recheck, and have an outer process alarm. Deadline interruption leaves partial files and conservative unsettled reservations; reconcile those without resetting counters. The direct `resume --fixture` command is offline. A full Stage 2 case can set `resume_from` to an existing live run: the driver forks its artifacts, verifies dependencies, and consumes a new full-attempt slot/deadline while preserving all campaign counters. A fixture run cannot be relabeled live. Prefer isolated saved-stage reruns for a localized failure.
 
 Do not run every case reflexively. Stop at the package limits or sufficient product evidence. Write COMPLETION.md, NEXT_SESSION.md and results/usage artifacts in Stage 2. No push, merge, deployment or paid fallback.
+
+## Stage 2 regression and integration evidence
+
+The resumed campaign passed 36 tests, Black (18 files), pylint and diff whitespace
+checks after the integration fixes in `4052658`. `test_stage2_fixes.py` covers one
+shared deadline for queued and active workers, downstream/export reservation,
+external acquisition process cancellation, actual installed Claude SDK event
+serialization across the adapter boundary, original-byte/cache mutation checks,
+CRLF preservation, versioned embedding reuse, strict output framing, scoped
+retrieval before top-k and a final response round inside the existing cap.
+
+Separate non-model permission probes are saved in
+`data/redesign/stage2-permission-check/result.json`. They established writable
+outer runtime/Git directories and a readOnly/no-network child thread without
+spending a model attempt. The original access failures remain in the ledger.
+
+Company and synthesis rehearsals used saved originals; production reviewer
+validation required one malformed-output repair/retry. The resulting single
+revision was inspected, but has no isolated live recheck: all ten isolated slots
+were consumed. `data/redesign/stage2-readiness.json` records that limitation.
+
+The first genuine full run, `7b9f8b808c7648f68a9be24c56be69db`, exposed company
+retrieval scope/round exhaustion and a revision timeout. Its PDF is an incomplete
+draft, not an accepted result. `data/redesign/stage2-first-full-assessment.json`
+records the independent operator findings and justification for the second
+integration attempt. The latter uses
+`cases/stage2-full-report-integration.json`; do not execute it again merely
+because the case file exists. Final statuses and remaining caps are recorded in
+COMPLETION.md, STAGE2_RESULTS.json and the cumulative RUN_BUDGET.json.
+
+
+Final offline follow-up: 38 tests passed in 8.02s after original identity-passage
+coverage and a tall-figure/long-hash table export regression. Black passes 18
+files. A process-cleanup test now handles a process being reaped during its
+/proc status read. The labeled render-only real-draft derivative is
+`data/redesign/stage2-layout-reassembled/`; original report PDFs are untouched.
+The second full attempt also ended draft_review_incomplete on revision timeout.
+No live recheck or service product run occurred. Neither full draft is accepted.

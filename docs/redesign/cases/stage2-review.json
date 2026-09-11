@@ -1,0 +1,7 @@
+{
+  "kind": "isolated",
+  "provider": "codex",
+  "execution": "original-provider",
+  "input": "docs/redesign/inputs/stage2-review.json",
+  "corpus": "data/redesign/runs/534fae688f0843fc91cdf3da0c792928/sources"
+}

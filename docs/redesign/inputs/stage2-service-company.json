@@ -1,0 +1,24 @@
+{
+  "stage": "company",
+  "role": "company",
+  "portable": {
+    "brief": {
+      "text": "用中文解释微软云与订阅服务业务的收入驱动、经营杠杆和风险。仅依据此真实 FY2025 Q4/全年业绩公告；区分季度和全年、报告币种和固定汇率，不做价格预测。不得将 Microsoft Cloud、Intelligent Cloud 或 Azure 当作同一定义。"
+    },
+    "sources": [
+      {
+        "source_id": "743ab1ef2260c278e291833785303fbaba6c46dd54a398eb7c49ba5168e45f2c",
+        "url": "https://www.microsoft.com/en-us/investor/earnings/fy-2025-q4/press-release-webcast",
+        "hash": "278a95a5822ac8ac571376f72ed35d1ccd276b3fbb92f3d3783fa825c8f4a7a6",
+        "text_hash": "443fa26c7d7ce91daff3e80d15fffd118c7746dddb553b9686e8e64c88328988",
+        "acquired_at": "2026-09-11T04:11:48.661297+00:00",
+        "document_date": null
+      }
+    ],
+    "task": {
+      "role": "company",
+      "question": "Read original sources; extract useful comparable facts with source IDs, chunks/pages, units and reporting periods. Distinguish publisher claims from demonstrated capability."
+    },
+    "scope_limit": "New source pack; no model output or readiness claim."
+  }
+}
