@@ -243,3 +243,7 @@ data/workflow.db-shm
 # Phase 10: fetched source snapshots and delivered reports are runtime data.
 data/sources/
 data/reports/
+
+# Redesign run artifacts and mutable lock files stay local.
+data/redesign/
+docs/redesign/*.lock

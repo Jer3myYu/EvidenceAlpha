@@ -1,0 +1,1 @@
+Perform bounded document contextualization for navigation, not evidence generation. Describe the subject, reporting period and section structure of the supplied original blocks. Do not create facts, offsets or quotes. Return concise "content" that will be stored separately and labeled generated. Partial input must be described as partial.

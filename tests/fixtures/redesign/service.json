@@ -1,0 +1,129 @@
+{
+  "label": "synthetic mechanism fixture",
+  "brief": {
+    "text": "Explain hosted service delivery and comparable subscribers"
+  },
+  "sources": [
+    "service.html"
+  ],
+  "outputs": {
+    "plan": {
+      "content": "Bounded evidence plan",
+      "tasks": [
+        {
+          "role": "industry",
+          "question": "Explain delivery and limits"
+        },
+        {
+          "role": "company",
+          "question": "Compare periods and definitions"
+        }
+      ]
+    },
+    "research-0": {
+      "content": "Original delivery evidence: 2b080f16cb96bc4e7412c7900c9452dc9847ac0a5988cb7180e5bcb9e39c39d6; see source blocks."
+    },
+    "research-1": {
+      "content": "Period/definition evidence: 2b080f16cb96bc4e7412c7900c9452dc9847ac0a5988cb7180e5bcb9e39c39d6; missing values remain unknown."
+    },
+    "synthesis": {
+      "content": "# Synthetic service report\n\nThis mechanism fixture describes hosted service delivery: client configuration precedes operation.\n\n## Comparable observations\n\n|Service|Period|Subscribers|\n|---|---|---|\n|Service A|2025|100|\n|Service B|2025|80|\n\nBoth periods match in this synthetic table. Subscriber counts are not manufacturing capacity.\n\n## Limitations\n\nAll values are synthetic and establish no real-world investment conclusion.",
+      "figures": [
+        {
+          "kind": "bar",
+          "title": "Synthetic subscribers",
+          "caption": "Same-period synthetic counts",
+          "period": "2025",
+          "unit": "subscribers",
+          "source_ids": [
+            "2b080f16cb96bc4e7412c7900c9452dc9847ac0a5988cb7180e5bcb9e39c39d6"
+          ],
+          "caveats": "Synthetic data only",
+          "nodes": [
+            "原料",
+            "加工",
+            "客户验证",
+            "批量交付"
+          ],
+          "edges": [
+            [
+              "原料",
+              "加工"
+            ],
+            [
+              "加工",
+              "客户验证"
+            ],
+            [
+              "客户验证",
+              "批量交付"
+            ]
+          ],
+          "labels": [
+            "Service A",
+            "Service B"
+          ],
+          "values": [
+            100,
+            80
+          ]
+        }
+      ]
+    },
+    "review": {
+      "content": "Fixture review; a synthetic material finding exercises the single revision. Not factual certification.",
+      "issues": []
+    },
+    "revision": {
+      "content": "# Synthetic service report\n\nThis mechanism fixture describes hosted service delivery: client configuration precedes operation.\n\n## Comparable observations\n\n|Service|Period|Subscribers|\n|---|---|---|\n|Service A|2025|100|\n|Service B|2025|80|\n\nBoth periods match in this synthetic table. Subscriber counts are not manufacturing capacity.\n\n## Limitations\n\nAll values are synthetic and establish no real-world investment conclusion.",
+      "figures": [
+        {
+          "kind": "bar",
+          "title": "Synthetic subscribers",
+          "caption": "Same-period synthetic counts",
+          "period": "2025",
+          "unit": "subscribers",
+          "source_ids": [
+            "2b080f16cb96bc4e7412c7900c9452dc9847ac0a5988cb7180e5bcb9e39c39d6"
+          ],
+          "caveats": "Synthetic data only",
+          "nodes": [
+            "原料",
+            "加工",
+            "客户验证",
+            "批量交付"
+          ],
+          "edges": [
+            [
+              "原料",
+              "加工"
+            ],
+            [
+              "加工",
+              "客户验证"
+            ],
+            [
+              "客户验证",
+              "批量交付"
+            ]
+          ],
+          "labels": [
+            "Service A",
+            "Service B"
+          ],
+          "values": [
+            100,
+            80
+          ]
+        }
+      ]
+    },
+    "recheck": {
+      "content": "Fixture focused recheck: limitation is explicit. Not a real independent review.",
+      "issues": []
+    },
+    "context-0": {
+      "content": "Generated navigation for a synthetic source; not evidence."
+    }
+  }
+}

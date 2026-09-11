@@ -1,0 +1,18 @@
+{
+  "python": "3.12.13",
+  "codex": "0.154.0",
+  "claude_code": "2.1.268",
+  "graphviz": "dot - graphviz version 2.43.0 (0)",
+  "libraries": {
+    "pymupdf": "1.28.2",
+    "beautifulsoup4": "4.15.0",
+    "markdown-it-py": "4.2.0",
+    "matplotlib": "3.11.1",
+    "requests": "2.34.2",
+    "tavily-python": "0.8.0",
+    "claude-agent-sdk": "0.2.151",
+    "black": "26.5.1",
+    "pylint": "4.0.8",
+    "pytest": "9.1.1"
+  }
+}

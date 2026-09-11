@@ -4,74 +4,38 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evidencealpha"
-version = "0.2.0"
-description = "Progressive industry-research agent. Phase 1: standalone RAG."
+version = "0.3.0"
+description = "Source-grounded research with bounded independent review and stage replay"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    # LangChain pieces used by src/rag: loaders, splitter, Chroma, embeddings.
-    "langchain-core>=0.3",
-    "langchain-community>=0.3",
-    "langchain-text-splitters>=0.3",
-    # Phase 9 decision (2026-09-03): crewai pins chromadb~=1.1.0 in every
-    # 1.x release, and langchain-chroma>=1.1 needs chromadb>=1.3.5, so the
-    # Chroma adapter is held at 1.0.x (chromadb>=1.0.20).
-    "langchain-chroma>=1.0,<1.1",
-    "langchain-huggingface>=0.1",
-    # PyMuPDFLoader needs the pymupdf package itself.
-    "pymupdf>=1.24",
-    # Phase 1 decision (2026-09-02): all-MiniLM-L6-v2, local, via
-    # sentence-transformers. Install torch from the CPU wheel index
-    # BEFORE this project so pip does not pull the CUDA build:
-    #   .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
-    "sentence-transformers>=3.0",
-    # Phase 2 decision (2026-09-02): the official Claude Agent SDK, pinned
-    # to the version verified against the local Claude Code login. The
-    # wheel bundles the Claude Code CLI binary (~215 MB).
-    "claude-agent-sdk==0.2.151",
-    # Phase 4 decision (2026-09-02): Tavily web search, key in TAVILY_API_KEY.
-    "tavily-python>=0.8",
-    # Phase 5 decision (2026-09-02): WebBaseLoader needs BeautifulSoup.
-    "beautifulsoup4>=4.12",
-    # Phase 6 decision (2026-09-02): LangGraph for the explicit
-    # plan -> research -> finish workflow with state.
-    "langgraph>=1.2,<2",
-    # Phase 6.2 decision (2026-09-02): pydantic for the evaluator's
-    # validated structured output.
-    "pydantic>=2",
-    # Phase 7 decision (2026-09-02): the SQLite checkpointer for
-    # resumable workflow runs; the in-memory one ships with langgraph.
-    "langgraph-checkpoint-sqlite>=3.1,<4",
-    # Phase 9 decision (2026-09-03): CrewAI for the named single-call
-    # roles inside the graph nodes. Pinned exactly: releases are weekly
-    # and move their pins (also pydantic<2.13, mcp~=1.28, otel~=1.42).
-    "crewai==1.15.18",
-    # Studio decision (2026-09-05): a small ASGI server for the local
-    # workflow studio page (scripts/studio.py). Both already arrive with
-    # crewai and mcp; declared so the studio does not rest on a
-    # transitive install.
-    "starlette>=1.0,<2",
-    "uvicorn>=0.30",
+  "pymupdf==1.28.2",
+  "beautifulsoup4==4.15.0",
+  "markdown-it-py>=3,<5",
+  "matplotlib>=3.9,<4",
+  "requests>=2.32,<3",
+  "tavily-python>=0.8,<1",
+  "claude-agent-sdk==0.2.151",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "black>=24.4",
-    "pylint>=3.2",
-    "pytest>=8.2",
-]
+embeddings = ["sentence-transformers>=3,<6"]
+dev = ["black==26.5.1", "pylint>=3.2,<5", "pytest==9.1.1"]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["rag", "research", "industry"]
+[project.scripts]
+evidencealpha = "evidencealpha.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["evidencealpha*"]
+
+[tool.setuptools.package-data]
+evidencealpha = ["prompts/*.md"]
 
 [tool.black]
 line-length = 80
 target-version = ["py311", "py312"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-# tests/test_studio.py imports the studio module from scripts/.
-pythonpath = ["scripts"]
+testpaths = ["tests/redesign"]
+pythonpath = ["src"]
 addopts = "-q"
-# CrewAI 1.15 warns about its own deprecated fields on every crew run.
-filterwarnings = ["ignore::DeprecationWarning:crewai"]

@@ -1,0 +1,66 @@
+{
+  "limits": {
+    "session_seconds": 28800,
+    "isolated_attempts": 10,
+    "isolated_seconds": 360,
+    "full_attempts": 2,
+    "full_seconds": 1800,
+    "invocation_seconds": 7200,
+    "observable_tokens": 100000,
+    "research_workers": 2,
+    "peer_attempts": 2,
+    "search_calls": 40,
+    "fetch_attempts": 60,
+    "reviews": 1,
+    "revisions": 1,
+    "rechecks": 1,
+    "claude_attempts": 3,
+    "claude_attempt_seconds": 120,
+    "claude_seconds": 360
+  },
+  "profile": "low_claude_quota",
+  "campaign_started": null,
+  "attempts": [],
+  "invocations": [],
+  "search_calls": 0,
+  "fetch_attempts": 0,
+  "claude_disabled": false,
+  "stage1_smoke": {
+    "attempts": 0,
+    "limit": 1,
+    "seconds_limit": 90,
+    "seconds": 0,
+    "tokens": null,
+    "status": "not_run"
+  },
+  "provider_availability": {
+    "codex": {
+      "cli": "0.154.0",
+      "auth_mode": "ChatGPT login reported by codex login status",
+      "models_in_bundled_catalog": [
+        "gpt-5.5",
+        "gpt-5.6-sol"
+      ],
+      "medium_in_catalog": true,
+      "live_validation": "not_run; optional Stage 1 smoke unused",
+      "native_tool_controls": "configured; effectiveness untested"
+    },
+    "claude": {
+      "cli": "2.1.268",
+      "sdk": "0.2.151",
+      "configured_model": null,
+      "live_validation": "not_run; no Claude calls allowed in Stage 1",
+      "auth_mode": "SDK supported local login path only; no API fallback; not validated"
+    },
+    "search": {
+      "provider": "Tavily",
+      "key_exported": false,
+      "validation": "not_run; .env preserved unread"
+    }
+  },
+  "coding_session_usage": "not observable by application",
+  "enforcement_notes": [
+    "Unknown tokens remain unknown; in-flight tokens may overrun.",
+    "Crashed invocations retain full time reservation until reconciled."
+  ]
+}

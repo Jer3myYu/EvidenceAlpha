@@ -1,0 +1,137 @@
+{
+  "label": "synthetic mechanism fixture",
+  "brief": {
+    "text": "中文解释制造交付与公司口径"
+  },
+  "sources": [
+    "manufacturing.html"
+  ],
+  "outputs": {
+    "plan": {
+      "content": "Bounded evidence plan",
+      "tasks": [
+        {
+          "role": "industry",
+          "question": "Explain delivery and limits"
+        },
+        {
+          "role": "company",
+          "question": "Compare periods and definitions"
+        }
+      ]
+    },
+    "research-0": {
+      "content": "Original delivery evidence: 62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c; see source blocks."
+    },
+    "research-1": {
+      "content": "Period/definition evidence: 62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c; missing values remain unknown."
+    },
+    "synthesis": {
+      "content": "# 合成制造研究报告\n\n本报告仅验证软件流程，不是真实投资研究。原料经加工后需要客户验证，验证是交付前置条件。\n\n## 公司比较\n\n|主体|期间|收入（万元）|\n|---|---|---|\n|示例制造甲|2025全年|120|\n|示例制造乙|2025半年|50|\n\n两家主体期间不同，不可直接排名。发布者引用了第三方主体，不能将乙的收入归给甲。\n\n## 局限性\n\n全部数字均为合成数据；不支持真实市场或投资结论。",
+      "figures": [
+        {
+          "kind": "diagram",
+          "title": "交付流程",
+          "caption": "客户验证是批量交付的前置环节",
+          "period": "机制示例",
+          "unit": "流程",
+          "source_ids": [
+            "62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c"
+          ],
+          "caveats": "合成示例，不代表实际时间",
+          "nodes": [
+            "原料",
+            "加工",
+            "客户验证",
+            "批量交付"
+          ],
+          "edges": [
+            [
+              "原料",
+              "加工"
+            ],
+            [
+              "加工",
+              "客户验证"
+            ],
+            [
+              "客户验证",
+              "批量交付"
+            ]
+          ],
+          "labels": [
+            "Service A",
+            "Service B"
+          ],
+          "values": [
+            100,
+            80
+          ]
+        }
+      ]
+    },
+    "review": {
+      "content": "Fixture review; a synthetic material finding exercises the single revision. Not factual certification.",
+      "issues": [
+        {
+          "severity": "material",
+          "location": "comparison table",
+          "evidence": "62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c: periods differ",
+          "impact": "A ranking would be misleading",
+          "suggestion": "Explain the period mismatch explicitly"
+        }
+      ]
+    },
+    "revision": {
+      "content": "# 合成制造研究报告\n\n本报告仅验证软件流程，不是真实投资研究。原料经加工后需要客户验证，验证是交付前置条件。\n\n## 公司比较\n\n|主体|期间|收入（万元）|\n|---|---|---|\n|示例制造甲|2025全年|120|\n|示例制造乙|2025半年|50|\n\n两家主体期间不同，不可直接排名。发布者引用了第三方主体，不能将乙的收入归给甲。\n\n## 局限性\n\n全部数字均为合成数据；不支持真实市场或投资结论。",
+      "figures": [
+        {
+          "kind": "diagram",
+          "title": "交付流程",
+          "caption": "客户验证是批量交付的前置环节",
+          "period": "机制示例",
+          "unit": "流程",
+          "source_ids": [
+            "62068c1ad98272661e736e331f867a60518f7e5b395945fba8d25cf5aa8ac15c"
+          ],
+          "caveats": "合成示例，不代表实际时间",
+          "nodes": [
+            "原料",
+            "加工",
+            "客户验证",
+            "批量交付"
+          ],
+          "edges": [
+            [
+              "原料",
+              "加工"
+            ],
+            [
+              "加工",
+              "客户验证"
+            ],
+            [
+              "客户验证",
+              "批量交付"
+            ]
+          ],
+          "labels": [
+            "Service A",
+            "Service B"
+          ],
+          "values": [
+            100,
+            80
+          ]
+        }
+      ]
+    },
+    "recheck": {
+      "content": "Fixture focused recheck: limitation is explicit. Not a real independent review.",
+      "issues": []
+    },
+    "context-0": {
+      "content": "Generated navigation for a synthetic source; not evidence."
+    }
+  }
+}
