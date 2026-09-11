@@ -1,0 +1,33 @@
+{
+  "validated_code_revision": "02069a6ac0dc7de7a8bdbab31bb93c6018afa150",
+  "stage": "Stage 1 only",
+  "pytest": {
+    "passed": 21,
+    "last_seconds": 5.82
+  },
+  "checks": {
+    "imports": "passed",
+    "cli_help": "passed",
+    "black": "passed",
+    "pylint": "passed",
+    "git_diff_check": "passed",
+    "fixture_resume": "passed",
+    "fixture_stage_replay": "passed",
+    "manufacturing_pdf_visual": "passed after DOT Unicode fix",
+    "service_pdf_chart_visual": "passed",
+    "existing_chinese_pdf_spans": "passed"
+  },
+  "fixture_reports": [
+    "data/redesign/stage1-final-manufacturing/reports/report.md",
+    "data/redesign/stage1-final-manufacturing/reports/report.pdf",
+    "data/redesign/stage1-final-service/reports/report.md",
+    "data/redesign/stage1-final-service/reports/report.pdf"
+  ],
+  "model_calls": 0,
+  "claude_calls": 0,
+  "live_reports": 0,
+  "stage2_started": false,
+  "product_validated": false,
+  "background_work": "All Stage 1-owned command sessions completed; no agents or live reports launched",
+  "limitations_file": "docs/redesign/RUNTIME_NOTES.md"
+}
