@@ -136,3 +136,14 @@ The new diagnostic stopped after A failed at the evidence deadline without final
 ## Local completion correction, offline only
 
 The subsequent local correction uses one durable evidence collection and shared bounded research/writing/fallback context, with explicit phase outcomes and unchanged ledger admission. The accumulated suite passed 64 tests; details and the exact unexecuted writing-only proposal are in [completion-correction/RESULTS.md](completion-correction/RESULTS.md). No further model calls or campaigns were run. Completion behavior has offline evidence; model factual accuracy and full-report acceptance remain unvalidated. Historical ledgers and the frozen failed candidate are preserved. Final repository/preservation state is in `data/redesign/completion-correction/final-state.json`.
+
+
+## Authorized single saved-evidence writing test
+
+Completed one tool-free company-writing call on candidate `7b87dc9` in 50.73
+seconds. No implementation changes or full report. Major attribution and
+technical-state checks passed; prose overstates the Luw packet gap as document
+absence and omits disclosure dates. Factual acceptance remains qualified.
+See `saved-writing-test/RESULTS.md` and
+`data/redesign/saved-writing-test/authorization-usage.json`. Both historical
+ledgers and original clocks remain unchanged. No remaining call authorization.

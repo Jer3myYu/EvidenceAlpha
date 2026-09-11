@@ -1,3 +1,11 @@
+# Latest: saved-evidence writing test finished
+
+The separately authorized single call completed in 50.73 seconds. Key company
+attributions and chart values passed original-source inspection, with a Luw
+document-absence overclaim and missing disclosure dates. See
+`saved-writing-test/RESULTS.md`. The one-call allowance is consumed; no further
+model work is authorized. Historical ledgers and frozen inputs are unchanged.
+
 # Latest: local correction implemented offline
 
 Read [completion-correction/RESULTS.md](completion-correction/RESULTS.md). Research, writing and fallback now use one durable evidence collection and one bounded context builder, retaining task/questions/recent outcomes. Ordinary-ledger cutoff recovery and diagnostic-ledger denial are both covered by offline reproductions. The accumulated suite passed 64 tests; no models ran.
