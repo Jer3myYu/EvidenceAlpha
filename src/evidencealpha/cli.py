@@ -98,6 +98,9 @@ def _driver(args: argparse.Namespace, settings: config.Settings) -> dict:
                 ledger,
                 attempt,
                 resume=bool(resume_from),
+                source_corpus=(
+                    pathlib.Path(case["corpus"]) if case.get("corpus") else None
+                ),
             )
             status = result["status"]
         else:

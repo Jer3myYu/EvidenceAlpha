@@ -8,6 +8,39 @@ import sys
 import claude_agent_sdk
 
 
+def normalize(message: object) -> list[dict]:
+    """Serialize supported SDK events across the subprocess boundary."""
+    if isinstance(message, claude_agent_sdk.RateLimitEvent):
+        return [{"kind": "rate_limit", **dataclasses.asdict(message)}]
+    if isinstance(message, claude_agent_sdk.ResultMessage):
+        value = dataclasses.asdict(message)
+        return [{"kind": "result", "text": value.pop("result", None), **value}]
+    if isinstance(message, claude_agent_sdk.AssistantMessage):
+        return [
+            {"kind": "text", "text": block.text, "model": message.model}
+            for block in message.content
+            if isinstance(block, claude_agent_sdk.TextBlock)
+        ]
+    return []
+
+
+def usage_exhausted(event: dict) -> bool:
+    """Recognize a rejected subscription window, not an arbitrary HTTP 429."""
+    info = event.get("rate_limit_info", {})
+    return (
+        event.get("kind") == "rate_limit"
+        and info.get("status") == "rejected"
+        and info.get("rate_limit_type")
+        in {
+            "five_hour",
+            "seven_day",
+            "seven_day_opus",
+            "seven_day_sonnet",
+            "overage",
+        }
+    )
+
+
 async def main() -> None:
     """Stream visible text/tool-free result metadata without hidden
     reasoning.
@@ -29,34 +62,11 @@ async def main() -> None:
     async for message in claude_agent_sdk.query(
         prompt=sys.stdin.read(), options=options
     ):
-        if isinstance(message, claude_agent_sdk.ResultMessage):
-            value = dataclasses.asdict(message)
-            print(
-                json.dumps(
-                    {
-                        "kind": "result",
-                        "text": value.get("result"),
-                        "usage": value.get("usage"),
-                        "session_id": value.get("session_id"),
-                        "is_error": value.get("is_error"),
-                        "subtype": value.get("subtype"),
-                    }
-                ),
-                flush=True,
-            )
-        elif isinstance(message, claude_agent_sdk.AssistantMessage):
-            for block in message.content:
-                if isinstance(block, claude_agent_sdk.TextBlock):
-                    print(
-                        json.dumps(
-                            {
-                                "kind": "text",
-                                "text": block.text,
-                                "model": message.model,
-                            }
-                        ),
-                        flush=True,
-                    )
+        for event in normalize(message):
+            print(json.dumps(event), flush=True)
+            if usage_exhausted(event):
+                # Exit the SDK stream immediately; no wait for quota reset.
+                return
 
 
 if __name__ == "__main__":

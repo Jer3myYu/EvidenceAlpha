@@ -14,12 +14,13 @@ dependencies = [
   "matplotlib>=3.9,<4",
   "requests>=2.32,<3",
   "tavily-python>=0.8,<1",
+  "python-dotenv>=1.2,<2",
   "claude-agent-sdk==0.2.151",
 ]
 
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3,<6"]
-dev = ["black==26.5.1", "pylint>=3.2,<5", "pytest==9.1.1"]
+dev = ["black==26.5.1", "pylint>=3.2,<5", "pytest==9.1.1", "jsonschema>=4,<5"]
 
 [project.scripts]
 evidencealpha = "evidencealpha.cli:main"

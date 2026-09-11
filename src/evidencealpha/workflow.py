@@ -43,6 +43,7 @@ class StageRunner:
         root: pathlib.Path,
         rehearsal: bool = False,
         seconds: float | None = None,
+        deadline: float | None = None,
     ) -> dict:
         """Record a new attempt."""
         folder = root / "stages" / stage / uuid.uuid4().hex[:12]
@@ -72,7 +73,9 @@ class StageRunner:
             ),
             "replay_mode": "fresh_portable_session",
             "upstream_hash": artifacts.digest(portable),
-            "seconds": seconds or self.settings.stage_seconds,
+            "seconds": (
+                seconds if seconds is not None else self.settings.stage_seconds
+            ),
         }
         artifacts.write(folder / "input.json", record)
         messages = [
@@ -82,7 +85,10 @@ class StageRunner:
                 "content": json.dumps(portable, ensure_ascii=False),
             },
         ]
-        deadline = time.monotonic() + record["seconds"]
+        deadline = min(
+            deadline if deadline is not None else float("inf"),
+            time.monotonic() + record["seconds"],
+        )
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
@@ -102,7 +108,13 @@ class StageRunner:
                     )
                     remaining = reservation["reserved_seconds"]
                 request = providers.Request(
-                    stage, prompt, settings, call_dir.resolve(), remaining
+                    stage,
+                    prompt,
+                    settings,
+                    call_dir.resolve(),
+                    remaining,
+                    deadline,
+                    tuple(record["tools"]),
                 )
                 artifacts.write(call_dir / "request.txt", prompt)
                 artifacts.write(
@@ -164,7 +176,11 @@ class StageRunner:
                     requested=dataclasses.asdict(settings),
                     effective_model=result.effective_model,
                     effective_effort=result.effective_effort,
+                    seconds=time.monotonic() - started,
+                    prompt_bytes=len(prompt.encode()),
                 )
+                if time.monotonic() >= deadline:
+                    raise providers.ProviderError("Stage deadline expired")
                 output = parse_output(result.text, role)
                 messages.append({"role": "assistant", "content": result.text})
                 if not output.get("tool_calls"):
@@ -178,11 +194,16 @@ class StageRunner:
                         "output": output,
                     }
                 for call in output["tool_calls"]:
+                    if time.monotonic() >= deadline:
+                        raise providers.ProviderError("Stage deadline expired")
                     source_versions = {
                         s["id"]: s["hash"] for s in self.tools.store.sources()
                     }
+                    tool_started = time.monotonic()
                     try:
-                        value = self.tools.call(call["name"], call["arguments"])
+                        value = self.tools.call(
+                            call["name"], call["arguments"], deadline=deadline
+                        )
                     except (OSError, ValueError, RuntimeError) as exc:
                         value = {"error": str(exc), "type": type(exc).__name__}
                     artifacts.event(
@@ -192,6 +213,7 @@ class StageRunner:
                         arguments=call["arguments"],
                         sources=source_versions,
                         result=value,
+                        seconds=time.monotonic() - tool_started,
                     )
                     messages.append(
                         {
@@ -319,10 +341,12 @@ def _prepare_report(
             f'{figure["caveats"]}\n'
         )
         body += "来源：" + ", ".join(figure["source_ids"]) + "\n"
-    body += "\n\n## Sources / 来源\n\n"
-    for source in store.sources():
-        label = source["id"]
-        body += f'- [{label}]({source["url"]})\n'
+    missing_sources = [s for s in store.sources() if s["url"] not in body]
+    if missing_sources:
+        body += "\n\n## Sources / 来源\n\n"
+        for source in missing_sources:
+            label = source["id"]
+            body += f'- [{label}]({source["url"]})\n'
     path = reports / name
     artifacts.write(path, body)
     return path
@@ -338,6 +362,7 @@ def run(
     ledger: budget.Ledger | None = None,
     campaign_attempt: dict | None = None,
     resume: bool = False,
+    source_corpus: pathlib.Path | None = None,
 ) -> dict:
     """Run one plan/research/write/review/revise/recheck path."""
     if mode not in ("fixture", "fixed-corpus", "live"):
@@ -357,7 +382,11 @@ def run(
                 "Settings changed; fork a run rather than reuse stale stages"
             )
     else:
-        sources = [store.ingest(path) for path in source_paths]
+        if source_corpus:
+            shutil.copytree(source_corpus, store.root, dirs_exist_ok=True)
+        for path in source_paths:
+            store.ingest(path)
+        sources = store.sources()
         manifest = {
             "id": root.name,
             "brief": brief,
@@ -384,7 +413,15 @@ def run(
     original_sources = _source_inputs(store, manifest["initial_sources"])
     base = {"brief": brief, "sources": original_sources}
 
-    def stage(name: str, role: str, portable: dict, seconds: int) -> dict:
+    def stage(
+        name: str,
+        role: str,
+        portable: dict,
+        seconds: float,
+        deadline: float | None = None,
+    ) -> dict:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise providers.ProviderError("Research phase deadline expired")
         old = manifest["stages"].get(name)
         if old and old["input_hash"] == artifacts.digest(portable):
             saved = artifacts.read(root / old["path"] / "output.json")
@@ -400,7 +437,9 @@ def run(
                 and stored_input["instructions"] == instructions
             ):
                 return old
-        value = runner.run(name, role, portable, root, seconds=seconds)
+        value = runner.run(
+            name, role, portable, root, seconds=seconds, deadline=deadline
+        )
         return value
 
     def save(name: str, value: dict) -> None:
@@ -424,6 +463,18 @@ def run(
                     "Only scoped industry/company research tasks are allowed"
                 )
             jobs.append((f"research-{index}", task))
+        research_seconds = settings.stage_allocations[1]
+        if campaign_attempt:
+            # Reserve writing, review/revision and export before research.
+            research_seconds = min(
+                research_seconds,
+                campaign_attempt["deadline"]
+                - time.time()
+                - sum(settings.stage_allocations[2:])
+                - settings.export_seconds,
+            )
+        research_deadline = time.monotonic() + max(0, research_seconds)
+        manifest["research_phase"] = {"seconds": max(0, research_seconds)}
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=settings.workers
         ) as pool:
@@ -434,6 +485,7 @@ def run(
                     task["role"],
                     {**base, "task": task, "plan": plan["output"]["content"]},
                     settings.stage_allocations[1],
+                    research_deadline,
                 ): name
                 for name, task in jobs
             }
@@ -509,6 +561,11 @@ def run(
                 "draft": path.read_text(),
                 "sources": sources,
                 "figures": artifacts.read(reports / "figures.json"),
+                "visual_review_capability": (
+                    "Text, figure specifications and hashes only; no native "
+                    "pixels supplied. Layout/readability require rendered "
+                    "visual inspection outside this reviewer."
+                ),
                 "asset_hashes": {
                     figure[key]: artifacts.digest(
                         artifacts.contained(reports, figure[key]).read_bytes()

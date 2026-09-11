@@ -1,6 +1,7 @@
 """Immutable source versions."""
 
 import dataclasses
+import copy
 import math
 import pathlib
 import re
@@ -13,6 +14,7 @@ from evidencealpha import artifacts
 
 PARSER_VERSION = "structural-1"
 CHUNK_VERSION = "spans-1"
+EMBEDDING_VERSION = "normalized-cosine-1"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -137,6 +139,50 @@ class SourceStore:
         self.root = root
         self.chunk_characters = chunk_characters
         self._lock = threading.RLock()
+        self._validated: dict[str, tuple] = {}
+        self._embedding_models: dict[str, object] = {}
+        self._embedding_index: dict[tuple, object] = {}
+
+    def _validated_source(self, source_id: str) -> tuple[dict, str]:
+        folder = artifacts.contained(self.root, source_id)
+        with self._lock:
+            cached = self._validated.get(source_id)
+            metadata = (folder / "source.json").stat()
+            metadata_version = (
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            source = (
+                cached[1]
+                if cached and cached[0][0] == metadata_version
+                else artifacts.read(folder / "source.json")
+            )
+            paths = [
+                folder / name
+                for name in (
+                    "source.json",
+                    source["text_path"],
+                    source["original_path"],
+                )
+            ]
+            version = tuple(
+                (s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+                for s in (p.stat() for p in paths)
+            )
+            if cached and cached[0] == version:
+                return cached[1], cached[2]
+            # Preserve CRLF code points: spans/hash refer to captured text,
+            # not Python's universal-newline translation.
+            text = paths[1].read_bytes().decode("utf-8")
+            if (
+                artifacts.digest(text.encode()) != source["text_hash"]
+                or artifacts.digest(paths[2].read_bytes()) != source["hash"]
+            ):
+                raise ValueError("Source version was changed in place")
+            self._validated[source_id] = (version, source, text)
+            return source, text
 
     def ingest(
         self,
@@ -240,32 +286,30 @@ class SourceStore:
     def open_source(self, source_id: str, chunk_id: str | None = None) -> dict:
         """Reopen original passages and validate stored source/text versions."""
         folder = artifacts.contained(self.root, source_id)
-        source = artifacts.read(folder / "source.json")
-        text = (folder / source["text_path"]).read_text(encoding="utf-8")
-        if (
-            artifacts.digest(text.encode()) != source["text_hash"]
-            or artifacts.digest((folder / source["original_path"]).read_bytes())
-            != source["hash"]
-        ):
-            raise ValueError("Source version was changed in place")
+        source, text = self._validated_source(source_id)
         if chunk_id is None:
-            return {"source": source, "text": text}
+            return {"source": copy.deepcopy(source), "text": text}
         chunk = next((c for c in source["chunks"] if c["id"] == chunk_id), None)
         if chunk is None:
             raise ValueError("Unknown chunk")
+        return self._passage(source, text, chunk, self._context(folder))
+
+    @staticmethod
+    def _context(folder: pathlib.Path) -> str | None:
+        path = folder / "context.json"
+        return artifacts.read(path)["generated"] if path.exists() else None
+
+    @staticmethod
+    def _passage(
+        source: dict, text: str, chunk: dict, context: str | None
+    ) -> dict:
         for span in chunk["spans"]:
             if not 0 <= span["start"] < span["end"] <= len(text):
                 raise ValueError("Invalid source span")
-        context_path = folder / "context.json"
-        context = (
-            artifacts.read(context_path)["generated"]
-            if context_path.exists()
-            else None
-        )
         return dataclasses.asdict(
             Passage(
-                source_id,
-                chunk_id,
+                source["id"],
+                chunk["id"],
                 "\n".join(text[s["start"] : s["end"]] for s in chunk["spans"]),
                 chunk["spans"],
                 chunk["section"],
@@ -325,11 +369,15 @@ class SourceStore:
             )
             return words
 
-        passages = [
-            self.open_source(s["id"], c["id"])
-            for s in self.sources()
-            for c in s["chunks"]
-        ]
+        sources = self.sources()
+        passages = []
+        for source in sources:
+            source, text = self._validated_source(source["id"])
+            context = self._context(self.root / source["id"])
+            passages.extend(
+                self._passage(source, text, chunk, context)
+                for chunk in source["chunks"]
+            )
         wanted = tokens(query)
         scores = [
             len(
@@ -345,16 +393,45 @@ class SourceStore:
             # pylint: disable=import-outside-toplevel
             import sentence_transformers
 
-            model = sentence_transformers.SentenceTransformer(
-                embedding_model, local_files_only=True
+            key = (
+                embedding_model,
+                PARSER_VERSION,
+                CHUNK_VERSION,
+                EMBEDDING_VERSION,
+                tuple(
+                    (
+                        s["id"],
+                        s["hash"],
+                        s["text_hash"],
+                        s["parser_version"],
+                        s["chunker_version"],
+                    )
+                    for s in sources
+                ),
             )
-            vectors = model.encode(
-                [query] + [p["text"] for p in passages],
-                normalize_embeddings=True,
-            )
+            with self._lock:
+                if embedding_model not in self._embedding_models:
+                    self._embedding_models[embedding_model] = (
+                        sentence_transformers.SentenceTransformer(
+                            embedding_model, local_files_only=True
+                        )
+                    )
+                model = self._embedding_models[embedding_model]
+                if key not in self._embedding_index:
+                    # Retain the current index only, not every corpus revision.
+                    self._embedding_index = {
+                        key: model.encode(
+                            [p["text"] for p in passages],
+                            normalize_embeddings=True,
+                        )
+                    }
+                vectors = self._embedding_index[key]
+                query_vector = model.encode([query], normalize_embeddings=True)[
+                    0
+                ]
             scores = [
-                score + float(vectors[0] @ vector)
-                for score, vector in zip(scores, vectors[1:])
+                score + float(query_vector @ vector)
+                for score, vector in zip(scores, vectors)
             ]
         ranked = sorted(zip(scores, passages), key=lambda pair: -pair[0])
         return [p for score, p in ranked[:limit] if score > 0]

@@ -48,7 +48,9 @@ class Settings:
     ledger: str = "docs/redesign/RUN_BUDGET.json"
     chunk_characters: int = 1600
     retrieval_limit: int = 6
+    source_open_characters: int = 24000
     embedding_model: str | None = None
+    search_env_file: str | None = None
     tool_rounds: int = 8
     workers: int = 2
     contextualize: bool = False
@@ -56,6 +58,7 @@ class Settings:
     context_characters: int = 12000
     stage_seconds: int = 360
     stage_allocations: tuple[int, ...] = (120, 600, 480, 240, 120, 120)
+    export_seconds: int = 120
 
     def __post_init__(self) -> None:
         if self.rehearsal_model not in (REHEARSAL_MODEL, RUNTIME_MODEL):
@@ -66,11 +69,17 @@ class Settings:
             raise ValueError("Explicit supported Claude model required")
         if not 1 <= self.workers <= LIMITS["research_workers"]:
             raise ValueError("Research concurrency must be 1 or 2")
+        if len(self.stage_allocations) != 6 or any(
+            value <= 0 for value in self.stage_allocations
+        ):
+            raise ValueError("Six positive stage allocations required")
         for value in (
             self.chunk_characters,
             self.retrieval_limit,
+            self.source_open_characters,
             self.tool_rounds,
             self.stage_seconds,
+            self.export_seconds,
         ):
             if value <= 0:
                 raise ValueError("Limits must be positive")

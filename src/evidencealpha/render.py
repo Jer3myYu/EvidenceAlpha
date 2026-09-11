@@ -57,7 +57,12 @@ def figures(
             # DOT quoting is JSON-compatible for these labels, never shell code.
             lines = [
                 "digraph G {",
-                "graph [rankdir=LR];",
+                # Long horizontal chains became unreadable at page width.
+                (
+                    "graph [rankdir=TB];"
+                    if len(nodes) > 5
+                    else "graph [rankdir=LR];"
+                ),
                 'node [shape=box, style=rounded, fontname="sans-serif"];',
             ]
             lines.extend(f"{json.dumps(n, ensure_ascii=False)};" for n in nodes)

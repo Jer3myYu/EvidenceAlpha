@@ -1,16 +1,24 @@
 """Bounded evidence tools shared by both providers; no agent shell access."""
 
 import decimal
+import dataclasses
+import json
+import os
 import pathlib
+import sys
 import tempfile
+import time
 import urllib.parse
+import uuid
 
 import requests
 import tavily
+import dotenv
 
 from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import documents
+from evidencealpha import providers
 
 TOOL_DEFINITIONS = {
     "search_evidence": {"query": "string"},
@@ -47,10 +55,17 @@ class EvidenceTools:
             if self.mode == "live" or key not in ("search_web", "fetch_source")
         }
 
-    def call(self, name: str, arguments: dict) -> object:
+    def call(
+        self, name: str, arguments: dict, deadline: float | None = None
+    ) -> object:
         """Dispatch a validated capability."""
         if name not in self.definitions():
             raise ValueError(f"Tool unavailable in {self.mode}: {name}")
+        remaining = 30 if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Tool deadline expired")
+        if deadline is not None and name in ("search_web", "fetch_source"):
+            return self._external(name, arguments, deadline)
         if name == "search_evidence":
             return self.store.search_evidence(
                 arguments["query"],
@@ -58,7 +73,22 @@ class EvidenceTools:
                 self.settings.embedding_model,
             )
         if name == "open_source":
-            return self.store.open_source(**arguments)
+            result = self.store.open_source(**arguments)
+            if arguments.get("chunk_id") is None:
+                if len(result["text"]) > self.settings.source_open_characters:
+                    raise ValueError(
+                        "Source exceeds full-text tool limit; use "
+                        "search_evidence then open_source with chunk_id. "
+                        "No source text has been truncated."
+                    )
+                # The text is already present; repeating block text and the
+                # complete chunk index inflated the measured tool transcript.
+                result["source"] = {
+                    key: value
+                    for key, value in result["source"].items()
+                    if key not in ("blocks", "chunks")
+                }
+            return result
         if name == "calculate":
             values = [decimal.Decimal(str(v)) for v in arguments["values"]]
             if len(values) != 2 or not all(v.is_finite() for v in values):
@@ -84,16 +114,50 @@ class EvidenceTools:
             raise ValueError("External tools require an active campaign ledger")
         if name == "search_web":
             self.ledger.acquire("search_calls")
-            result = tavily.TavilyClient().search(
-                query=arguments["query"], max_results=5, timeout=30
+            key = os.environ.get("TAVILY_API_KEY")
+            if not key and self.settings.search_env_file:
+                key = dotenv.dotenv_values(self.settings.search_env_file).get(
+                    "TAVILY_API_KEY"
+                )
+            result = tavily.TavilyClient(api_key=key).search(
+                query=arguments["query"],
+                max_results=5,
+                timeout=min(30, remaining),
             )
             return {
                 "kind": "search_snippets_not_original_snapshots",
                 "results": result.get("results", []),
             }
-        return self._fetch(arguments["url"])
+        return self._fetch(arguments["url"], deadline)
 
-    def _fetch(self, url: str) -> dict:
+    def _external(self, name: str, arguments: dict, deadline: float) -> object:
+        """Bound network waits and parsing in a cancellable process group."""
+        if self.ledger is None:
+            raise ValueError("External tools require an active campaign ledger")
+        request = providers.Request(
+            name,
+            json.dumps(
+                {
+                    "name": name,
+                    "arguments": arguments,
+                    "store": str(self.store.root.resolve()),
+                    "settings": dataclasses.asdict(self.settings),
+                    "ledger": str(self.ledger.path.resolve()),
+                }
+            ),
+            self.settings.model("plan"),
+            (self.store.root.parent / "tools" / uuid.uuid4().hex).resolve(),
+            max(0, deadline - time.monotonic()),
+            deadline,
+        )
+        events, code = providers.execute(
+            [sys.executable, "-m", "evidencealpha.tool_runner"], request
+        )
+        if code or not events:
+            raise RuntimeError("External tool failed; see tool artifacts")
+        return events[-1]
+
+    def _fetch(self, url: str, deadline: float | None = None) -> dict:
         for source in self.store.sources():
             if source["url"] == url:
                 return {"source": source, "reused": True}
@@ -107,9 +171,15 @@ class EvidenceTools:
                 "Source URL must be public HTTP(S), without credentials"
             )
         self.ledger.acquire("fetch_attempts")
+        remaining = 30 if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Fetch deadline expired")
         # No automatic retries. Requests timeout bounds individual socket waits.
         with requests.get(
-            url, timeout=(10, 20), stream=True, allow_redirects=False
+            url,
+            timeout=(min(10, remaining), min(20, remaining)),
+            stream=True,
+            allow_redirects=False,
         ) as response:
             if 300 <= response.status_code < 400:
                 raise ValueError(
@@ -124,6 +194,11 @@ class EvidenceTools:
                 size = 0
                 with path.open("wb") as output:
                     for chunk in response.iter_content(65536):
+                        if (
+                            deadline is not None
+                            and time.monotonic() >= deadline
+                        ):
+                            raise RuntimeError("Fetch deadline expired")
                         size += len(chunk)
                         if size > 25_000_000:
                             raise ValueError(

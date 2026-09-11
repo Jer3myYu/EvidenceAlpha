@@ -13,6 +13,8 @@ from typing import Protocol
 
 from evidencealpha import artifacts
 from evidencealpha import config
+from evidencealpha import claude_runner
+from evidencealpha import protocol
 
 _ACTIVE: set[int] = set()
 _ACTIVE_LOCK = threading.Lock()
@@ -49,6 +51,8 @@ class Request:
     settings: config.ModelSettings
     workspace: pathlib.Path
     seconds: float
+    deadline: float | None = None
+    allowed_tools: tuple[str, ...] | None = None
 
 
 @dataclasses.dataclass
@@ -124,6 +128,12 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
     environment["PYTHONPATH"] = str(pathlib.Path(__file__).resolve().parents[1])
     raw = request.workspace / "raw.jsonl"
     started = time.monotonic()
+    deadline = min(
+        started + request.seconds,
+        request.deadline if request.deadline is not None else float("inf"),
+    )
+    if time.monotonic() >= deadline:
+        raise ProviderError("Provider deadline expired before launch")
     with (
         raw.open("w", encoding="utf-8") as stdout,
         (request.workspace / "stderr.txt").open(
@@ -146,7 +156,9 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
             request.workspace / "events.jsonl", "invoked", pid=process.pid
         )
         try:
-            process.communicate(request.prompt, timeout=request.seconds)
+            process.communicate(
+                request.prompt, timeout=max(0, deadline - time.monotonic())
+            )
         except subprocess.TimeoutExpired as exc:
             raise ProviderError("Provider deadline expired") from exc
         finally:
@@ -183,6 +195,8 @@ class CodexProvider:
         ):
             raise ValueError("Model is outside the authorized campaign")
         output = request.workspace / "last-message.txt"
+        schema = request.workspace / "output-schema.json"
+        artifacts.write(schema, protocol.output_schema(request.allowed_tools))
         overrides = {
             "model_reasoning_effort": request.settings.effort,
             "forced_login_method": "chatgpt",
@@ -196,8 +210,6 @@ class CodexProvider:
             "features.js_repl": False,
             "features.apply_patch_freeform": False,
             "project_doc_max_bytes": 0,
-            "model_providers.openai.request_max_retries": 0,
-            "model_providers.openai.stream_max_retries": 0,
         }
         command = [
             "codex",
@@ -212,6 +224,8 @@ class CodexProvider:
             request.settings.model,
             "-o",
             str(output),
+            "--output-schema",
+            str(schema),
         ]
         for key, value in overrides.items():
             command.extend(["-c", f"{key}={json.dumps(value)}"])
@@ -251,7 +265,7 @@ class ClaudeProvider:
         final = next(
             (e for e in reversed(events) if e.get("kind") == "result"), {}
         )
-        if final.get("error_code") == "usage_exhausted":
+        if any(claude_runner.usage_exhausted(event) for event in events):
             raise QuotaExhausted(
                 "Claude explicitly reported usage exhaustion",
                 final.get("usage"),
