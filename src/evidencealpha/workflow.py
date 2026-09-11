@@ -16,6 +16,7 @@ from evidencealpha import config
 from evidencealpha import documents
 from evidencealpha import providers
 from evidencealpha import render
+from evidencealpha import stage_context
 from evidencealpha import tools
 
 
@@ -67,6 +68,7 @@ class StageRunner:
         rehearsal: bool = False,
         seconds: float | None = None,
         deadline: float | None = None,
+        final_notes_only: bool = False,
     ) -> dict:
         """Record a new attempt."""
         folder = root / "stages" / stage / uuid.uuid4().hex[:12]
@@ -83,6 +85,7 @@ class StageRunner:
         record = {
             "stage": stage,
             "role": role,
+            "final_notes_only": final_notes_only,
             "portable": portable,
             "instructions": instructions,
             "tools": self.tools.definitions(),
@@ -101,13 +104,12 @@ class StageRunner:
             ),
         }
         artifacts.write(folder / "input.json", record)
-        messages = [
-            {"role": "system", "content": instructions},
-            {
-                "role": "user",
-                "content": json.dumps(portable, ensure_ascii=False),
-            },
-        ]
+        context = stage_context.StageContext(
+            folder / "context-state.json",
+            {k: v for k, v in portable.items() if k != "settled_evidence"},
+        )
+        if final_notes_only:
+            context.settle(portable.get("settled_evidence", {}))
         deadline = min(
             deadline if deadline is not None else float("inf"),
             time.monotonic() + record["seconds"],
@@ -128,6 +130,9 @@ class StageRunner:
             evidence_end = deadline - margin - writing_seconds
         else:
             margin, writing_seconds, evidence_end = 0, duration, deadline
+        if final_notes_only:
+            evidence_end = started_stage
+            writing_seconds = max(0, duration - margin)
         final_end = deadline - margin
         artifacts.write(
             folder / "timing.json",
@@ -139,17 +144,41 @@ class StageRunner:
                 "margin_seconds": margin,
             },
         )
-        gathered = {}
+        phase = "evidence"
+        longest_call = 0.0
+        phase_outcomes = []
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
             for turn in range(self.settings.tool_rounds):
-                final_turn = (
-                    turn == self.settings.tool_rounds - 1
-                    or time.monotonic()
-                    >= evidence_end - min(15, duration * 0.05)
+                evidence_remaining = evidence_end - time.monotonic()
+                should_write = (
+                    final_notes_only
+                    or turn == self.settings.tool_rounds - 1
+                    or evidence_remaining
+                    <= max(longest_call, min(15, duration * 0.05))
                     or (role == "revision" and turn >= 2)
                 )
+                if phase == "evidence" and should_write:
+                    phase = "final_notes"
+                    if not phase_outcomes:
+                        phase_outcomes.append(
+                            {
+                                "phase": "evidence",
+                                "outcome": "writing_requested",
+                            }
+                        )
+                    artifacts.write(
+                        folder / "phase-outcomes.json", phase_outcomes
+                    )
+                    artifacts.event(
+                        event_path,
+                        "phase_transition",
+                        phase=phase,
+                        evidence_remaining=evidence_remaining,
+                        prior_call_seconds=longest_call,
+                    )
+                final_turn = phase == "final_notes"
                 call_deadline = (
                     min(final_end, time.monotonic() + writing_seconds)
                     if final_turn
@@ -160,22 +189,18 @@ class StageRunner:
                     raise providers.ProviderError("Stage deadline expired")
                 call_dir = folder / f"call-{turn}"
                 available_tools = {} if final_turn else record["tools"]
-                prompt = json.dumps(
-                    {
-                        "messages": messages,
-                        "tools": available_tools,
-                        "remaining_calls": self.settings.tool_rounds - turn,
-                        "turn_instruction": (
-                            "Final call: return your completed stage output "
-                            "from gathered evidence, with explicit gaps. "
-                            "Do not request tools."
-                            if final_turn
-                            else "Gather evidence efficiently; reserve the "
-                            "last call for completed stage output."
-                        ),
-                    },
-                    ensure_ascii=False,
+                prompt, current_context = context.request(
+                    instructions,
+                    available_tools,
+                    phase,
+                    self.settings.tool_rounds - turn,
+                    self.settings.stage_context_bytes,
                 )
+                artifacts.write(call_dir / "context.json", current_context)
+                if final_turn:
+                    artifacts.write(
+                        folder / "writing-context.json", current_context
+                    )
                 reservation = None
                 if self.ledger:
                     reservation = self.ledger.reserve(
@@ -197,6 +222,7 @@ class StageRunner:
                 )
                 started = time.monotonic()
                 result, call_status = None, "failed"
+                phase_timeout = None
                 usage = {}
                 try:
                     provider = self.provider
@@ -229,6 +255,48 @@ class StageRunner:
                     # Fresh portable session; keep public
                     # tool results, never private context.
                     continue
+                except providers.ProviderTimeout as exc:
+                    usage = exc.usage
+                    # Recover only a supervisor-confirmed evidence cutoff.
+                    # A smaller ledger reservation is a different limit.
+                    if (
+                        phase == "evidence"
+                        and exc.deadline == evidence_end
+                        and time.monotonic() >= evidence_end
+                        and time.monotonic() < final_end
+                        and turn < self.settings.tool_rounds - 1
+                    ):
+                        phase_timeout = {
+                            "error": str(exc),
+                            "phase": phase,
+                            "deadline": exc.deadline,
+                            "call": call_dir.name,
+                            "status": "failed",
+                        }
+                        artifacts.write(
+                            call_dir / "failure.json", phase_timeout
+                        )
+                        artifacts.event(
+                            event_path, "phase_timeout", **phase_timeout
+                        )
+                        phase_outcomes.append(
+                            {
+                                "phase": phase,
+                                "outcome": "eligible_cutoff",
+                                "call": call_dir.name,
+                            }
+                        )
+                        artifacts.write(
+                            folder / "phase-outcomes.json", phase_outcomes
+                        )
+                        context.outcome(
+                            "provider_call",
+                            {"call": call_dir.name},
+                            phase_timeout,
+                            "failed",
+                        )
+                    else:
+                        raise
                 except providers.ProviderError as exc:
                     usage = exc.usage
                     raise
@@ -240,6 +308,11 @@ class StageRunner:
                             call_status,
                             usage,
                         )
+                longest_call = max(longest_call, time.monotonic() - started)
+                if phase_timeout is not None:
+                    # A distinct writing call, not a retry. Ledger admission
+                    # still applies and may forbid continuing after failure.
+                    continue
                 artifacts.write(
                     call_dir / "normalized.json", dataclasses.asdict(result)
                 )
@@ -257,7 +330,10 @@ class StageRunner:
                 if time.monotonic() >= deadline:
                     raise providers.ProviderError("Stage deadline expired")
                 output = parse_output(result.text, role)
-                messages.append({"role": "assistant", "content": result.text})
+                if output.get("content") and output.get("tool_calls"):
+                    context.outcome(
+                        "research_note", {}, output["content"], "unverified"
+                    )
                 if not output.get("tool_calls"):
                     if role in ("review", "recheck"):
                         for issue in output["issues"]:
@@ -269,6 +345,12 @@ class StageRunner:
                                     raise ValueError(
                                         "Review quote is absent from original"
                                     )
+                    phase_outcomes.append(
+                        {"phase": "final_notes", "outcome": "complete"}
+                    )
+                    artifacts.write(
+                        folder / "phase-outcomes.json", phase_outcomes
+                    )
                     status = "complete"
                     artifacts.write(folder / "output.json", output)
                     artifacts.write(folder / "output.md", output["content"])
@@ -282,8 +364,15 @@ class StageRunner:
                     raise providers.ProviderError(
                         "Final response requested tools"
                     )
-                for call in output["tool_calls"]:
+                for index, call in enumerate(output["tool_calls"]):
                     if time.monotonic() >= evidence_end:
+                        for pending in output["tool_calls"][index:]:
+                            context.outcome(
+                                pending["name"],
+                                pending["arguments"],
+                                {"reason": "Phase ended; tool not run"},
+                                "not_executed",
+                            )
                         break
                     source_versions = {
                         s["id"]: s["hash"] for s in self.tools.store.sources()
@@ -295,6 +384,11 @@ class StageRunner:
                             call["arguments"],
                             deadline=evidence_end,
                         )
+                    except (
+                        providers.ProviderCancelled,
+                        providers.QuotaExhausted,
+                    ):
+                        raise
                     except (OSError, ValueError, RuntimeError) as exc:
                         value = {"error": str(exc), "type": type(exc).__name__}
                     artifacts.event(
@@ -306,37 +400,9 @@ class StageRunner:
                         result=value,
                         seconds=time.monotonic() - tool_started,
                     )
-                    passages = value if isinstance(value, list) else [value]
-                    for passage in passages:
-                        if (
-                            isinstance(passage, dict)
-                            and passage.get("spans")
-                            and passage.get("text")
-                            and passage.get("source_id")
-                        ):
-                            key = (
-                                passage["source_id"],
-                                passage.get("chunk_id"),
-                            )
-                            if key not in gathered and len(gathered) < 12:
-                                if (
-                                    sum(
-                                        len(p["text"])
-                                        for p in gathered.values()
-                                    )
-                                    + len(passage["text"])
-                                    <= 16000
-                                ):
-                                    gathered[key] = passage
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {"tool": call["name"], "result": value},
-                                ensure_ascii=False,
-                            ),
-                        }
-                    )
+                    if isinstance(value, dict):
+                        context.settle(value)
+                    context.outcome(call["name"], call["arguments"], value)
             raise providers.ProviderError(
                 "Tool-round limit reached; no final output"
             )
@@ -347,18 +413,38 @@ class StageRunner:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
-            if role in ("company", "industry"):
-                handoff = {
-                    "status": "unsynthesized_evidence",
-                    "limitation": "No final notes; not verified findings",
-                    "selection": (
-                        "At most 12 passages / 16000 characters; "
-                        "full retrievals remain in events.jsonl"
-                    ),
-                    "passages": list(gathered.values()),
+            phase_outcomes.append(
+                {
+                    "phase": phase,
+                    "outcome": "terminal_failure",
+                    "type": type(exc).__name__,
                     "error": str(exc),
                 }
+            )
+            artifacts.write(folder / "phase-outcomes.json", phase_outcomes)
+            context.outcome(
+                "stage", {"phase": phase}, {"error": str(exc)}, "failed"
+            )
+            if role in ("company", "industry"):
+                try:
+                    _, handoff = context.request(
+                        instructions,
+                        {},
+                        "final_notes",
+                        0,
+                        self.settings.stage_context_bytes,
+                    )
+                except ValueError as context_error:
+                    # The full task/evidence remain durable even when the task
+                    # itself cannot fit. Never mask the original failure.
+                    handoff = {
+                        "context_record": str(context.path),
+                        "context_error": str(context_error),
+                    }
+                handoff.update(status="unsynthesized_evidence", error=str(exc))
                 artifacts.write(folder / "handoff.json", handoff)
+                if isinstance(exc, providers.ProviderCancelled):
+                    raise
                 raise ResearchHandoffError(str(exc), handoff) from exc
             raise
         finally:
@@ -648,6 +734,8 @@ def run(
                 try:
                     save(name, future.result())
                 except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                    if isinstance(exc, providers.ProviderCancelled):
+                        raise
                     manifest.setdefault("research_gaps", {})[name] = str(exc)
                     if isinstance(exc, ResearchHandoffError):
                         manifest.setdefault("unsynthesized_evidence", {})[

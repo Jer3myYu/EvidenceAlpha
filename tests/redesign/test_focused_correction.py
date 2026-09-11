@@ -52,6 +52,7 @@ def test_issuer_swaps_luxin_and_split_statement(tmp_path):
         passages = evidence.call(
             "search_evidence", {"query": "营业收入", "source_id": source_id}
         )
+        passages = documents.ungroup_passages(passages)
         assert passages
         assert all(
             p["issuer"]["value"] == name and p["source_id"] == source_id
@@ -61,6 +62,7 @@ def test_issuer_swaps_luxin_and_split_statement(tmp_path):
     result = evidence.call(
         "search_evidence", {"query": "路芯", "source_id": ids[owner]}
     )
+    result = documents.ungroup_passages(result)
     assert any("路芯" in p["text"] for p in result)
     assert all(p["issuer"]["value"] == owner for p in result)
     sid = ids[saved["expected"]["split_subject"]]
@@ -73,6 +75,7 @@ def test_issuer_swaps_luxin_and_split_statement(tmp_path):
         "open_source",
         {"source_id": sid, "chunk_id": tail["chunk_id"], "surrounding": 1},
     )
+    window = documents.ungroup_passages(window)
     assert saved["expected"]["split_status"] in "".join(
         p["text"] for p in window
     )
@@ -109,7 +112,8 @@ def test_document_issuer_is_not_statement_subject(tmp_path):
     )
     passage = tools.EvidenceTools(
         store, config.Settings(), "fixed-corpus"
-    ).call("search_evidence", {"query": "revenue", "source_id": sid})[0]
+    ).call("search_evidence", {"query": "revenue", "source_id": sid})
+    passage = documents.ungroup_passages(passage)[0]
     assert passage["issuer"]["value"] == issuer
     assert passage["text"] == f"{subject} reported revenue of 42."
     assert "subjects may differ" in passage["identity_scope"]
@@ -146,8 +150,14 @@ def test_lost_handoff_retains_originals_without_transcript(tmp_path):
         runner.run("company", "company", {}, tmp_path / "run", seconds=180)
     handoff = failure.value.handoff
     assert handoff["status"] == "unsynthesized_evidence"
-    assert handoff["passages"][0]["source_id"] == source_id
-    assert handoff["passages"][0]["chunk_id"] == "c0"
+    assert (
+        documents.ungroup_passages(handoff["settled_evidence"])[0]["source_id"]
+        == source_id
+    )
+    assert (
+        documents.ungroup_passages(handoff["settled_evidence"])[0]["chunk_id"]
+        == "c0"
+    )
     assert "messages" not in handoff
     assert "output" not in handoff
     assert next(
@@ -311,7 +321,10 @@ def test_failed_worker_evidence_reaches_synthesis(tmp_path):
     assert not portable["notes"]
     fallback = portable["unsynthesized_evidence"]["research-0"]
     assert fallback["status"] == "unsynthesized_evidence"
-    assert fallback["passages"][0]["source_id"] == source_id
+    assert (
+        documents.ungroup_passages(fallback["settled_evidence"])[0]["source_id"]
+        == source_id
+    )
 
 
 def test_revision_enclosing_deadline_cannot_be_extended(tmp_path):
@@ -390,6 +403,7 @@ def test_false_luxin_objection_can_be_contested(tmp_path):
     assert result["output"]["content"] == rejected
     tool_reply = json.loads(
         json.loads(provider.calls[1].prompt)["messages"][-1]["content"]
-    )["result"]
+    )["settled_evidence"]
+    tool_reply = documents.ungroup_passages(tool_reply)[0]
     assert tool_reply["issuer"]["value"] == expected["luxin_issuer"]
     assert tool_reply["text"] == passage["text"]

@@ -256,7 +256,7 @@ def test_large_source_tool_requires_original_chunks_without_truncation(
     result = evidence.call(
         "open_source", {"source_id": source["id"], "chunk_id": "c0"}
     )
-    assert result == store.concise_passage(
+    assert documents.ungroup_passages(result)[0] == store.concise_passage(
         store.open_source(source["id"], "c0")
     )
 
@@ -312,8 +312,10 @@ def test_source_scope_excludes_competing_documents_before_top_k(tmp_path):
         "search_evidence", {"query": f"source_id:{source_id} revenue 2025"}
     )
     assert explicit == inline
-    assert {p["source_id"] for p in explicit} == {source["id"]}
-    assert explicit[0]["text"] == "revenue 2024"
+    assert {p["source_id"] for p in documents.ungroup_passages(explicit)} == {
+        source["id"]
+    }
+    assert documents.ungroup_passages(explicit)[0]["text"] == "revenue 2024"
 
 
 def test_last_round_returns_notes_instead_of_discarding_research(tmp_path):

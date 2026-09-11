@@ -17,6 +17,7 @@ from evidencealpha import claude_runner
 from evidencealpha import protocol
 
 _ACTIVE: set[int] = set()
+_CANCELLED: set[int] = set()
 _ACTIVE_LOCK = threading.Lock()
 
 
@@ -24,6 +25,7 @@ def cancel_all() -> None:
     """Terminate active provider groups before controller cancellation exits."""
     with _ACTIVE_LOCK:
         for pid in _ACTIVE:
+            _CANCELLED.add(pid)
             try:
                 os.killpg(pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -36,6 +38,18 @@ class ProviderError(RuntimeError):
     def __init__(self, message: str, usage: dict | None = None) -> None:
         super().__init__(message)
         self.usage = usage or {}
+
+
+class ProviderTimeout(ProviderError):
+    """The local process supervisor reached this exact monotonic deadline."""
+
+    def __init__(self, message: str, deadline: float) -> None:
+        super().__init__(message)
+        self.deadline = deadline
+
+
+class ProviderCancelled(ProviderError):
+    """Explicit controller cancellation; never a recoverable phase cutoff."""
 
 
 class QuotaExhausted(ProviderError):
@@ -133,7 +147,9 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
         request.deadline if request.deadline is not None else float("inf"),
     )
     if time.monotonic() >= deadline:
-        raise ProviderError("Provider deadline expired before launch")
+        raise ProviderTimeout(
+            "Provider deadline expired before launch", deadline
+        )
     with (
         raw.open("w", encoding="utf-8") as stdout,
         (request.workspace / "stderr.txt").open(
@@ -155,12 +171,13 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
         artifacts.event(
             request.workspace / "events.jsonl", "invoked", pid=process.pid
         )
+        timed_out = False
         try:
             process.communicate(
                 request.prompt, timeout=max(0, deadline - time.monotonic())
             )
-        except subprocess.TimeoutExpired as exc:
-            raise ProviderError("Provider deadline expired") from exc
+        except subprocess.TimeoutExpired:
+            timed_out = True
         finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -169,12 +186,19 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
             process.wait()
             with _ACTIVE_LOCK:
                 _ACTIVE.discard(process.pid)
+                cancelled = process.pid in _CANCELLED
+                _CANCELLED.discard(process.pid)
             artifacts.event(
                 request.workspace / "events.jsonl",
                 "completed",
                 seconds=time.monotonic() - started,
                 returncode=process.returncode,
+                cancelled=cancelled,
             )
+    if cancelled:
+        raise ProviderCancelled("Provider cancelled by controller")
+    if timed_out:
+        raise ProviderTimeout("Provider deadline expired", deadline)
     events = []
     for line in raw.read_text().splitlines():
         try:

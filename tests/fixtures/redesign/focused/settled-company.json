@@ -1,0 +1,1263 @@
+{
+  "origin": "preserved failed A; distinct original passages only, not final findings",
+  "settled_evidence": {
+    "sources": [
+      {
+        "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+        "title": {
+          "value": "深圳市龙图光罩股份有限公司2025 年年度报告摘要",
+          "chunk_id": "c0"
+        },
+        "issuer": {
+          "value": "深圳市龙图光罩股份有限公司",
+          "chunk_id": "c0"
+        },
+        "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "passages": [
+          {
+            "chunk_id": "c183",
+            "text": "虹宏力、士兰微、立昂微、英诺赛科等国内主要晶圆厂保持合作，在功率半导体、MEMS、第三",
+            "spans": [
+              {
+                "start": 5240,
+                "end": 5283,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c184",
+            "text": "代半导体等特色工艺光罩领域形成较强客户黏性，成为下游客户国产化采购的重要选择之一。",
+            "spans": [
+              {
+                "start": 5285,
+                "end": 5326,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c185",
+            "text": "2025 年，在行业格局深度调整背景下，公司在技术能力与市场拓展方面取得了稳步进展：技",
+            "spans": [
+              {
+                "start": 5328,
+                "end": 5371,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c186",
+            "text": "术制程方面，公司持续深耕成熟制程，90nm 产品已成功实现量产，逐步向高端制程领域迈进；在",
+            "spans": [
+              {
+                "start": 5373,
+                "end": 5418,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c187",
+            "text": "客户合作方面，公司产品与服务覆盖了国内多家主流晶圆厂。凭借稳定的产品品质和及时的交付",
+            "spans": [
+              {
+                "start": 5420,
+                "end": 5462,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c205",
+            "text": "公司不断增加投入进行技术攻关和产品迭代，产品广泛应用于信号链及电源管理IC 等成熟制",
+            "spans": [
+              {
+                "start": 6043,
+                "end": 6085,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c206",
+            "text": "程，以及功率器件、MEMS 传感器、先进封装等特色工艺制程。目前珠海工厂90nm PSM 产品已",
+            "spans": [
+              {
+                "start": 6087,
+                "end": 6135,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c207",
+            "text": "实现量产，65nm 产品已开始送样验证，并已完成40nm 工艺节点的生产设备布局，多项工艺优化",
+            "spans": [
+              {
+                "start": 6137,
+                "end": 6184,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c77",
+            "text": "产品名\n端半导体制造、半",
+            "spans": [
+              {
+                "start": 1391,
+                "end": 1394,
+                "page": 4
+              },
+              {
+                "start": 1623,
+                "end": 1631,
+                "page": 4
+              }
+            ]
+          },
+          {
+            "chunk_id": "c235",
+            "text": "（2）半导体掩模版行业发展趋势",
+            "spans": [
+              {
+                "start": 7194,
+                "end": 7209,
+                "page": 10
+              }
+            ]
+          },
+          {
+            "chunk_id": "c301",
+            "text": "项目 | 第一季度\n营业收入 | 54,367,405.98 | 61,549,345.17 | 67,337,262.23 | 63,404,289.50",
+            "spans": [
+              {
+                "start": 9402,
+                "end": 9411,
+                "page": 12
+              },
+              {
+                "start": 9471,
+                "end": 9539,
+                "page": 12
+              }
+            ]
+          },
+          {
+            "chunk_id": "c89",
+            "text": "版。公司产品主要应用于半导体领域，凭借良好的客户需求转换能力、制程能力、品质保证能力、",
+            "spans": [
+              {
+                "start": 1831,
+                "end": 1874,
+                "page": 5
+              }
+            ]
+          },
+          {
+            "chunk_id": "c47",
+            "text": "造的工艺节点已提升至90nm，更高节点产品已在送样验证和规划建设中。公司掩模版产品广泛应",
+            "spans": [
+              {
+                "start": 1152,
+                "end": 1196,
+                "page": 3
+              }
+            ]
+          },
+          {
+            "chunk_id": "c198",
+            "text": "②对于130nm-28nm 制程节点的成熟制程半导体掩模版产品，该领域是包括公司在内的当前",
+            "spans": [
+              {
+                "start": 5782,
+                "end": 5827,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c75",
+            "text": "产品名\n掩模版。 | 主要用于对精度",
+            "spans": [
+              {
+                "start": 1391,
+                "end": 1394,
+                "page": 4
+              },
+              {
+                "start": 1600,
+                "end": 1614,
+                "page": 4
+              }
+            ]
+          },
+          {
+            "chunk_id": "c62",
+            "text": "产品名\n用于高精度掩模版",
+            "spans": [
+              {
+                "start": 1391,
+                "end": 1394,
+                "page": 4
+              },
+              {
+                "start": 1475,
+                "end": 1483,
+                "page": 4
+              }
+            ]
+          },
+          {
+            "chunk_id": "c45",
+            "text": "公司主营业务为半导体掩模版的研发、生产和销售，是国内稀缺的独立第三方半导体掩模版",
+            "spans": [
+              {
+                "start": 1066,
+                "end": 1106,
+                "page": 3
+              }
+            ]
+          },
+          {
+            "chunk_id": "c280",
+            "text": " | 2025年 | 2024年 | 本年比上年\n营业收入 | 246,658,302.88 | 246,503,467.92 | 0.06 | 218,292,698.54",
+            "spans": [
+              {
+                "start": 8675,
+                "end": 8699,
+                "page": 12
+              },
+              {
+                "start": 8858,
+                "end": 8920,
+                "page": 12
+              }
+            ]
+          },
+          {
+            "chunk_id": "c96",
+            "text": "模版产品性能。",
+            "spans": [
+              {
+                "start": 2101,
+                "end": 2108,
+                "page": 5
+              }
+            ]
+          },
+          {
+            "chunk_id": "c300",
+            "text": "项目 | 第一季度\n（10-12 月份）",
+            "spans": [
+              {
+                "start": 9402,
+                "end": 9411,
+                "page": 12
+              },
+              {
+                "start": 9460,
+                "end": 9470,
+                "page": 12
+              }
+            ]
+          },
+          {
+            "chunk_id": "c307",
+            "text": "项目 | 第一季度\n经营活动产生的现金流",
+            "spans": [
+              {
+                "start": 9402,
+                "end": 9411,
+                "page": 12
+              },
+              {
+                "start": 9707,
+                "end": 9717,
+                "page": 12
+              }
+            ]
+          },
+          {
+            "chunk_id": "c181",
+            "text": "客户提供相关产品及服务的综合能力。",
+            "spans": [
+              {
+                "start": 5179,
+                "end": 5196,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c279",
+            "text": " | 2025年 | 2024年 | 本年比上年\n东的净资产 | 1,211,911,159.17 | 1,203,865,425.06 | 0.67 | 553,243,259.26",
+            "spans": [
+              {
+                "start": 8675,
+                "end": 8699,
+                "page": 12
+              },
+              {
+                "start": 8790,
+                "end": 8857,
+                "page": 12
+              }
+            ]
+          },
+          {
+            "chunk_id": "c281",
+            "text": " | 2025年 | 2024年 | 本年比上年\n利润总额 | 57,637,393.08 | 102,009,994.51 | -43.50 | 95,260,821.25",
+            "spans": [
+              {
+                "start": 8675,
+                "end": 8699,
+                "page": 12
+              },
+              {
+                "start": 8921,
+                "end": 8983,
+                "page": 12
+              }
+            ]
+          },
+          {
+            "chunk_id": "c43",
+            "text": "2、报告期公司主要业务简介",
+            "spans": [
+              {
+                "start": 1031,
+                "end": 1044,
+                "page": 3
+              }
+            ]
+          },
+          {
+            "chunk_id": "c44",
+            "text": "2.1 主要业务、主要产品或服务情况",
+            "spans": [
+              {
+                "start": 1046,
+                "end": 1064,
+                "page": 3
+              }
+            ]
+          },
+          {
+            "chunk_id": "c46",
+            "text": "厂商。公司紧跟国内半导体发展路线，不断进行技术攻关和产品迭代，量产产品对应下游晶圆制",
+            "spans": [
+              {
+                "start": 1108,
+                "end": 1150,
+                "page": 3
+              }
+            ]
+          }
+        ],
+        "version": {
+          "hash": "3941daaefdb0ed86d0479f7340f66b0ed7e99d8e73275da5402642b96457f599",
+          "text_hash": "26095d12d3391bd411ff910502e38642dca292f0f6a1282cf6e99471c0d5c5c3",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        }
+      },
+      {
+        "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+        "title": {
+          "value": "深圳清溢光电股份有限公司2025 年年度报告",
+          "chunk_id": "c0"
+        },
+        "issuer": {
+          "value": "深圳清溢光电股份有限公司",
+          "chunk_id": "c0"
+        },
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "passages": [
+          {
+            "chunk_id": "c2304",
+            "text": "展130nm-28nm 半导体芯片用掩膜版的工艺研发及量产。",
+            "spans": [
+              {
+                "start": 56586,
+                "end": 56616,
+                "page": 54
+              }
+            ]
+          },
+          {
+            "chunk_id": "c694",
+            "text": "2、半导体芯片掩膜版业务",
+            "spans": [
+              {
+                "start": 22882,
+                "end": 22894,
+                "page": 23
+              }
+            ]
+          },
+          {
+            "chunk_id": "c695",
+            "text": "2025 年，公司半导体芯片掩膜版业务实现稳步增长，当期营业收入达2.04 亿元，较上年同",
+            "spans": [
+              {
+                "start": 22896,
+                "end": 22941,
+                "page": 23
+              }
+            ]
+          },
+          {
+            "chunk_id": "c2328",
+            "text": "体芯片用掩膜版的产品研发和28nm 半导体芯片所需的掩膜版工艺开发规划。以上各投资建设项",
+            "spans": [
+              {
+                "start": 57466,
+                "end": 57510,
+                "page": 55
+              }
+            ]
+          },
+          {
+            "chunk_id": "c660",
+            "text": "主营业务行业分类 | 2025年 | 2024 年 | 同比\n半导体芯片行业 | 20,414.61 | 19,326.14 | 5.63%",
+            "spans": [
+              {
+                "start": 21543,
+                "end": 21573,
+                "page": 22
+              },
+              {
+                "start": 21614,
+                "end": 21653,
+                "page": 22
+              }
+            ]
+          },
+          {
+            "chunk_id": "c1941",
+            "text": "主营业务分行业情况 |  |  |  |  |  | \n分产品 | 营业收入 | 营业成本 | 毛利率",
+            "spans": [
+              {
+                "start": 46233,
+                "end": 46260,
+                "page": 44
+              },
+              {
+                "start": 46451,
+                "end": 46474,
+                "page": 44
+              }
+            ]
+          },
+          {
+            "chunk_id": "c242",
+            "text": "(一) 主要会计数据",
+            "spans": [
+              {
+                "start": 7056,
+                "end": 7066,
+                "page": 8
+              }
+            ]
+          },
+          {
+            "chunk_id": "c246",
+            "text": "主要会计数据 | 2025年 | 2024年 | 本期比上年同\n营业收入 | 1,239,670,132.81 | 1,112,249,605.01 | 11.46 | 924,162,219.59",
+            "spans": [
+              {
+                "start": 7090,
+                "end": 7121,
+                "page": 9
+              },
+              {
+                "start": 7137,
+                "end": 7204,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c257",
+            "text": "主要会计数据 | 2025年 | 2024年 | 本期比上年同\n%） | 2023年末",
+            "spans": [
+              {
+                "start": 7090,
+                "end": 7121,
+                "page": 9
+              },
+              {
+                "start": 7534,
+                "end": 7545,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c247",
+            "text": "主要会计数据 | 2025年 | 2024年 | 本期比上年同\n利润总额 | 213,719,901.56 | 192,663,742.18 | 10.93 | 150,651,454.89",
+            "spans": [
+              {
+                "start": 7090,
+                "end": 7121,
+                "page": 9
+              },
+              {
+                "start": 7205,
+                "end": 7268,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c255",
+            "text": "主要会计数据 | 2025年 | 2024年 | 本期比上年同\n | 2025年末 | 2024年末 | 本期末比上年",
+            "spans": [
+              {
+                "start": 7090,
+                "end": 7121,
+                "page": 9
+              },
+              {
+                "start": 7499,
+                "end": 7526,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c245",
+            "text": "主要会计数据 | 2025年 | 2024年 | 本期比上年同\n期增减(%) | 2023年",
+            "spans": [
+              {
+                "start": 7090,
+                "end": 7121,
+                "page": 9
+              },
+              {
+                "start": 7122,
+                "end": 7136,
+                "page": 9
+              }
+            ]
+          },
+          {
+            "chunk_id": "c897",
+            "text": "批量量产；同步推进130nm–40nm PSM、OPC 工艺掩膜版开发，布局28nm 半导体芯片掩膜版工",
+            "spans": [
+              {
+                "start": 30824,
+                "end": 30876,
+                "page": 28
+              }
+            ]
+          },
+          {
+            "chunk_id": "c7569",
+            "text": "项目\n膜版",
+            "spans": [
+              {
+                "start": 190559,
+                "end": 190561,
+                "page": 202
+              },
+              {
+                "start": 190721,
+                "end": 190723,
+                "page": 202
+              }
+            ]
+          },
+          {
+            "chunk_id": "c7589",
+            "text": "项目\n膜版",
+            "spans": [
+              {
+                "start": 190559,
+                "end": 190561,
+                "page": 202
+              },
+              {
+                "start": 190913,
+                "end": 190915,
+                "page": 202
+              }
+            ]
+          },
+          {
+            "chunk_id": "c3172",
+            "text": "工艺节点半导体芯片掩膜版的量产，以及150nm 工艺节点半导体芯片掩膜版的小规模量产，全力",
+            "spans": [
+              {
+                "start": 82560,
+                "end": 82605,
+                "page": 77
+              }
+            ]
+          },
+          {
+            "chunk_id": "c693",
+            "text": "比优势，增强公司在全球掩膜版市场中的核心竞争力，为后续市场份额的持续提升奠定坚实基础。",
+            "spans": [
+              {
+                "start": 22837,
+                "end": 22880,
+                "page": 23
+              }
+            ]
+          },
+          {
+            "chunk_id": "c696",
+            "text": "期增长5.63%，营收增长主要得益于公司持续推进客户开发工作，客户拓展成果显著，下游市场",
+            "spans": [
+              {
+                "start": 22943,
+                "end": 22987,
+                "page": 23
+              }
+            ]
+          },
+          {
+            "chunk_id": "c697",
+            "text": "需求得到有效承接。细分产品线来看，IC Foundry 产品线中，功率器件相关掩膜版业务呈现快速",
+            "spans": [
+              {
+                "start": 22989,
+                "end": 23037,
+                "page": 23
+              }
+            ]
+          },
+          {
+            "chunk_id": "c895",
+            "text": "白。",
+            "spans": [
+              {
+                "start": 30772,
+                "end": 30774,
+                "page": 28
+              }
+            ]
+          },
+          {
+            "chunk_id": "c896",
+            "text": "半导体芯片领域，公司已实现180nm 工艺节点掩膜版规模化量产，150nm 工艺节点掩膜版小",
+            "spans": [
+              {
+                "start": 30776,
+                "end": 30822,
+                "page": 28
+              }
+            ]
+          },
+          {
+            "chunk_id": "c898",
+            "text": "艺研发。公司已初步掌握电子束光刻、干法蚀刻等中高端掩膜版核心关键工艺，为后续产品升级",
+            "spans": [
+              {
+                "start": 30878,
+                "end": 30920,
+                "page": 28
+              }
+            ]
+          },
+          {
+            "chunk_id": "c899",
+            "text": "与技术迭代筑牢基础，助力国内半导体产业链国产化率提升与自主可控。",
+            "spans": [
+              {
+                "start": 30922,
+                "end": 30954,
+                "page": 28
+              }
+            ]
+          },
+          {
+            "chunk_id": "c698",
+            "text": "增长态势，且半导体芯片掩膜版技术研发持续突破；IC Bumping 产品线中，先进封装掩膜版业务",
+            "spans": [
+              {
+                "start": 23039,
+                "end": 23087,
+                "page": 23
+              }
+            ]
+          },
+          {
+            "chunk_id": "c738",
+            "text": "（4）2025 年佛山新工厂对应的“高精度掩膜版生产基地建设项目”以及“高端半导体掩膜版生产基",
+            "spans": [
+              {
+                "start": 24704,
+                "end": 24751,
+                "page": 24
+              }
+            ]
+          },
+          {
+            "chunk_id": "c520",
+            "text": "封装掩膜版及微机电（MEMS）掩膜版等产品，公司与国内重点的ICFoundry、功率半导体器件、",
+            "spans": [
+              {
+                "start": 16093,
+                "end": 16141,
+                "page": 17
+              }
+            ]
+          },
+          {
+            "chunk_id": "c7572",
+            "text": "项目\n建设",
+            "spans": [
+              {
+                "start": 190559,
+                "end": 190561,
+                "page": 202
+              },
+              {
+                "start": 190730,
+                "end": 190732,
+                "page": 202
+              }
+            ]
+          }
+        ],
+        "version": {
+          "hash": "6148ddfdcd6d27636144b4c31c860de4d98902ce4e6d784f1cf7cc7a737424f0",
+          "text_hash": "396cfd87c687f540a2804b1c007e7c57dce9697f543578d9a79ae64ce75edbad",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        }
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "title": {
+          "value": "2025年度“提质增效重回报”行动方案评估报告",
+          "chunk_id": "c1"
+        },
+        "issuer": {
+          "value": "深圳市路维光电股份有限公司",
+          "chunk_id": "c0"
+        },
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "passages": [
+          {
+            "chunk_id": "c45",
+            "text": "实现产品量产，实现90nm 及以上成套掩膜版客户端验证通过并供货，40nm 和28nm",
+            "spans": [
+              {
+                "start": 1619,
+                "end": 1662,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c46",
+            "text": "单片掩膜版客户端验证通过并供货，并持续推进40nm 成套掩膜版客户端送样工作；",
+            "spans": [
+              {
+                "start": 1664,
+                "end": 1703,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c97",
+            "text": "PSM 客户导入及量产，实现i-line 的半导体PSM 客户导入；（4）在材料技术领域，",
+            "spans": [
+              {
+                "start": 3641,
+                "end": 3686,
+                "page": 4
+              }
+            ]
+          },
+          {
+            "chunk_id": "c44",
+            "text": "商前列。该项目一期产品覆盖130-40nm 制程节点半导体掩膜版，2025 年已逐步",
+            "spans": [
+              {
+                "start": 1575,
+                "end": 1617,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c95",
+            "text": "年通过客户验证并量产，2024 年完成单层衰减型PSM 掩膜版制造技术及Mosi 系",
+            "spans": [
+              {
+                "start": 3547,
+                "end": 3589,
+                "page": 4
+              }
+            ]
+          },
+          {
+            "chunk_id": "c40",
+            "text": "公司可转换公司债券募投项目“半导体及高精度平板显示掩膜版扩产项目”",
+            "spans": [
+              {
+                "start": 1432,
+                "end": 1465,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c47",
+            "text": "二期布局28-14nm 半导体掩膜版，计划于2026 年陆续投建。未来伴随项目的顺利",
+            "spans": [
+              {
+                "start": 1705,
+                "end": 1747,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c78",
+            "text": "高精度半导体掩膜版清洗能力提升项目等等。针对具体产品研发方面，公司开展",
+            "spans": [
+              {
+                "start": 2835,
+                "end": 2870,
+                "page": 3
+              }
+            ]
+          },
+          {
+            "chunk_id": "c91",
+            "text": "并于2019年先后研发并投产G8.5、G11 TFT-LCD半色调掩膜版，2024年量产AMOLED",
+            "spans": [
+              {
+                "start": 3353,
+                "end": 3403,
+                "page": 4
+              }
+            ]
+          },
+          {
+            "chunk_id": "c42",
+            "text": "体掩膜版和G8.6 及以下各类高精度平板显示掩膜版产品。",
+            "spans": [
+              {
+                "start": 1510,
+                "end": 1538,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c43",
+            "text": "公司投资建设的路芯半导体掩膜版项目进展顺利，制程节点布局居于国内厂",
+            "spans": [
+              {
+                "start": 1540,
+                "end": 1573,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c48",
+            "text": "投产，其产品将逐步覆盖MCU（微控制芯片），SiPh（硅光子）、CIS（互补金属氧",
+            "spans": [
+              {
+                "start": 1749,
+                "end": 1790,
+                "page": 2
+              }
+            ]
+          },
+          {
+            "chunk_id": "c49",
+            "text": "化物半导体图像传感器），BCD（双极-互补-双扩散-金属氧化物半场效应管），DDIC",
+            "spans": [
+              {
+                "start": 1792,
+                "end": 1834,
+                "page": 2
+              }
+            ]
+          }
+        ],
+        "version": {
+          "hash": "0722bca312924292269bfc3f8e8bed9f704bf7191046f15957334c12addb44e9",
+          "text_hash": "87b4274fe309a0735f4afe3ee041b3e64d7bf5a6feb933bea5e6f593a8af4bb3",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        }
+      }
+    ]
+  },
+  "expected_distribution": [
+    27,
+    27,
+    13
+  ],
+  "query_case": {
+    "broad_queries": [
+      "2025年 营业收入 半导体 掩模版 收入 量产 验证 客户认证 成套供货 设备 项目",
+      "2025 年 营业收入 元 年度 半导体掩膜版 研发 客户验证 量产 设备 项目 未来"
+    ],
+    "narrow_query": "营业收入",
+    "financial_text": "报告期内，公司实现营业收入115,523.17 万元，较上年同期增加31.94%。",
+    "original_locator": {
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "chunk_id": "c30"
+    },
+    "passages": [
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c7",
+        "text": "一、聚焦经营主业，提升核心竞争力",
+        "spans": [
+          {
+            "start": 202,
+            "end": 218,
+            "page": 1,
+            "bbox": [
+              109.08000183105469,
+              271.3784484863281,
+              301.79730224609375,
+              283.3784484863281
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c29",
+        "text": "成为掩膜版行业知名供应商。",
+        "spans": [
+          {
+            "start": 1012,
+            "end": 1025,
+            "page": 2,
+            "bbox": [
+              85.08000183105469,
+              95.93844604492188,
+              241.0800018310547,
+              107.93844604492188
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c30",
+        "text": "报告期内，公司实现营业收入115,523.17 万元，较上年同期增加31.94%。",
+        "spans": [
+          {
+            "start": 1027,
+            "end": 1068,
+            "page": 2,
+            "bbox": [
+              109.08000183105469,
+              119.33843994140625,
+              505.44000244140625,
+              131.33843994140625
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c31",
+        "text": "主要得益于公司产能有序提升，加之下游行业需求旺盛。从收入结构看，OLED 用",
+        "spans": [
+          {
+            "start": 1070,
+            "end": 1108,
+            "page": 2,
+            "bbox": [
+              85.08000183105469,
+              142.7384490966797,
+              505.44000244140625,
+              154.7384490966797
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c40",
+        "text": "公司可转换公司债券募投项目“半导体及高精度平板显示掩膜版扩产项目”",
+        "spans": [
+          {
+            "start": 1432,
+            "end": 1465,
+            "page": 2,
+            "bbox": [
+              109.08000183105469,
+              352.7384338378906,
+              505.44000244140625,
+              364.7384338378906
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c44",
+        "text": "商前列。该项目一期产品覆盖130-40nm 制程节点半导体掩膜版，2025 年已逐步",
+        "spans": [
+          {
+            "start": 1575,
+            "end": 1617,
+            "page": 2,
+            "bbox": [
+              85.08000183105469,
+              446.21844482421875,
+              505.4385986328125,
+              458.21844482421875
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c45",
+        "text": "实现产品量产，实现90nm 及以上成套掩膜版客户端验证通过并供货，40nm 和28nm",
+        "spans": [
+          {
+            "start": 1619,
+            "end": 1662,
+            "page": 2,
+            "bbox": [
+              85.08000183105469,
+              469.4974365234375,
+              505.44000244140625,
+              481.4974365234375
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c46",
+        "text": "单片掩膜版客户端验证通过并供货，并持续推进40nm 成套掩膜版客户端送样工作；",
+        "spans": [
+          {
+            "start": 1664,
+            "end": 1703,
+            "page": 2,
+            "bbox": [
+              85.08000183105469,
+              492.7784423828125,
+              517.4400024414062,
+              504.7784423828125
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c47",
+        "text": "二期布局28-14nm 半导体掩膜版，计划于2026 年陆续投建。未来伴随项目的顺利",
+        "spans": [
+          {
+            "start": 1705,
+            "end": 1747,
+            "page": 2,
+            "bbox": [
+              85.08000183105469,
+              516.1784057617188,
+              505.44000244140625,
+              528.1784057617188
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c65",
+        "text": "售收入实现超30%的增长，在国内某领先芯片公司及其配套供应商、京东方、天",
+        "spans": [
+          {
+            "start": 2409,
+            "end": 2445,
+            "page": 3,
+            "bbox": [
+              85.08000183105469,
+              236.09744262695312,
+              505.4299011230469,
+              248.09744262695312
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c78",
+        "text": "高精度半导体掩膜版清洗能力提升项目等等。针对具体产品研发方面，公司开展",
+        "spans": [
+          {
+            "start": 2835,
+            "end": 2870,
+            "page": 3,
+            "bbox": [
+              85.08000183105469,
+              539.5784301757812,
+              505.4386291503906,
+              551.5784301757812
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c91",
+        "text": "并于2019年先后研发并投产G8.5、G11 TFT-LCD半色调掩膜版，2024年量产AMOLED",
+        "spans": [
+          {
+            "start": 3353,
+            "end": 3403,
+            "page": 4,
+            "bbox": [
+              85.08000183105469,
+              142.7384490966797,
+              505.44000244140625,
+              154.7384490966797
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c95",
+        "text": "年通过客户验证并量产，2024 年完成单层衰减型PSM 掩膜版制造技术及Mosi 系",
+        "spans": [
+          {
+            "start": 3547,
+            "end": 3589,
+            "page": 4,
+            "bbox": [
+              85.08000183105469,
+              236.09744262695312,
+              505.44000244140625,
+              248.09744262695312
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c97",
+        "text": "PSM 客户导入及量产，实现i-line 的半导体PSM 客户导入；（4）在材料技术领域，",
+        "spans": [
+          {
+            "start": 3641,
+            "end": 3686,
+            "page": 4,
+            "bbox": [
+              85.08000183105469,
+              282.7784423828125,
+              511.44000244140625,
+              294.7784423828125
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      },
+      {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "chunk_id": "c195",
+        "text": "最近一个会计年度合并报表中归属于上市公司普通股股东的净利润 | 251,984,299.40\n最近三个会计年度累计研发投入占累计营业收入比例(%) | 4.05",
+        "spans": [
+          {
+            "start": 6855,
+            "end": 6901,
+            "page": 7,
+            "bbox": [
+              79.28000259399414,
+              450.27000427246094,
+              503.3699951171875,
+              607.8900146484375
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          },
+          {
+            "start": 7165,
+            "end": 7198,
+            "page": 7,
+            "bbox": [
+              79.28000259399414,
+              450.27000427246094,
+              503.3699951171875,
+              607.8900146484375
+            ],
+            "basis": "canonical Unicode code points; [start,end)"
+          }
+        ],
+        "section": "",
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "generated_context": null
+      }
+    ]
+  }
+}

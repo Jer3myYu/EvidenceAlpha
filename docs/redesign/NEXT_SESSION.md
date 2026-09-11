@@ -1,3 +1,11 @@
+# Latest: local correction implemented offline
+
+Read [completion-correction/RESULTS.md](completion-correction/RESULTS.md). Research, writing and fallback now use one durable evidence collection and one bounded context builder, retaining task/questions/recent outcomes. Ordinary-ledger cutoff recovery and diagnostic-ledger denial are both covered by offline reproductions. The accumulated suite passed 64 tests; no models ran.
+
+The exact next proposal is `data/redesign/completion-correction/writing-only-case.json`: one GPT-5.6 Sol medium company-writing call from 67 saved passages, no research tools, no retries, 180s stage / at most 175s writing. Completion and factual accuracy must be assessed separately. It is not authorized in this step; both existing ledgers remain stopped/unchanged. Do not launch B/C or a full report. Preserve the failed freeze and all historical outputs. Final commit, dirty state and preservation checks are in `data/redesign/completion-correction/final-state.json`.
+
+---
+
 # Latest handoff: focused diagnostic stopped
 
 Read [focused/RESULTS.md](focused/RESULTS.md) before the older handoff below. Evaluated candidate: `79b997e`; immutable snapshot: `data/redesign/focused-diagnostic/frozen/`. A failed at the 115-second evidence cutoff before final notes; B/C were not run. The 60-second writing reserve was left unused. The fallback's first-12 selection retained only Longtu, although the full event trace retains all three companies. No factual model improvement or full-report acceptance was established.

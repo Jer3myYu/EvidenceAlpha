@@ -82,15 +82,17 @@ class EvidenceTools:
                     raise ValueError("Conflicting source scopes")
                 source_id = scopes[0]
                 query = re.sub(r"\bsource_id:[a-f0-9]{64}\b", "", query).strip()
-            return [
-                self.store.concise_passage(passage)
-                for passage in self.store.search_evidence(
-                    query,
-                    self.settings.retrieval_limit,
-                    self.settings.embedding_model,
-                    source_id,
-                )
-            ]
+            return documents.group_passages(
+                [
+                    self.store.concise_passage(passage)
+                    for passage in self.store.search_evidence(
+                        query,
+                        self.settings.retrieval_limit,
+                        self.settings.embedding_model,
+                        source_id,
+                    )
+                ]
+            )
         if name == "open_source":
             source_id = arguments["source_id"]
             chunk_id = arguments.get("chunk_id")
@@ -99,7 +101,7 @@ class EvidenceTools:
                 passages = self.store.surrounding_passages(
                     source_id, chunk_id, surrounding
                 )
-                return passages if surrounding else passages[0]
+                return documents.group_passages(passages)
             if surrounding:
                 raise ValueError("Surrounding retrieval requires a chunk_id")
             result = self.store.open_source(source_id)
@@ -109,13 +111,21 @@ class EvidenceTools:
                     "search_evidence then open_source with chunk_id. "
                     "No source text has been truncated."
                 )
-            return {
-                **self.store.source_context(source_id),
-                "text": result["text"],
-                "spans": [
-                    {"start": 0, "end": len(result["text"]), "page": None}
-                ],
-            }
+            return documents.group_passages(
+                [
+                    {
+                        **self.store.source_context(source_id),
+                        "text": result["text"],
+                        "spans": [
+                            {
+                                "start": 0,
+                                "end": len(result["text"]),
+                                "page": None,
+                            }
+                        ],
+                    }
+                ]
+            )
         if name == "calculate":
             values = [decimal.Decimal(str(v)) for v in arguments["values"]]
             if len(values) != 2 or not all(v.is_finite() for v in values):

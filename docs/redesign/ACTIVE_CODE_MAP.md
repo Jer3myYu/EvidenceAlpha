@@ -34,3 +34,7 @@ embedding indexes, builds passages per source, and preserves CRLF spans.
 ## Focused additive diagnosis
 
 `docs/redesign/focused/` contains the saved-case freeze/one-case driver and predeclared outcomes. `budget.DiagnosticLedger` enforces the separately authorized A/B/C allowance while leaving historical Stage 2 limits and counters intact. Review material findings now carry `original_passages`; source tool identity/window context and failed-worker unsynthesized handoff remain in the existing tools/store/StageRunner. See `focused/OFFLINE_CHANGES.md`. No full-report acceptance is implied.
+
+## Offline completion correction
+
+`stage_context.py` owns durable settled evidence and the shared bounded request/fallback builder. `StageRunner` owns explicit phase outcomes; typed supervisor timeouts remain separate from cancellation/provider failure. Ledger policies are unchanged. See `completion-correction/RESULTS.md` and its unexecuted saved-evidence writing proposal.

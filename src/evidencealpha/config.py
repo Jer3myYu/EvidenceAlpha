@@ -6,7 +6,7 @@ import pathlib
 
 RUNTIME_MODEL = "gpt-5.6-sol"
 REHEARSAL_MODEL = "gpt-5.5"
-PROMPT_VERSION = "redesign-2-focused"
+PROMPT_VERSION = "redesign-3-phases"
 LIMITS = {
     "session_seconds": 28800,
     "isolated_attempts": 10,
@@ -56,6 +56,7 @@ class Settings:
     contextualize: bool = False
     context_documents: int = 2
     context_characters: int = 12000
+    stage_context_bytes: int = 100000
     stage_seconds: int = 360
     stage_allocations: tuple[int, ...] = (120, 480, 420, 240, 300, 120)
     export_seconds: int = 120
@@ -79,6 +80,7 @@ class Settings:
             self.source_open_characters,
             self.tool_rounds,
             self.stage_seconds,
+            self.stage_context_bytes,
             self.export_seconds,
         ):
             if value <= 0:

@@ -30,6 +30,122 @@ class Passage:
     generated_context: str | None = None
 
 
+def group_passages(passages: list[dict]) -> dict:
+    """Group passages by source identity without rewriting text."""
+    groups = {}
+    for passage in passages:
+        source_id = passage["source_id"]
+        if source_id not in groups:
+            groups[source_id] = {
+                key: passage.get(key)
+                for key in (
+                    "source_id",
+                    "version",
+                    "title",
+                    "issuer",
+                    "url",
+                    "identity_scope",
+                )
+            }
+            groups[source_id]["passages"] = []
+        elif groups[source_id].get("version") != passage.get("version"):
+            raise ValueError("Conflicting source versions in one stage")
+        groups[source_id]["passages"].append(
+            {
+                key: passage[key]
+                for key in ("chunk_id", "text", "spans")
+                if key in passage
+            }
+        )
+    return {"sources": list(groups.values())}
+
+
+def ungroup_passages(result: dict) -> list[dict]:
+    """Recover explicit source bindings from grouped tool or handoff data."""
+    return [
+        {
+            **{
+                key: value for key, value in source.items() if key != "passages"
+            },
+            **passage,
+        }
+        for source in result.get("sources", [])
+        for passage in source["passages"]
+    ]
+
+
+def evidence_handoff(
+    passages: list[dict], max_passages: int = 96, max_characters: int = 16000
+) -> dict:
+    """Share text capacity across sources; retain every omitted locator.
+
+    Full settled evidence remains on disk. Selected text is bounded, and its
+    status must not imply that a researcher verified a finding.
+    """
+    grouped = group_passages(passages)["sources"]
+    selected, pending = [], []
+    characters = 0
+    count_share = max_passages // max(1, len(grouped))
+    text_share = max_characters // max(1, len(grouped))
+    # Allocate across sources before redistributing unused space. Never split
+    # original text just to make a large first document consume the allowance.
+    for source in grouped:
+        used, count = 0, 0
+        for item in source["passages"]:
+            passage = {
+                **{k: v for k, v in source.items() if k != "passages"},
+                **item,
+            }
+            size = len(passage["text"])
+            if count < count_share and used + size <= text_share:
+                selected.append(passage)
+                used += size
+                count += 1
+                characters += size
+            else:
+                pending.append(passage)
+    omitted = []
+    for passage in pending:
+        size = len(passage["text"])
+        if len(selected) < max_passages and characters + size <= max_characters:
+            selected.append(passage)
+            characters += size
+        else:
+            omitted.append(
+                {
+                    k: passage[k]
+                    for k in ("source_id", "version", "chunk_id", "spans")
+                    if k in passage
+                }
+            )
+    return {
+        "status": "unsynthesized_evidence",
+        "limitation": "Retrieved originals, not verified findings. Missing "
+        "coverage and omitted text must remain explicit in final notes.",
+        **group_passages(selected),
+        "omitted_passages": omitted,
+        "missing_information": [
+            "No final researcher assessment is available.",
+            *(
+                ["Some retrieved text was omitted; exact references retained."]
+                if omitted
+                else []
+            ),
+            *(
+                ["No settled original passages available."]
+                if not passages
+                else []
+            ),
+        ],
+        "selection": {
+            "max_passages": max_passages,
+            "max_characters": max_characters,
+            "selected": len(selected),
+            "omitted": len(omitted),
+        },
+    }
+
+
 def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
     blocks = []
     warnings = []
@@ -316,6 +432,15 @@ class SourceStore:
                     )
         return {
             "source_id": source_id,
+            "version": {
+                key: source[key]
+                for key in (
+                    "hash",
+                    "text_hash",
+                    "parser_version",
+                    "chunker_version",
+                )
+            },
             "title": identity.get("title"),
             "issuer": identity.get("issuer"),
             "url": source["url"],
