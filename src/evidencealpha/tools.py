@@ -26,7 +26,10 @@ TOOL_DEFINITIONS = {
     "open_source": {
         "source_id": "string",
         "chunk_id": "optional exact returned ID, e.g. c30, not 30",
-        "surrounding": "0..2 neighboring paragraph/table chunks per side",
+        "surrounding": (
+            "0: exact chunk; 1..2: complete neighboring paragraph/table "
+            "blocks per side in page reading order, up to 8000 characters"
+        ),
     },
     "search_web": {"query": "string"},
     "fetch_source": {"url": "public HTTP(S) URL"},

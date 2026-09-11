@@ -156,12 +156,15 @@ class Ledger:
                 x.get("seconds", x["reserved_seconds"])
                 for x in data["invocations"]
             )
-            cap = min(
-                seconds,
-                window,
-                attempt["deadline"] - time.time(),
-                self.limits["invocation_seconds"] - used,
-            )
+            limits = [
+                (seconds, "requested_allowance"),
+                (window, "campaign_elapsed"),
+                (attempt["deadline"] - time.time(), "attempt_elapsed"),
+                (
+                    self.limits["invocation_seconds"] - used,
+                    "aggregate_invocation",
+                ),
+            ]
             if provider == "claude":
                 if data["claude_disabled"] or attempt["kind"] != "claude":
                     raise BudgetExceeded("Claude admissions disabled")
@@ -170,7 +173,13 @@ class Ledger:
                     for x in data["invocations"]
                     if x["provider"] == "claude"
                 )
-                cap = min(cap, self.limits["claude_seconds"] - used_claude)
+                limits.append(
+                    (
+                        self.limits["claude_seconds"] - used_claude,
+                        "claude_budget",
+                    )
+                )
+            cap, limiting_resource = min(limits, key=lambda item: item[0])
             if cap <= 0:
                 raise BudgetExceeded("Invocation time exhausted")
             entry = {
@@ -179,6 +188,7 @@ class Ledger:
                 "provider": provider,
                 "invoked": artifacts.now(),
                 "reserved_seconds": cap,
+                "limiting_resource": limiting_resource,
                 "observable_tokens": None,
                 "status": "running",
             }

@@ -43,9 +43,12 @@ class ProviderError(RuntimeError):
 class ProviderTimeout(ProviderError):
     """The local process supervisor reached this exact monotonic deadline."""
 
-    def __init__(self, message: str, deadline: float) -> None:
+    def __init__(
+        self, message: str, deadline: float, limit: str = "request_deadline"
+    ) -> None:
         super().__init__(message)
         self.deadline = deadline
+        self.limit = limit
 
 
 class ProviderCancelled(ProviderError):
@@ -67,6 +70,7 @@ class Request:
     seconds: float
     deadline: float | None = None
     allowed_tools: tuple[str, ...] | None = None
+    deadline_limit: str = "request_deadline"
 
 
 @dataclasses.dataclass
@@ -142,13 +146,17 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
     environment["PYTHONPATH"] = str(pathlib.Path(__file__).resolve().parents[1])
     raw = request.workspace / "raw.jsonl"
     started = time.monotonic()
-    deadline = min(
-        started + request.seconds,
-        request.deadline if request.deadline is not None else float("inf"),
+    deadline, limit = min(
+        (started + request.seconds, "invocation_allowance"),
+        (
+            request.deadline if request.deadline is not None else float("inf"),
+            request.deadline_limit,
+        ),
+        key=lambda item: item[0],
     )
     if time.monotonic() >= deadline:
         raise ProviderTimeout(
-            "Provider deadline expired before launch", deadline
+            "Provider deadline expired before launch", deadline, limit
         )
     with (
         raw.open("w", encoding="utf-8") as stdout,
@@ -194,11 +202,17 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
                 seconds=time.monotonic() - started,
                 returncode=process.returncode,
                 cancelled=cancelled,
+                deadline=deadline,
+                ended_by=(
+                    "cancellation"
+                    if cancelled
+                    else limit if timed_out else "exit"
+                ),
             )
     if cancelled:
         raise ProviderCancelled("Provider cancelled by controller")
     if timed_out:
-        raise ProviderTimeout("Provider deadline expired", deadline)
+        raise ProviderTimeout("Provider deadline expired", deadline, limit)
     events = []
     for line in raw.read_text().splitlines():
         try:

@@ -110,38 +110,35 @@ class StageRunner:
         )
         if final_notes_only:
             context.settle(portable.get("settled_evidence", {}))
-        deadline = min(
-            deadline if deadline is not None else float("inf"),
-            time.monotonic() + record["seconds"],
-        )
         started_stage = time.monotonic()
+        deadline, stage_limit = min(
+            (started_stage + record["seconds"], "worker_elapsed"),
+            (
+                deadline if deadline is not None else float("inf"),
+                "enclosing_deadline",
+            ),
+            key=lambda item: item[0],
+        )
         duration = max(0, deadline - started_stage)
-        # Revision allocation: evidence <=60, writing <=210, margin 30.
-        # Shorter enclosing deadlines reduce evidence first, never extend it.
-        if role == "revision":
-            margin = min(30, duration * 0.1)
-            evidence_end = started_stage + min(
-                60, max(0, duration - margin - 210)
-            )
-            writing_seconds = min(210, duration - margin)
-        elif role in ("company", "industry"):
-            margin = min(5, duration * 0.05)
-            writing_seconds = min(60, duration * 0.35)
-            evidence_end = deadline - margin - writing_seconds
-        else:
-            margin, writing_seconds, evidence_end = 0, duration, deadline
+        reserve = min(self.settings.final_writing_reserve_seconds, duration)
+        evidence_end = (
+            deadline - reserve
+            if role in ("company", "industry", "revision")
+            else deadline
+        )
         if final_notes_only:
             evidence_end = started_stage
-            writing_seconds = max(0, duration - margin)
-        final_end = deadline - margin
+        final_end = deadline
         artifacts.write(
             folder / "timing.json",
             {
                 "stage_deadline_monotonic": deadline,
+                "stage_limiting_resource": stage_limit,
                 "evidence_deadline_monotonic": evidence_end,
                 "final_deadline_monotonic": final_end,
-                "writing_seconds": writing_seconds,
-                "margin_seconds": margin,
+                "final_writing_reserve_seconds": reserve,
+                "invocation_seconds": self.settings.invocation_seconds,
+                "final_notes_only": final_notes_only,
             },
         )
         phase = "evidence"
@@ -155,8 +152,7 @@ class StageRunner:
                 should_write = (
                     final_notes_only
                     or turn == self.settings.tool_rounds - 1
-                    or evidence_remaining
-                    <= max(longest_call, min(15, duration * 0.05))
+                    or evidence_remaining <= longest_call
                     or (role == "revision" and turn >= 2)
                 )
                 if phase == "evidence" and should_write:
@@ -179,10 +175,15 @@ class StageRunner:
                         prior_call_seconds=longest_call,
                     )
                 final_turn = phase == "final_notes"
-                call_deadline = (
-                    min(final_end, time.monotonic() + writing_seconds)
+                call_deadline = final_end if final_turn else evidence_end
+                limit = (
+                    stage_limit
                     if final_turn
-                    else evidence_end
+                    else (
+                        "protected_final_writing"
+                        if evidence_end < final_end
+                        else stage_limit
+                    )
                 )
                 remaining = call_deadline - time.monotonic()
                 if remaining <= 0:
@@ -201,20 +202,49 @@ class StageRunner:
                     artifacts.write(
                         folder / "writing-context.json", current_context
                     )
+                admission_started = time.monotonic()
+                call_deadline, limit = min(
+                    (call_deadline, limit),
+                    (
+                        admission_started + self.settings.invocation_seconds,
+                        "configured_invocation",
+                    ),
+                    key=lambda item: item[0],
+                )
+                remaining = call_deadline - admission_started
                 reservation = None
                 if self.ledger:
                     reservation = self.ledger.reserve(
                         self.campaign_attempt, settings.provider, remaining
                     )
-                    remaining = reservation["reserved_seconds"]
+                    if reservation["reserved_seconds"] < remaining:
+                        call_deadline = (
+                            admission_started + reservation["reserved_seconds"]
+                        )
+                        limit = reservation.get(
+                            "limiting_resource", "ledger_budget"
+                        )
                 request = providers.Request(
                     stage,
                     prompt,
                     settings,
                     call_dir.resolve(),
-                    remaining,
+                    max(0, call_deadline - time.monotonic()),
                     call_deadline,
                     tuple(available_tools),
+                    limit,
+                )
+                artifacts.write(
+                    call_dir / "limits.json",
+                    {
+                        "phase": phase,
+                        "deadline": call_deadline,
+                        "limiting_resource": limit,
+                        "configured_invocation_seconds": (
+                            self.settings.invocation_seconds
+                        ),
+                        "worker_deadline": final_end,
+                    },
                 )
                 artifacts.write(call_dir / "request.txt", prompt)
                 artifacts.write(
@@ -222,7 +252,6 @@ class StageRunner:
                 )
                 started = time.monotonic()
                 result, call_status = None, "failed"
-                phase_timeout = None
                 usage = {}
                 try:
                     provider = self.provider
@@ -257,46 +286,17 @@ class StageRunner:
                     continue
                 except providers.ProviderTimeout as exc:
                     usage = exc.usage
-                    # Recover only a supervisor-confirmed evidence cutoff.
-                    # A smaller ledger reservation is a different limit.
-                    if (
-                        phase == "evidence"
-                        and exc.deadline == evidence_end
-                        and time.monotonic() >= evidence_end
-                        and time.monotonic() < final_end
-                        and turn < self.settings.tool_rounds - 1
-                    ):
-                        phase_timeout = {
-                            "error": str(exc),
-                            "phase": phase,
-                            "deadline": exc.deadline,
-                            "call": call_dir.name,
-                            "status": "failed",
-                        }
-                        artifacts.write(
-                            call_dir / "failure.json", phase_timeout
-                        )
-                        artifacts.event(
-                            event_path, "phase_timeout", **phase_timeout
-                        )
-                        phase_outcomes.append(
-                            {
-                                "phase": phase,
-                                "outcome": "eligible_cutoff",
-                                "call": call_dir.name,
-                            }
-                        )
-                        artifacts.write(
-                            folder / "phase-outcomes.json", phase_outcomes
-                        )
-                        context.outcome(
-                            "provider_call",
-                            {"call": call_dir.name},
-                            phase_timeout,
-                            "failed",
-                        )
-                    else:
-                        raise
+                    failure = {
+                        "error": str(exc),
+                        "phase": phase,
+                        "deadline": exc.deadline,
+                        "ended_by": exc.limit,
+                        "call": call_dir.name,
+                        "status": "failed",
+                    }
+                    artifacts.write(call_dir / "failure.json", failure)
+                    artifacts.event(event_path, "provider_timeout", **failure)
+                    raise
                 except providers.ProviderError as exc:
                     usage = exc.usage
                     raise
@@ -309,10 +309,6 @@ class StageRunner:
                             usage,
                         )
                 longest_call = max(longest_call, time.monotonic() - started)
-                if phase_timeout is not None:
-                    # A distinct writing call, not a retry. Ledger admission
-                    # still applies and may forbid continuing after failure.
-                    continue
                 artifacts.write(
                     call_dir / "normalized.json", dataclasses.asdict(result)
                 )

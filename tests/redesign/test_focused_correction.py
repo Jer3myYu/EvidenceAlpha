@@ -142,7 +142,7 @@ def test_lost_handoff_retains_originals_without_transcript(tmp_path):
         }
     )
     runner = workflow.StageRunner(
-        config.Settings(),
+        config.Settings(final_writing_reserve_seconds=60),
         provider,
         tools.EvidenceTools(store, config.Settings(), "fixed-corpus"),
     )
@@ -166,7 +166,7 @@ def test_lost_handoff_retains_originals_without_transcript(tmp_path):
 
 
 def test_revision_time_reserve_and_stripped_input(tmp_path):
-    """Two evidence rounds preserve a 210-second final call and 30 margin."""
+    """Early revision writing receives unused evidence time."""
     clock = [100.0]
     requests = []
 
@@ -232,7 +232,7 @@ def test_revision_time_reserve_and_stripped_input(tmp_path):
         runner.run(
             "revision", "revision", portable, tmp_path / "run", seconds=300
         )
-    assert [r.seconds for r in requests] == [60, 40, 210]
+    assert [r.seconds for r in requests] == [120, 100, 260]
     assert requests[-1].allowed_tools == ()
     assert clock[0] <= 370
 
@@ -354,8 +354,8 @@ def test_revision_enclosing_deadline_cannot_be_extended(tmp_path):
             deadline=130,
         )
     assert provider.calls[0].allowed_tools == ()
-    assert provider.calls[0].seconds == 27
-    assert provider.calls[0].deadline == 127
+    assert provider.calls[0].seconds == 30
+    assert provider.calls[0].deadline == 130
 
 
 def test_false_luxin_objection_can_be_contested(tmp_path):

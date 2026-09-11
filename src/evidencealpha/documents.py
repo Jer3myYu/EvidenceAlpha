@@ -12,7 +12,7 @@ import pymupdf
 
 from evidencealpha import artifacts
 
-PARSER_VERSION = "structural-1"
+PARSER_VERSION = "structural-2-reading-order"
 CHUNK_VERSION = "spans-1"
 EMBEDDING_VERSION = "normalized-cosine-1"
 
@@ -152,13 +152,14 @@ def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
     if suffix == ".pdf":
         with pymupdf.open(stream=data, filetype="pdf") as doc:
             for page_number, page in enumerate(doc, 1):
+                page_blocks = []
                 tables = page.find_tables().tables
                 for table in tables:
                     rows = [
                         " | ".join(str(cell or "") for cell in row)
                         for row in table.extract()
                     ]
-                    blocks.append(
+                    page_blocks.append(
                         {
                             "text": "\n".join(rows),
                             "kind": "table",
@@ -172,7 +173,7 @@ def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
                         for t in tables
                     ):
                         continue
-                    blocks.append(
+                    page_blocks.append(
                         {
                             "text": block[4].strip(),
                             "kind": "paragraph",
@@ -180,6 +181,11 @@ def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
                             "bbox": list(block[:4]),
                         }
                     )
+                blocks.extend(
+                    sorted(
+                        page_blocks, key=lambda b: (b["bbox"][1], b["bbox"][0])
+                    )
+                )
         warnings.append(
             "Digital extraction only; heading/footnote associations "
             "are heuristic; no OCR"
@@ -462,10 +468,11 @@ class SourceStore:
     def surrounding_passages(
         self, source_id: str, chunk_id: str, surrounding: int = 0
     ) -> list[dict]:
-        """Open up to two neighboring paragraph/table chunks on each side.
+        """Open neighboring original blocks in document reading order.
 
-        Each chunk retains its own exact locator. Large tables require a more
-        specific chunk; no original passage is silently truncated.
+        A nonzero window includes complete paragraph/table blocks, retaining
+        every chunk's locator. Zero opens just the exact requested chunk.
+        Oversized windows fail explicitly; no originals are truncated.
         """
         if (
             not isinstance(surrounding, int)
@@ -477,12 +484,42 @@ class SourceStore:
         ids = [chunk["id"] for chunk in source["chunks"]]
         if chunk_id not in ids:
             raise ValueError("Unknown chunk; use the exact chunk_id")
-        index = ids.index(chunk_id)
+        selected = {chunk_id}
+        if surrounding:
+            blocks = source["blocks"]
+            if pathlib.Path(source["original_path"]).suffix.lower() == ".pdf":
+                # Also repair navigation over immutable older corpus versions.
+                blocks = sorted(
+                    blocks,
+                    key=lambda b: (b["page"], b["bbox"][1], b["bbox"][0]),
+                )
+            block_ids = [b["id"] for b in blocks]
+            center = source["chunks"][ids.index(chunk_id)]
+            neighbors = set()
+            for block_id in center["block_ids"]:
+                index = block_ids.index(block_id)
+                neighbors.update(
+                    block_ids[
+                        max(0, index - surrounding) : index + surrounding + 1
+                    ]
+                )
+            selected = {
+                chunk["id"]
+                for chunk in source["chunks"]
+                if neighbors.intersection(chunk["block_ids"])
+            }
+            order = {bid: i for i, bid in enumerate(block_ids)}
+            ids = [
+                c["id"]
+                for c in sorted(
+                    source["chunks"],
+                    key=lambda c: min(order[bid] for bid in c["block_ids"]),
+                )
+            ]
         passages = [
             self.concise_passage(self.open_source(source_id, item))
-            for item in ids[
-                max(0, index - surrounding) : index + surrounding + 1
-            ]
+            for item in ids
+            if item in selected
         ]
         if sum(len(item["text"]) for item in passages) > 8000:
             raise ValueError(

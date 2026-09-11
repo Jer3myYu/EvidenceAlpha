@@ -44,10 +44,10 @@ def _evidence(tmp_path):
 
 @pytest.mark.parametrize("ledger_kind", ["ordinary", "diagnostic"])
 @pytest.mark.parametrize("unexpected_cutoff", [False, True])
-def test_early_transition_and_unexpected_cutoff_both_write(
+def test_early_transition_writes_but_timeout_stops(
     tmp_path, unexpected_cutoff, ledger_kind
 ):
-    """Prediction and actual cutoff both lead to one distinct writing call."""
+    """Early completion writes; a timed-out call never auto-continues."""
     evidence, call = _evidence(tmp_path)
     clock = [100.0]
     requests = []
@@ -96,17 +96,23 @@ def test_early_transition_and_unexpected_cutoff_both_write(
     ledger.start()
     attempt = ledger.admit("isolated" if ledger_kind == "ordinary" else "A")
     runner = workflow.StageRunner(
-        config.Settings(), ScriptedProvider(), evidence, ledger, attempt
+        config.Settings(final_writing_reserve_seconds=65),
+        ScriptedProvider(),
+        evidence,
+        ledger,
+        attempt,
     )
     with mock.patch.object(
         workflow.time, "monotonic", side_effect=lambda: clock[0]
     ):
-        if ledger_kind == "diagnostic" and unexpected_cutoff:
+        if unexpected_cutoff:
             with pytest.raises(workflow.ResearchHandoffError) as failure:
                 runner.run(
                     "company", "company", {}, tmp_path / "run", seconds=180
                 )
-            assert isinstance(failure.value.__cause__, budget.BudgetExceeded)
+            assert isinstance(
+                failure.value.__cause__, providers.ProviderTimeout
+            )
             assert len(requests) == 2
             assert [
                 x["status"] for x in artifacts.read(ledger.path)["invocations"]
@@ -143,20 +149,8 @@ def test_early_transition_and_unexpected_cutoff_both_write(
         if json.loads(l)["kind"] == "phase_transition"
     ]
     assert len(transitions) == 1
-    if unexpected_cutoff:
-        assert (
-            artifacts.read(folder / "call-1/failure.json")["status"] == "failed"
-        )
-        assert [
-            x["status"] for x in artifacts.read(ledger.path)["invocations"]
-        ] == ["complete", "failed", "complete"]
-        assert any(
-            x["tool"] == "provider_call" and x["status"] == "failed"
-            for x in final_input["recent_tool_outcomes"]
-        )
-    else:
-        assert transitions[0]["prior_call_seconds"] == pytest.approx(30.21)
-        assert transitions[0]["evidence_remaining"] == pytest.approx(23.10)
+    assert transitions[0]["prior_call_seconds"] == pytest.approx(30.21)
+    assert transitions[0]["evidence_remaining"] == pytest.approx(23.10)
 
 
 @pytest.mark.parametrize(
@@ -191,7 +185,10 @@ def test_other_failures_never_enter_writing(tmp_path, failure):
             )
             raise providers.ProviderTimeout("Provider deadline expired", cutoff)
 
-    settings = config.Settings(tool_rounds=2 if failure == "no_round" else 8)
+    settings = config.Settings(
+        tool_rounds=2 if failure == "no_round" else 8,
+        final_writing_reserve_seconds=60,
+    )
     runner = workflow.StageRunner(settings, FailingProvider(), evidence)
     with mock.patch.object(
         workflow.time, "monotonic", side_effect=lambda: clock[0]
@@ -322,6 +319,11 @@ def test_supervisor_timeout_and_cancellation_are_distinct(tmp_path):
     with pytest.raises(providers.ProviderTimeout) as timeout:
         providers.execute(command, request)
     assert timeout.value.deadline > 0
+    assert timeout.value.limit == "invocation_allowance"
+    completed = json.loads(
+        (request.workspace / "events.jsonl").read_text().splitlines()[-1]
+    )
+    assert completed["ended_by"] == timeout.value.limit
     request.workspace = tmp_path / "cancel"
     request.seconds = 5
     timer = threading.Timer(0.2, providers.cancel_all)

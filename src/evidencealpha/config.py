@@ -57,8 +57,11 @@ class Settings:
     context_documents: int = 2
     context_characters: int = 12000
     stage_context_bytes: int = 100000
-    stage_seconds: int = 360
-    stage_allocations: tuple[int, ...] = (120, 480, 420, 240, 300, 120)
+    stage_seconds: int = 600
+    stage_allocations: tuple[int, ...] = (120, 600, 420, 240, 300, 120)
+    # Provisional allowances, not measured completion guarantees.
+    final_writing_reserve_seconds: int = 180
+    invocation_seconds: int = 300
     export_seconds: int = 120
 
     def __post_init__(self) -> None:
@@ -82,6 +85,8 @@ class Settings:
             self.stage_seconds,
             self.stage_context_bytes,
             self.export_seconds,
+            self.final_writing_reserve_seconds,
+            self.invocation_seconds,
         ):
             if value <= 0:
                 raise ValueError("Limits must be positive")
