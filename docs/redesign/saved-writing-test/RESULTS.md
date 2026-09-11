@@ -96,3 +96,11 @@ are correct, with the overclaim and omissions above. It does not establish
 repeatability, general factual accuracy, research completion or full-report
 acceptance. No timeout occurred. No patch or further model test is proposed or
 executed here. All child work ended; the one-call allowance is consumed.
+
+## User acceptance and recap correction
+
+The user accepts this as a successful completion test with the documented
+factual qualifications, not full product acceptance. Original output is
+unchanged. The separate authorization was already explicitly documented above
+in `data/redesign/saved-writing-test/authorization-usage.json`; any recap
+suggesting otherwise was incorrect. Its single authorized call is consumed.

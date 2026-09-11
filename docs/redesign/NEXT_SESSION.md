@@ -1,3 +1,13 @@
+# Latest: completion test accepted; transition proposal only
+
+The user accepted the saved-evidence completion test with factual qualifications,
+not full product acceptance. Its separate authorization is explicitly recorded
+in `data/redesign/saved-writing-test/authorization-usage.json`. Original output
+is preserved. One general company-prompt clarification is now applied.
+See `transition-test/PROPOSAL.md` for the unexecuted research-to-writing test and
+`data/redesign/transition-test/freeze.json` for exact candidate/input/corpus hashes.
+No charged work is authorized; do not reuse or reset any historical ledger.
+
 # Latest: saved-evidence writing test finished
 
 The separately authorized single call completed in 50.73 seconds. Key company
