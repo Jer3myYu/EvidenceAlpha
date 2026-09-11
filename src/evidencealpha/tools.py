@@ -5,6 +5,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -21,8 +22,11 @@ from evidencealpha import documents
 from evidencealpha import providers
 
 TOOL_DEFINITIONS = {
-    "search_evidence": {"query": "string"},
-    "open_source": {"source_id": "string", "chunk_id": "optional string"},
+    "search_evidence": {"query": "string", "source_id": "optional source ID"},
+    "open_source": {
+        "source_id": "string",
+        "chunk_id": "optional exact returned ID, e.g. c30, not 30",
+    },
     "search_web": {"query": "string"},
     "fetch_source": {"url": "public HTTP(S) URL"},
     "calculate": {
@@ -67,10 +71,21 @@ class EvidenceTools:
         if deadline is not None and name in ("search_web", "fetch_source"):
             return self._external(name, arguments, deadline)
         if name == "search_evidence":
+            query = arguments["query"]
+            source_id = arguments.get("source_id")
+            # Observed Codex queries used this familiar scope syntax. Honor
+            # it explicitly rather than silently treating it as a search term.
+            scopes = re.findall(r"\bsource_id:([a-f0-9]{64})\b", query)
+            if scopes:
+                if len(set(scopes)) != 1 or source_id not in (None, scopes[0]):
+                    raise ValueError("Conflicting source scopes")
+                source_id = scopes[0]
+                query = re.sub(r"\bsource_id:[a-f0-9]{64}\b", "", query).strip()
             return self.store.search_evidence(
-                arguments["query"],
+                query,
                 self.settings.retrieval_limit,
                 self.settings.embedding_model,
+                source_id,
             )
         if name == "open_source":
             result = self.store.open_source(**arguments)

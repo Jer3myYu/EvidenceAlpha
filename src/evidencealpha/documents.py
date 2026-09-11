@@ -291,7 +291,10 @@ class SourceStore:
             return {"source": copy.deepcopy(source), "text": text}
         chunk = next((c for c in source["chunks"] if c["id"] == chunk_id), None)
         if chunk is None:
-            raise ValueError("Unknown chunk")
+            raise ValueError(
+                "Unknown chunk; use the exact chunk_id returned by "
+                "search_evidence (e.g. c30, not 30)."
+            )
         return self._passage(source, text, chunk, self._context(folder))
 
     @staticmethod
@@ -354,7 +357,11 @@ class SourceStore:
         artifacts.write(path, record)
 
     def search_evidence(
-        self, query: str, limit: int = 6, embedding_model: str | None = None
+        self,
+        query: str,
+        limit: int = 6,
+        embedding_model: str | None = None,
+        source_id: str | None = None,
     ) -> list[dict]:
         """Rank original passages lexically."""
 
@@ -370,6 +377,10 @@ class SourceStore:
             return words
 
         sources = self.sources()
+        if source_id is not None and source_id not in {
+            s["id"] for s in sources
+        }:
+            raise ValueError("Unknown source scope")
         passages = []
         for source in sources:
             source, text = self._validated_source(source["id"])
@@ -434,4 +445,9 @@ class SourceStore:
                 for score, vector in zip(scores, vectors)
             ]
         ranked = sorted(zip(scores, passages), key=lambda pair: -pair[0])
+        if source_id is not None:
+            # Filter before top-k while retaining one reusable corpus index.
+            ranked = [
+                pair for pair in ranked if pair[1]["source_id"] == source_id
+            ]
         return [p for score, p in ranked[:limit] if score > 0]

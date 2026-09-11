@@ -97,8 +97,22 @@ class StageRunner:
                 if remaining <= 0:
                     raise providers.ProviderError("Stage deadline expired")
                 call_dir = folder / f"call-{turn}"
+                final_turn = turn == self.settings.tool_rounds - 1
+                available_tools = {} if final_turn else record["tools"]
                 prompt = json.dumps(
-                    {"messages": messages, "tools": record["tools"]},
+                    {
+                        "messages": messages,
+                        "tools": available_tools,
+                        "remaining_calls": self.settings.tool_rounds - turn,
+                        "turn_instruction": (
+                            "Final call: return your completed stage output "
+                            "from gathered evidence, with explicit gaps. "
+                            "Do not request tools."
+                            if final_turn
+                            else "Gather evidence efficiently; reserve the "
+                            "last call for completed stage output."
+                        ),
+                    },
                     ensure_ascii=False,
                 )
                 reservation = None
@@ -114,7 +128,7 @@ class StageRunner:
                     call_dir.resolve(),
                     remaining,
                     deadline,
-                    tuple(record["tools"]),
+                    tuple(available_tools),
                 )
                 artifacts.write(call_dir / "request.txt", prompt)
                 artifacts.write(

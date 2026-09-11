@@ -20,7 +20,10 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
         return {"type": "string", "enum": values}
 
     tools = {
-        "search_evidence": {"query": string},
+        "search_evidence": {
+            "query": string,
+            "source_id": {"type": ["string", "null"]},
+        },
         "open_source": {
             "source_id": string,
             "chunk_id": {"type": ["string", "null"]},
@@ -40,7 +43,7 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
         "unit": string,
         "caveats": string,
     }
-    return record(
+    schema = record(
         {
             "content": string,
             "tool_calls": array(
@@ -53,7 +56,7 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
                             }
                         )
                         for name, arguments in tools.items()
-                        if allowed_tools is None or name in allowed_tools
+                        if not allowed_tools or name in allowed_tools
                     ]
                 }
             ),
@@ -90,3 +93,6 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
             ),
         }
     )
+    if allowed_tools == ():
+        schema["properties"]["tool_calls"]["maxItems"] = 0
+    return schema

@@ -271,7 +271,10 @@ def test_strict_output_schema_preserves_roles_and_limits_tool_names():
     value = {
         **envelope,
         "tool_calls": [
-            {"name": "search_evidence", "arguments": {"query": "original"}}
+            {
+                "name": "search_evidence",
+                "arguments": {"query": "original", "source_id": None},
+            }
         ],
     }
     jsonschema.validate(value, schema)
@@ -285,3 +288,65 @@ def test_strict_output_schema_preserves_roles_and_limits_tool_names():
                 jsonschema.validate(
                     {**envelope, **output}, protocol.output_schema()
                 )
+
+
+def test_source_scope_excludes_competing_documents_before_top_k(tmp_path):
+    """Source targeting cannot silently mix another issuer's matching rows."""
+    store = documents.SourceStore(tmp_path / "corpus")
+    first = tmp_path / "first.txt"
+    first.write_text("revenue revenue revenue 2025")
+    target = tmp_path / "target.txt"
+    target.write_text("revenue 2024")
+    store.ingest(first)
+    source = store.ingest(target)
+    evidence = tools.EvidenceTools(store, config.Settings(), "fixed-corpus")
+    explicit = evidence.call(
+        "search_evidence", {"query": "revenue 2025", "source_id": source["id"]}
+    )
+    source_id = source["id"]
+    inline = evidence.call(
+        "search_evidence", {"query": f"source_id:{source_id} revenue 2025"}
+    )
+    assert explicit == inline
+    assert {p["source_id"] for p in explicit} == {source["id"]}
+    assert explicit[0]["text"] == "revenue 2024"
+
+
+def test_last_round_returns_notes_instead_of_discarding_research(tmp_path):
+    """A tool-heavy worker gets a final synthesis call within its round cap."""
+    output = {
+        "content": "Evidence gathered; unresolved coverage is explicit.",
+        "tool_calls": [],
+        "tasks": [],
+        "figures": [],
+        "issues": [],
+    }
+    tool_output = {
+        **output,
+        "tool_calls": [
+            {
+                "name": "calculate",
+                "arguments": {"operation": "add", "values": ["1", "2"]},
+            }
+        ],
+    }
+    provider = providers.FixtureProvider({"company": [tool_output, output]})
+    settings = dataclasses.replace(config.Settings(), tool_rounds=2)
+    evidence = tools.EvidenceTools(
+        documents.SourceStore(tmp_path / "corpus"), settings, "fixed-corpus"
+    )
+    result = workflow.StageRunner(settings, provider, evidence).run(
+        "company", "company", {}, tmp_path / "run"
+    )
+    assert result["output"] == output
+    assert len(provider.calls) == 2
+    last = provider.calls[-1]
+    prompt = json.loads(last.prompt)
+    assert prompt["remaining_calls"] == 1
+    assert prompt["tools"] == {}
+    assert last.allowed_tools == ()
+    schema = protocol.output_schema(last.allowed_tools)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(output, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(tool_output, schema)

@@ -1,5 +1,6 @@
 """Admission persistence, quota substitution and process-group cancellation."""
 
+import json
 import pathlib
 import sys
 
@@ -113,7 +114,10 @@ def test_explicit_quota_fallback_retains_portable_inputs_and_accounting(
         "claude",
         "codex",
     ]
-    assert fixture.calls[0].prompt == fixture.calls[1].prompt
+    first, fallback = [json.loads(call.prompt) for call in fixture.calls]
+    assert first["messages"] == fallback["messages"]
+    assert first["tools"] == fallback["tools"]
+    assert fallback["remaining_calls"] == first["remaining_calls"] - 1
     data = artifacts.read(ledger.path)
     assert data["claude_disabled"]
     assert [x["status"] for x in data["invocations"]] == ["failed", "complete"]
