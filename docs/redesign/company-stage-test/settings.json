@@ -1,0 +1,30 @@
+{
+  "profile": "low_claude_quota",
+  "claude_model": null,
+  "rehearsal_model": "gpt-5.5",
+  "runs_dir": "data/redesign/runs",
+  "ledger": "docs/redesign/RUN_BUDGET.json",
+  "chunk_characters": 1600,
+  "retrieval_limit": 6,
+  "source_open_characters": 24000,
+  "embedding_model": null,
+  "search_env_file": null,
+  "tool_rounds": 6,
+  "workers": 1,
+  "contextualize": false,
+  "context_documents": 2,
+  "context_characters": 12000,
+  "stage_context_bytes": 100000,
+  "stage_seconds": 600,
+  "stage_allocations": [
+    120,
+    600,
+    420,
+    240,
+    300,
+    120
+  ],
+  "final_writing_reserve_seconds": 180,
+  "invocation_seconds": 300,
+  "export_seconds": 120
+}

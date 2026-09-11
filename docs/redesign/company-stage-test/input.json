@@ -1,0 +1,280 @@
+{
+  "brief": {
+    "text": "为不熟悉光掩模的投资者撰写完整中文报告：解释行业、价值链、技术壁垒、商业化过程、中国与全球差异、需求与风险；比较清溢光电、路维光电、龙图光罩的技术状态、经营财务、重要驱动因素及代表性客户/供应商关系。管理层解释须归属其观点，不强求每个数字都附解释。财务和技术表分开，提供有来源且口径清楚的营业收入图。仅用现有完整来源库，明确覆盖限制，不作价格预测。",
+    "scope": "现有来源库自主研究评估；不验证网络获取或其他行业泛化。保持公司总收入与半导体业务收入的口径区分。币种仅推定时明确标注；URL路径日期不等于已核实披露日期。引用须可追溯到原文位置；所检索材料的空白不代表完整文件没有信息。"
+  },
+  "task": {
+    "role": "company",
+    "question": "在行业底稿完成后，仅使用现有来源库统一比较清溢光电、路维光电和龙图光罩：分别核实产品与应用、制程/节点及量产或验证状态、产能项目、经营驱动、风险、代表性客户与供应商关系；另行整理报告期和币种明确的公司总营业收入、利润等财务数据，严格区分总收入与半导体业务收入，为独立技术表、财务表及可比营业收入图提供带来源ID和chunk位置的证据，并标注缺失项及管理层观点。"
+  },
+  "sources": [
+    {
+      "source_id": "134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08",
+      "version": {
+        "hash": "a842b88902a1f8b99ec212296c29af426293252c3b5501f4a1c7cfc30793160c",
+        "text_hash": "3a089980f1b2679b7dfce9a0965bc3303278732f217bf8a91c261cc8ad65fa4a",
+        "parser_version": "structural-1",
+        "chunker_version": "spans-1"
+      },
+      "title": {
+        "value": "深圳清溢光电股份有限公司投资者关系活动记录表",
+        "chunk_id": "c28"
+      },
+      "issuer": {
+        "value": "深圳清溢光电股份有限公司",
+        "chunk_id": "c28"
+      },
+      "url": "http://dataclouds.cninfo.com.cn/shgonggao/investor/2026/20260714/6d5567fbed9c6a86e4e67e252f5b0516.pdf",
+      "identity_scope": "Document issuer; passage subjects may differ",
+      "hash": "a842b88902a1f8b99ec212296c29af426293252c3b5501f4a1c7cfc30793160c",
+      "text_hash": "3a089980f1b2679b7dfce9a0965bc3303278732f217bf8a91c261cc8ad65fa4a",
+      "chunk_count": 116,
+      "identifying_passage": {
+        "source_id": "134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08",
+        "version": {
+          "hash": "a842b88902a1f8b99ec212296c29af426293252c3b5501f4a1c7cfc30793160c",
+          "text_hash": "3a089980f1b2679b7dfce9a0965bc3303278732f217bf8a91c261cc8ad65fa4a",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        },
+        "title": {
+          "value": "深圳清溢光电股份有限公司投资者关系活动记录表",
+          "chunk_id": "c28"
+        },
+        "issuer": {
+          "value": "深圳清溢光电股份有限公司",
+          "chunk_id": "c28"
+        },
+        "url": "http://dataclouds.cninfo.com.cn/shgonggao/investor/2026/20260714/6d5567fbed9c6a86e4e67e252f5b0516.pdf",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "chunk_id": "c0",
+        "text": "投资者关系活\n动类别 | ■特定对象调研 □分析师会议",
+        "spans": [
+          {
+            "start": 0,
+            "end": 6,
+            "page": 1
+          },
+          {
+            "start": 7,
+            "end": 27,
+            "page": 1
+          }
+        ]
+      },
+      "warnings": [
+        "Digital extraction only; heading/footnote associations are heuristic; no OCR"
+      ]
+    },
+    {
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "version": {
+        "hash": "3941daaefdb0ed86d0479f7340f66b0ed7e99d8e73275da5402642b96457f599",
+        "text_hash": "26095d12d3391bd411ff910502e38642dca292f0f6a1282cf6e99471c0d5c5c3",
+        "parser_version": "structural-1",
+        "chunker_version": "spans-1"
+      },
+      "title": {
+        "value": "深圳市龙图光罩股份有限公司2025 年年度报告摘要",
+        "chunk_id": "c0"
+      },
+      "issuer": {
+        "value": "深圳市龙图光罩股份有限公司",
+        "chunk_id": "c0"
+      },
+      "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+      "identity_scope": "Document issuer; passage subjects may differ",
+      "hash": "3941daaefdb0ed86d0479f7340f66b0ed7e99d8e73275da5402642b96457f599",
+      "text_hash": "26095d12d3391bd411ff910502e38642dca292f0f6a1282cf6e99471c0d5c5c3",
+      "chunk_count": 414,
+      "identifying_passage": {
+        "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+        "version": {
+          "hash": "3941daaefdb0ed86d0479f7340f66b0ed7e99d8e73275da5402642b96457f599",
+          "text_hash": "26095d12d3391bd411ff910502e38642dca292f0f6a1282cf6e99471c0d5c5c3",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        },
+        "title": {
+          "value": "深圳市龙图光罩股份有限公司2025 年年度报告摘要",
+          "chunk_id": "c0"
+        },
+        "issuer": {
+          "value": "深圳市龙图光罩股份有限公司",
+          "chunk_id": "c0"
+        },
+        "url": "https://static.cninfo.com.cn/finalpage/2026-03-27/1225038364.PDF",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "chunk_id": "c0",
+        "text": "深圳市龙图光罩股份有限公司2025 年年度报告摘要",
+        "spans": [
+          {
+            "start": 0,
+            "end": 25,
+            "page": 1
+          }
+        ]
+      },
+      "warnings": [
+        "Digital extraction only; heading/footnote associations are heuristic; no OCR"
+      ]
+    },
+    {
+      "source_id": "8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd",
+      "version": {
+        "hash": "12d2191a35066c23b0bd286ea55683a50035415b0cdeaaabad64d04cb6f3b9c0",
+        "text_hash": "000b54cfb9e319e1765c8bb32f5c0b4579929d13b9235d00642536d2604acce0",
+        "parser_version": "structural-1",
+        "chunker_version": "spans-1"
+      },
+      "title": {
+        "value": "Photronics Reports Full Year and Fourth Quarter Fiscal 2025 Results",
+        "chunk_id": "c1"
+      },
+      "issuer": {
+        "value": "Photronics, Inc.",
+        "chunk_id": "c2"
+      },
+      "url": "https://photronicsinc.gcs-web.com/news-releases/news-release-details/photronics-reports-full-year-and-fourth-quarter-fiscal-2025",
+      "identity_scope": "Document issuer; passage subjects may differ",
+      "hash": "12d2191a35066c23b0bd286ea55683a50035415b0cdeaaabad64d04cb6f3b9c0",
+      "text_hash": "000b54cfb9e319e1765c8bb32f5c0b4579929d13b9235d00642536d2604acce0",
+      "chunk_count": 202,
+      "identifying_passage": {
+        "source_id": "8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd",
+        "version": {
+          "hash": "12d2191a35066c23b0bd286ea55683a50035415b0cdeaaabad64d04cb6f3b9c0",
+          "text_hash": "000b54cfb9e319e1765c8bb32f5c0b4579929d13b9235d00642536d2604acce0",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        },
+        "title": {
+          "value": "Photronics Reports Full Year and Fourth Quarter Fiscal 2025 Results",
+          "chunk_id": "c1"
+        },
+        "issuer": {
+          "value": "Photronics, Inc.",
+          "chunk_id": "c2"
+        },
+        "url": "https://photronicsinc.gcs-web.com/news-releases/news-release-details/photronics-reports-full-year-and-fourth-quarter-fiscal-2025",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "chunk_id": "c0",
+        "text": "Press Release",
+        "spans": [
+          {
+            "start": 0,
+            "end": 13,
+            "page": null
+          }
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "version": {
+        "hash": "6148ddfdcd6d27636144b4c31c860de4d98902ce4e6d784f1cf7cc7a737424f0",
+        "text_hash": "396cfd87c687f540a2804b1c007e7c57dce9697f543578d9a79ae64ce75edbad",
+        "parser_version": "structural-1",
+        "chunker_version": "spans-1"
+      },
+      "title": {
+        "value": "深圳清溢光电股份有限公司2025 年年度报告",
+        "chunk_id": "c0"
+      },
+      "issuer": {
+        "value": "深圳清溢光电股份有限公司",
+        "chunk_id": "c0"
+      },
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+      "identity_scope": "Document issuer; passage subjects may differ",
+      "hash": "6148ddfdcd6d27636144b4c31c860de4d98902ce4e6d784f1cf7cc7a737424f0",
+      "text_hash": "396cfd87c687f540a2804b1c007e7c57dce9697f543578d9a79ae64ce75edbad",
+      "chunk_count": 9662,
+      "identifying_passage": {
+        "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+        "version": {
+          "hash": "6148ddfdcd6d27636144b4c31c860de4d98902ce4e6d784f1cf7cc7a737424f0",
+          "text_hash": "396cfd87c687f540a2804b1c007e7c57dce9697f543578d9a79ae64ce75edbad",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        },
+        "title": {
+          "value": "深圳清溢光电股份有限公司2025 年年度报告",
+          "chunk_id": "c0"
+        },
+        "issuer": {
+          "value": "深圳清溢光电股份有限公司",
+          "chunk_id": "c0"
+        },
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197584.PDF",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "chunk_id": "c0",
+        "text": "深圳清溢光电股份有限公司2025 年年度报告",
+        "spans": [
+          {
+            "start": 0,
+            "end": 22,
+            "page": 1
+          }
+        ]
+      },
+      "warnings": [
+        "Digital extraction only; heading/footnote associations are heuristic; no OCR"
+      ]
+    },
+    {
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "version": {
+        "hash": "0722bca312924292269bfc3f8e8bed9f704bf7191046f15957334c12addb44e9",
+        "text_hash": "87b4274fe309a0735f4afe3ee041b3e64d7bf5a6feb933bea5e6f593a8af4bb3",
+        "parser_version": "structural-1",
+        "chunker_version": "spans-1"
+      },
+      "title": {
+        "value": "2025年度“提质增效重回报”行动方案评估报告",
+        "chunk_id": "c1"
+      },
+      "issuer": {
+        "value": "深圳市路维光电股份有限公司",
+        "chunk_id": "c0"
+      },
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+      "identity_scope": "Document issuer; passage subjects may differ",
+      "hash": "0722bca312924292269bfc3f8e8bed9f704bf7191046f15957334c12addb44e9",
+      "text_hash": "87b4274fe309a0735f4afe3ee041b3e64d7bf5a6feb933bea5e6f593a8af4bb3",
+      "chunk_count": 233,
+      "identifying_passage": {
+        "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+        "version": {
+          "hash": "0722bca312924292269bfc3f8e8bed9f704bf7191046f15957334c12addb44e9",
+          "text_hash": "87b4274fe309a0735f4afe3ee041b3e64d7bf5a6feb933bea5e6f593a8af4bb3",
+          "parser_version": "structural-1",
+          "chunker_version": "spans-1"
+        },
+        "title": {
+          "value": "2025年度“提质增效重回报”行动方案评估报告",
+          "chunk_id": "c1"
+        },
+        "issuer": {
+          "value": "深圳市路维光电股份有限公司",
+          "chunk_id": "c0"
+        },
+        "url": "https://static.cninfo.com.cn/finalpage/2026-04-17/1225113238.PDF",
+        "identity_scope": "Document issuer; passage subjects may differ",
+        "chunk_id": "c0",
+        "text": "深圳市路维光电股份有限公司",
+        "spans": [
+          {
+            "start": 0,
+            "end": 13,
+            "page": 1
+          }
+        ]
+      },
+      "warnings": [
+        "Digital extraction only; heading/footnote associations are heuristic; no OCR"
+      ]
+    }
+  ]
+}
