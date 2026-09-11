@@ -126,3 +126,9 @@ The attempt caps prevent more charged validation even though wall-clock,
 invocation-time and observable-token ceilings were not reached. NEXT_SESSION.md
 identifies the remaining work; it does not authorize another campaign or reset.
 RUN_BUDGET.json and STAGE2_RESULTS.json preserve exact cumulative accounting.
+
+## Focused additive correction — 2026-09-11
+
+Offline changes committed as `79b997e`: 47 tests pass, formatting/lint clean. Source context/windows, failed-worker evidence handoff, original-backed objections and a 300-second revision allocation are implemented. See [focused/RESULTS.md](focused/RESULTS.md) for actual limits and outcomes.
+
+The new diagnostic stopped after A failed at the evidence deadline without final notes. The saved fallback contains only the first source; all retrieved originals remain in the event trace. B/C were not run. This is a completed record of a failed diagnostic, not completed product validation. No further runtime patch, model retry, full report, external acquisition or account change followed. The old ledger/clock remain byte-identical; new usage is linked in `FOCUSED_DIAGNOSTIC_BUDGET.json` (106.7616 model seconds, 2053 known output tokens, one unknown-usage call). Final HEAD, dirty state and process/freeze checks are in `data/redesign/focused-diagnostic/final-state.json`.

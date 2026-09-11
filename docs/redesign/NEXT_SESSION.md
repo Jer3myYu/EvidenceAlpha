@@ -1,3 +1,13 @@
+# Latest handoff: focused diagnostic stopped
+
+Read [focused/RESULTS.md](focused/RESULTS.md) before the older handoff below. Evaluated candidate: `79b997e`; immutable snapshot: `data/redesign/focused-diagnostic/frozen/`. A failed at the 115-second evidence cutoff before final notes; B/C were not run. The 60-second writing reserve was left unused. The fallback's first-12 selection retained only Longtu, although the full event trace retains all three companies. No factual model improvement or full-report acceptance was established.
+
+The new additive allowance is closed on this failure, with 1/3 attempts used; unused counters do not permit continuing after the explicit stop. Do not retry, run B/C, launch a full report or reset either ledger without new direction. Preserve the code/prompt/input freeze, original corpus and failed output. Small follow-ups proposed in RESULTS are an earlier time-based final transition, source-balanced bounded fallback with compact references, and identity metadata once per source/result plus single-metric financial queries. No architecture rewrite or new agent roles are needed.
+
+Offline: 47 tests, Black and pylint clean. Final repository/process/freeze state is recorded in `data/redesign/focused-diagnostic/final-state.json`. Historical campaign accounting remains in `RUN_BUDGET.json`; additive accounting is `FOCUSED_DIAGNOSTIC_BUDGET.json`.
+
+---
+
 # Next session — no charged attempts remain
 
 The campaign is stopped at its attempt caps. **10 isolated and 2 full attempts
