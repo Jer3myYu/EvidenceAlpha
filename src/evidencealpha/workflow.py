@@ -326,6 +326,11 @@ def _source_inputs(store: documents.SourceStore, ids: list[str]) -> list[dict]:
                 "text_hash": source["text_hash"],
                 "url": source["url"],
                 "chunk_count": len(source["chunks"]),
+                "identifying_passage": (
+                    store.open_source(source_id, source["chunks"][0]["id"])
+                    if source["chunks"]
+                    else None
+                ),
                 "warnings": source["warnings"],
             }
         )

@@ -350,3 +350,20 @@ def test_last_round_returns_notes_instead_of_discarding_research(tmp_path):
     jsonschema.validate(output, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(tool_output, schema)
+
+
+def test_source_inventory_carries_original_identifying_passage(tmp_path):
+    """Workers see source identity evidence rather than anonymous hashes."""
+    brief, provider, sources = cli.fixture(FIXTURES / "service.json")
+    root = tmp_path / "run"
+    workflow.run(brief, config.Settings(), provider, sources, root)
+    request = next(c for c in provider.calls if c.stage == "plan")
+    portable = json.loads(json.loads(request.prompt)["messages"][1]["content"])
+    store = documents.SourceStore(root / "sources")
+    for item in portable["sources"]:
+        passage = item["identifying_passage"]
+        assert passage == store.open_source(
+            item["source_id"], passage["chunk_id"]
+        )
+        assert passage["spans"]
+        assert "identifying aid" in request.prompt
