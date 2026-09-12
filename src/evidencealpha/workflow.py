@@ -903,7 +903,23 @@ def _prepare_report(
         label = presentation.source_label(alias, context)
         url = context["url"]
         body = body.replace(f"[{alias}]({url})", f"[{label}]({url})")
+    body = re.sub(r"(\*\*[^*\n]+)([：:])(\*\*)", r"\1\3\2", body)
+    body, locations = presentation.citation_pages(
+        body, {alias: sid for sid, alias in mapping.items()}, store
+    )
+    artifacts.write(reports / "citation-pages.json", locations)
     body = presentation.table_notes(body)
+    lines = body.splitlines()
+    lines[:8] = [
+        line
+        for line in lines[:8]
+        if not (
+            line.startswith("报告日期：")
+            and " · 信息截止：" in line
+            and " · 版本：" in line
+        )
+    ]
+    body = "\n".join(lines)
     report_date = artifacts.now()[:10]
     cutoff = information_cutoff or "未指定"
     code_version = artifacts.revision()["head"][:7]

@@ -232,7 +232,7 @@ class Pages:
         self.y += 10
 
     def finish(self) -> bytes:
-        """Add page numbers and return a PDF with embedded subset fonts."""
+        """Add page numbers and return a PDF with embedded fonts."""
         for i, page in enumerate(self.document):
             page.insert_font(
                 fontname="Report",

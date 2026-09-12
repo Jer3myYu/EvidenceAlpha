@@ -285,16 +285,18 @@ def recover_stages(
             )
         record = old["stages"][name]
         folder = artifacts.contained(old_root, record["path"])
-        if (
-            not {
-                "input.json",
-                "output.json",
-                "context-state.json",
-                "writing-context.json",
-            }
-            <= files.keys()
-        ):
+        required_files = {
+            "input.json",
+            "output.json",
+            "context-state.json",
+            "status.json",
+        }
+        if name != "plan":
+            required_files.add("writing-context.json")
+        if not required_files <= files.keys():
             raise ValueError("Incomplete recovery checkpoint")
+        if artifacts.read(folder / "status.json").get("status") != "complete":
+            raise ValueError("Recovery stage did not complete")
         for filename, digest in files.items():
             if (
                 artifacts.digest(
