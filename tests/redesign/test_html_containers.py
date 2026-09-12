@@ -22,3 +22,19 @@ def test_html_containers_preserve_context_once():
     ]
     assert blocks[0]["kind"] == "heading"
     assert blocks[3]["kind"] == "table"
+
+
+def test_layout_table_does_not_duplicate_nested_article():
+    blocks, _ = documents._blocks(
+        b"<table><tbody><tr><td><h1>Article</h1><p>Context.</p>"
+        b"<table><tr><td>Period</td><td>Value</td></tr>"
+        b"<tr><td>2025</td><td>12</td></tr></table>"
+        b"<p>Qualification.</p></td></tr></tbody></table>",
+        ".html",
+    )
+    assert [b["text"] for b in blocks] == [
+        "Article",
+        "Context.",
+        "Period | Value\n2025 | 12",
+        "Qualification.",
+    ]

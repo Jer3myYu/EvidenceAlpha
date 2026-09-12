@@ -16,7 +16,7 @@ from evidencealpha import preparation
 from evidencealpha import retrieval
 from evidencealpha import reading
 
-PARSER_VERSION = "structural-3-html-containers"
+PARSER_VERSION = "structural-4-html-layout-tables"
 CHUNK_VERSION = "spans-1"
 
 
@@ -257,7 +257,7 @@ def _html_blocks(root: bs4.Tag) -> list[dict]:
     }
 
     def visit(tag: bs4.Tag) -> None:
-        if tag.name == "table":
+        if tag.name == "table" and not tag.find("table"):
             rows = [
                 " | ".join(
                     cell.get_text(" ", strip=True)
