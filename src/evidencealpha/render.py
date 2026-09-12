@@ -24,7 +24,7 @@ table { width: 100%; table-layout: fixed; border-spacing: 0; margin: 10pt 0; }
 th { background-color: #e6eef4; }
 th, td { border: 0.5pt solid #a6b5bf; padding: 5pt; font-size: 9pt; }
 img { max-width: 100%; }
-.report-image { page-break-before: auto; }
+.report-image { page-break-before: always; }
 a { color: #086788; }
 """
 
@@ -153,8 +153,8 @@ def export(markdown_path: pathlib.Path) -> dict:
         if not path.is_file():
             name = image["src"]
             raise ValueError(f"Missing report asset: {name}")
-        # Explicit dimensions preserve readability; allow ordinary flow using
-        # the accepted report layout without forcing a new page per figure.
+        # Start figures on a fresh page: Story can shrink an explicitly sized
+        # image to unreadable dimensions in the remaining page space.
         pixmap = pymupdf.Pixmap(str(path))
         scale = min(500 / pixmap.width, 450 / pixmap.height, 1)
         image["style"] = (
