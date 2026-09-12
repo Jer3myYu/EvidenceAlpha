@@ -1019,7 +1019,7 @@ def run(
                 runner.tools.settings = stage_settings
         if isinstance(ledger, budget.ExecutionLedger):
             ledger.stage = name
-            ledger.research = role in ("company", "industry", "plan")
+            ledger.research = role in ("company", "industry", "plan", "review")
             ledger.stage_calls = (
                 settings.tool_rounds
                 if checkpoint
