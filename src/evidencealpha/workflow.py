@@ -1223,7 +1223,19 @@ def run(
         )
         manifest["initial_coverage"] = initial_scope
         coverage = initial_scope
-        if required_scope and initial_scope["status"] != "complete":
+        recovered_draft = (
+            manifest["stages"].get("synthesis", {}).get("recovery_origin")
+        )
+        if recovered_draft:
+            manifest["pre_review_followup"] = (
+                "Reused draft: preserve initial gaps for targeted review; "
+                "do not restart completed research."
+            )
+        if (
+            required_scope
+            and initial_scope["status"] != "complete"
+            and not recovered_draft
+        ):
             gaps = [
                 x for x in initial_scope["items"] if x["status"] != "supported"
             ]
