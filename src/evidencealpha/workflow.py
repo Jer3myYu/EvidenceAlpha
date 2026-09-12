@@ -775,7 +775,7 @@ def run(
         raise ValueError("Model runs require an admitted campaign attempt")
     execution = execution or {}
     root.mkdir(parents=True, exist_ok=resume or bool(execution))
-    manifest_path = root / "manifest.json"
+    manifest_path = root / execution.get("manifest_file", "manifest.json")
     store = documents.SourceStore(root / "sources", settings.chunk_characters)
     if resume:
         manifest = artifacts.read(manifest_path)
@@ -854,6 +854,23 @@ def run(
         if checkpoint:
             portable = {**portable, "continuation_checkpoint": checkpoint}
         old = manifest["stages"].get(name)
+        if (
+            old
+            and resume
+            and execution.get("continuation")
+            and name.startswith("research-")
+        ):
+            saved = artifacts.read(root / old["path"] / "output.json")
+            prior_input = artifacts.read(root / old["path"] / "input.json")[
+                "portable"
+            ]
+            same_task = all(
+                prior_input.get(key) == portable.get(key)
+                for key in ("brief", "sources", "task", "required_scope")
+            )
+            if not same_task or artifacts.digest(saved) != old["output_hash"]:
+                raise ValueError("Completed current-run research changed")
+            return old
         if old and old["input_hash"] == artifacts.digest(portable):
             saved = artifacts.read(root / old["path"] / "output.json")
             stored_input = artifacts.read(root / old["path"] / "input.json")
@@ -1134,7 +1151,13 @@ def run(
                 },
                 "initial_gaps": gaps,
             }
-            artifacts.write(root / "initial-coverage.json", initial_scope)
+            artifacts.write(
+                root
+                / execution.get(
+                    "initial_coverage_file", "initial-coverage.json"
+                ),
+                initial_scope,
+            )
             try:
                 # Follow-up cannot consume protected downstream time.
                 follow_deadline = None
@@ -1154,6 +1177,13 @@ def run(
                     follow_deadline,
                 )
                 save("followup", followup)
+                previous_failure = manifest.get("research_gaps", {}).pop(
+                    "followup", None
+                )
+                if previous_failure:
+                    manifest.setdefault(
+                        "recovered_execution_failures", []
+                    ).append({"stage": "followup", "error": previous_failure})
                 research_records["followup"] = followup
                 follow_scope = evidence_handoff.scope(
                     followup["output"], followup_input["required_scope"], store
@@ -1202,7 +1232,10 @@ def run(
         manifest["execution_status"] = (
             "partial" if manifest.get("research_gaps") else "running"
         )
-        artifacts.write(root / "research-handoff.json", assembled)
+        artifacts.write(
+            root / execution.get("handoff_file", "research-handoff.json"),
+            assembled,
+        )
         synthesis_input = {
             "brief": brief,
             "sources": sources,

@@ -87,10 +87,8 @@ def test_all_evidence_and_actual_request_accounting(tmp_path):
     )
     assert len(documents.ungroup_passages(view["settled_evidence"])) == 103
     measured = artifacts.read(tmp_path / "request-size.json")
-    schema = (
-        json.dumps(protocol.output_schema(()), ensure_ascii=False, indent=2)
-        + "\n"
-    )
+    schema = protocol.encoded_schema(())
+    assert json.loads(schema) == protocol.output_schema(())
     assert measured["application_utf8_bytes"] == len(prompt.encode()) + len(
         schema.encode()
     )

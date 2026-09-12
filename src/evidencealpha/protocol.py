@@ -1,5 +1,7 @@
 """Strict provider output envelope for the existing portable tool protocol."""
 
+import json
+
 
 def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     """Return a closed JSON schema without changing the shared role contract."""
@@ -160,3 +162,15 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     if allowed_tools == ():
         schema["properties"]["tool_calls"]["maxItems"] = 0
     return schema
+
+
+def encoded_schema(allowed_tools: tuple[str, ...] | None = None) -> str:
+    """Encode the unchanged schema identically for admission and provider."""
+    return (
+        json.dumps(
+            output_schema(allowed_tools),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )

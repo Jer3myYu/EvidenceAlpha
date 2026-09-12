@@ -79,6 +79,14 @@ def compact_passages(result: dict) -> dict:
     for source in result.get("sources", []):
         for passage in source["passages"]:
             passage.pop("block_ids", None)
+            if "spans" in passage and all(
+                set(span) == {"start", "end", "page"}
+                for span in passage["spans"]
+            ):
+                passage["original_spans"] = [
+                    [span["start"], span["end"], span["page"]]
+                    for span in passage.pop("spans")
+                ]
             for record in passage.get("chunk_refs", []):
                 if "spans" in record:
                     record["spans"] = [
@@ -89,21 +97,75 @@ def compact_passages(result: dict) -> dict:
                         }
                         for span in record["spans"]
                     ]
+            primary = passage.get("spans") or [
+                {"start": x[0], "end": x[1], "page": x[2]}
+                for x in passage.get("original_spans", [])
+            ]
+            if passage.get("chunk_refs") and all(
+                x["spans"] == primary for x in passage["chunk_refs"]
+            ):
+                passage["chunk_ids"] = [
+                    x["chunk_id"] for x in passage.pop("chunk_refs")
+                ]
+            if "chunk_refs" in passage:
+                passage["chunk_bindings"] = [
+                    [
+                        entry["chunk_id"],
+                        [
+                            [
+                                span.get("start"),
+                                span.get("end"),
+                                span.get("page"),
+                            ]
+                            for span in entry["spans"]
+                        ],
+                    ]
+                    for entry in passage.pop("chunk_refs")
+                ]
     return result
 
 
 def ungroup_passages(result: dict) -> list[dict]:
     """Recover explicit source bindings from grouped tool or handoff data."""
-    return [
-        {
-            **{
-                key: value for key, value in source.items() if key != "passages"
-            },
-            **passage,
-        }
-        for source in result.get("sources", [])
-        for passage in source["passages"]
-    ]
+    result_passages = []
+    for source in result.get("sources", []):
+        for stored in source["passages"]:
+            passage = dict(stored)
+            if "original_spans" in passage:
+                passage["spans"] = [
+                    {"start": span[0], "end": span[1], "page": span[2]}
+                    for span in passage.pop("original_spans")
+                ]
+            if "chunk_ids" in passage:
+                passage["chunk_refs"] = [
+                    {
+                        "chunk_id": chunk_id,
+                        "spans": copy.deepcopy(passage["spans"]),
+                    }
+                    for chunk_id in passage.pop("chunk_ids")
+                ]
+            if "chunk_bindings" in passage:
+                passage["chunk_refs"] = [
+                    {
+                        "chunk_id": chunk_id,
+                        "spans": [
+                            {"start": span[0], "end": span[1], "page": span[2]}
+                            for span in spans
+                        ],
+                    }
+                    for chunk_id, spans in passage.pop("chunk_bindings")
+                ]
+            result_passages.append(
+                {
+                    **{
+                        key: value
+                        for key, value in source.items()
+                        if key != "passages"
+                    },
+                    **passage,
+                }
+            )
+    return result_passages
 
 
 def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:

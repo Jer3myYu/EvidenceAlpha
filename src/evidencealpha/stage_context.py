@@ -380,19 +380,18 @@ class StageContext:
         }
         # Compact bundle IDs are needed for model updates; original refs are
         # already bound in the immutable disk record, not repeated as text.
+        ref_indices = {reading.reference(p): i for i, p in enumerate(ordered)}
         visible_bundles = {
             bid: {
                 "question_id": b["question_id"],
                 "adequacy": b["adequacy"],
-                "originals": [
-                    {
-                        "source_id": originals[r]["source_id"],
-                        "chunk_id": originals[r].get("chunk_id"),
-                    }
-                    for r in b["refs"]
-                ],
+                "original_indices": [ref_indices[r] for r in b["refs"]],
                 "structure": b["structure"],
-                "continuation": (b["continuations"] or [None])[0],
+                **(
+                    {"continuation": b["continuations"][0]}
+                    if b["continuations"]
+                    else {}
+                ),
             }
             for bid, b in bundles.items()
             if phase != "final_notes" and set(b["refs"]) <= selected
@@ -594,7 +593,9 @@ class StageContext:
                         {"role": "system", "content": instructions},
                         {
                             "role": "user",
-                            "content": json.dumps(view, ensure_ascii=False),
+                            "content": json.dumps(
+                                view, ensure_ascii=False, separators=(",", ":")
+                            ),
                         },
                     ],
                     "tools": tools,
@@ -606,16 +607,10 @@ class StageContext:
                     ),
                 },
                 ensure_ascii=False,
+                separators=(",", ":"),
             )
 
-        schema = (
-            json.dumps(
-                protocol.output_schema(tuple(tools)),
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        )
+        schema = protocol.encoded_schema(tuple(tools))
         return self._select(
             max_bytes, phase, serialize, len(schema.encode()), max_tokens
         )

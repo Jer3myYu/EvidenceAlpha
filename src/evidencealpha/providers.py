@@ -236,7 +236,7 @@ class CodexProvider:
             raise ValueError("Model is outside the authorized campaign")
         output = request.workspace / "last-message.txt"
         schema = request.workspace / "output-schema.json"
-        artifacts.write(schema, protocol.output_schema(request.allowed_tools))
+        artifacts.write(schema, protocol.encoded_schema(request.allowed_tools))
         overrides = {
             "model_reasoning_effort": request.settings.effort,
             "forced_login_method": "chatgpt",

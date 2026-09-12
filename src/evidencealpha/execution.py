@@ -161,7 +161,12 @@ def run(
     previous_env = {k: os.environ.get(k) for k in environment}
     os.environ.update(environment)
     root.mkdir(parents=True, exist_ok=continue_existing)
-    ledger = budget.ExecutionLedger(root / "execution-ledger.json", settings)
+    ledger = budget.ExecutionLedger(
+        artifacts.contained(
+            root, spec.get("ledger_file", "execution-ledger.json")
+        ),
+        settings,
+    )
     ledger.initialize()
     if continue_existing:
         data = artifacts.read(ledger.path)
@@ -206,7 +211,7 @@ def run(
         artifacts.write(
             root
             / (
-                "execution-freeze-continuation.json"
+                spec.get("freeze_file", "execution-freeze-continuation.json")
                 if continue_existing
                 else "execution-freeze.json"
             ),
@@ -272,7 +277,9 @@ def run(
         result["usage"] = artifacts.read(ledger.path)
         result["elapsed_seconds"] = time.time() - attempt["started"]
         result["run"] = str(root)
-        artifacts.write(root / "command-result.json", result)
+        artifacts.write(
+            root / spec.get("result_file", "command-result.json"), result
+        )
         for key, value in previous_env.items():
             if value is None:
                 os.environ.pop(key, None)
