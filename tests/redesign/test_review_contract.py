@@ -55,6 +55,9 @@ def test_examination_is_separate_from_support_and_editorial(tmp_path):
     store, spec, output = example(tmp_path)
     baseline = review.assess(output, spec, store)
     assert baseline["factual_status"] == "supported"
+    invalid_location = copy.deepcopy(spec)
+    invalid_location["items"][0]["location_verified"] = False
+    assert review.assess(output, invalid_location, store)["status"] == "partial"
     baseline["items"][0]["outcome"] = "contradicted"
     baseline["factual_status"] = "unresolved"
     finding = {"claim_ids": ["status"]}

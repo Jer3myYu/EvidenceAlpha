@@ -25,14 +25,19 @@ def inventory(
             or claim["id"] in seen
             or not claim.get("claim", "").strip()
             or not claim.get("location", "").strip()
-            or claim["location"] not in draft
             or claim.get("requirement_id") not in required_ids | {""}
         ):
             raise ValueError(
                 "Review claim identity/location/requirement invalid"
             )
         seen.add(claim["id"])
-        items.append({**claim, "kind": "factual"})
+        items.append(
+            {
+                **claim,
+                "kind": "factual",
+                "location_verified": claim["location"] in draft,
+            }
+        )
     mapped = {c["requirement_id"] for c in items}
     gaps = [r for r in requirements if r["id"] not in mapped]
     # Historical writers had no claim inventory. Keep omissions explicit;
@@ -76,7 +81,9 @@ def assess(
         outcome = check.get("outcome", "not_assessed")
         refs = check.get("original_passages", [])
         problem = None
-        if status not in (
+        if not claim.get("location_verified", True):
+            problem = "Location is not an exact draft excerpt; check unverified"
+        elif status not in (
             "examined",
             "partial",
             "unexamined",
