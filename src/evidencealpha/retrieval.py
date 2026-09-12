@@ -8,11 +8,13 @@ import math
 import pathlib
 import re
 import time
+import threading
 import typing
 
 from evidencealpha import artifacts
 from evidencealpha import config
 from evidencealpha import reading
+from evidencealpha import preparation
 from evidencealpha import reranking
 
 if typing.TYPE_CHECKING:
@@ -32,10 +34,16 @@ def tokens(value: str) -> frozenset[str]:
 
 
 def candidates(
-    store: documents.SourceStore, query: str, source_id: str | None, limit: int
+    store: documents.SourceStore,
+    query: str,
+    source_id: str | None,
+    limit: int,
+    check: typing.Callable[[], None] = preparation.noop,
 ) -> list[dict]:
     """Score eligible originals with query-local ranks."""
+    check()
     sources = store.sources()
+    check()
     if source_id is not None and source_id not in {s["id"] for s in sources}:
         raise ValueError("Unknown source scope")
     wanted = tokens(query)
@@ -43,14 +51,15 @@ def candidates(
     for source in sources:
         if source_id is not None and source["id"] != source_id:
             continue
-        for chunk in source["chunks"]:
-            p = store.open_source(source["id"], chunk["id"])
+        for p in store.iter_passages(source["id"], check):
+            check()
             score = len(
                 wanted
                 & tokens(p["text"] + " " + (p["generated_context"] or ""))
             ) / math.sqrt(max(1, len(tokens(p["text"]))))
             if score > 0:
                 found.append({"passage": p, "lexical_score": score})
+    check()
     found.sort(
         key=lambda c: (
             -c["lexical_score"],
@@ -59,6 +68,7 @@ def candidates(
             c["passage"]["chunk_id"],
         )
     )
+    check()
     return [{**c, "lexical_rank": i + 1} for i, c in enumerate(found[:limit])]
 
 
@@ -71,6 +81,7 @@ class Retriever:
         settings: config.Settings,
         scorer: reranking.Scorer | None = None,
     ) -> None:
+        self.cancelled = threading.Event()
         self.store = store
         self.settings = settings
         self.scorer = scorer or reranking.LocalReranker(settings)
@@ -81,6 +92,7 @@ class Retriever:
 
     def close(self) -> None:
         """Close/reap the stage's optional local scorer."""
+        self.cancelled.set()
         self.scorer.close()
 
     def search(
@@ -98,9 +110,6 @@ class Retriever:
             started
             + max(0, self.settings.reranker_stage_seconds - self.seconds),
         )
-        pool = candidates(
-            self.store, query, source_id, self.settings.candidate_limit
-        )
         trace = {
             "query": query,
             "question_id": question_id,
@@ -109,79 +118,98 @@ class Retriever:
             "candidates": [],
             "pairs": 0,
         }
-        views = []
-        for candidate in pool:
-            p = candidate["passage"]
-            view = reading.window(
-                self.store,
-                p["source_id"],
-                p["chunk_id"],
-                characters=self.settings.reading_window_characters,
-            )
-            # Context includes originals, never generated descriptions.
-            views.append(view)
-            trace["candidates"].append(
-                {
-                    "source_id": p["source_id"],
-                    "chunk_id": p["chunk_id"],
-                    "version": self.store.source_context(p["source_id"])[
-                        "version"
-                    ],
-                    "spans": p["spans"],
-                    "lexical_rank": candidate["lexical_rank"],
-                    "lexical_score": candidate["lexical_score"],
-                    "context": view,
-                }
-            )
-        ranked = []
+        ranked, pool, views = [], [], []
         try:
-            if self.settings.retrieval_mode == "degraded_lexical":
-                trace["status"] = "degraded_lexical"
-                ranked = list(range(len(pool)))
-            elif pool:
-                key = artifacts.digest(
-                    {
-                        "query": query,
-                        "views": views,
-                        "settings": trace["configuration"],
-                    }
+            with preparation.guard(deadline, self.cancelled) as check:
+                pool = candidates(
+                    self.store,
+                    query,
+                    source_id,
+                    self.settings.candidate_limit,
+                    check,
                 )
-                if key in self.cache:
-                    scores = self.cache[key]
-                    trace["cache_hit"] = True
-                else:
-                    reserve = 2 * len(pool)
-                    if (
-                        self.pairs + reserve
-                        > self.settings.reranker_stage_pairs
-                    ):
-                        raise reranking.RerankerError("reranker_pair_limit")
-                    if time.monotonic() >= deadline:
-                        raise reranking.RerankerError("reranker_deadline")
-                    # Reserve before work; failures retain the charged ceiling.
-                    self.pairs += reserve
-                    trace["pairs_reserved"] = reserve
-                    scores = self.scorer.score(query, views, deadline)
-                    if time.monotonic() >= deadline:
-                        raise reranking.RerankerError("reranker_deadline")
-                    if any(
-                        s["score"] is not None and not math.isfinite(s["score"])
-                        for s in scores
-                    ):
-                        raise ValueError("Nonfinite relevance score")
-                    actual = sum(s["pairs"] for s in scores)
-                    if len(scores) != len(pool) or not 0 <= actual <= reserve:
-                        raise ValueError("Invalid scorer result")
-                    self.pairs -= reserve - actual
-                    trace["pairs"] = actual
-                    self.cache[key] = scores
-                for c, score in zip(trace["candidates"], scores):
-                    c["reranking"] = score
-                ranked = sorted(
-                    (i for i, s in enumerate(scores) if s["score"] is not None),
-                    key=lambda i: (-scores[i]["score"], i),
-                )
-        except reranking.RerankerError as exc:
+                for candidate in pool:
+                    check()
+                    p = candidate["passage"]
+                    view = reading.window(
+                        self.store,
+                        p["source_id"],
+                        p["chunk_id"],
+                        characters=self.settings.reading_window_characters,
+                        check=check,
+                    )
+                    # Context includes originals, never generated descriptions.
+                    views.append(view)
+                    trace["candidates"].append(
+                        {
+                            "source_id": p["source_id"],
+                            "chunk_id": p["chunk_id"],
+                            "version": self.store.source_context(
+                                p["source_id"]
+                            )["version"],
+                            "spans": p["spans"],
+                            "lexical_rank": candidate["lexical_rank"],
+                            "lexical_score": candidate["lexical_score"],
+                            "context": view,
+                        }
+                    )
+                check()
+                if self.settings.retrieval_mode == "degraded_lexical":
+                    trace["status"] = "degraded_lexical"
+                    ranked = list(range(len(pool)))
+                elif pool:
+                    key = artifacts.digest(
+                        {
+                            "query": query,
+                            "views": views,
+                            "settings": trace["configuration"],
+                        }
+                    )
+                    check()
+                    if key in self.cache:
+                        scores = self.cache[key]
+                        trace["cache_hit"] = True
+                    else:
+                        reserve = 2 * len(pool)
+                        if (
+                            self.pairs + reserve
+                            > self.settings.reranker_stage_pairs
+                        ):
+                            raise reranking.RerankerError("reranker_pair_limit")
+                        if time.monotonic() >= deadline:
+                            raise reranking.RerankerError("reranker_deadline")
+                        # Failed work retains its reserved pair ceiling.
+                        self.pairs += reserve
+                        trace["pairs_reserved"] = reserve
+                        scores = self.scorer.score(query, views, deadline)
+                        if time.monotonic() >= deadline:
+                            raise reranking.RerankerError("reranker_deadline")
+                        if any(
+                            s["score"] is not None
+                            and not math.isfinite(s["score"])
+                            for s in scores
+                        ):
+                            raise ValueError("Nonfinite relevance score")
+                        actual = sum(s["pairs"] for s in scores)
+                        if (
+                            len(scores) != len(pool)
+                            or not 0 <= actual <= reserve
+                        ):
+                            raise ValueError("Invalid scorer result")
+                        self.pairs -= reserve - actual
+                        trace["pairs"] = actual
+                        self.cache[key] = scores
+                    for c, score in zip(trace["candidates"], scores):
+                        c["reranking"] = score
+                    ranked = sorted(
+                        (
+                            i
+                            for i, s in enumerate(scores)
+                            if s["score"] is not None
+                        ),
+                        key=lambda i: (-scores[i]["score"], i),
+                    )
+        except (reranking.RerankerError, preparation.Stopped) as exc:
             trace["status"] = str(exc)
             trace["error"] = str(exc)
         finally:

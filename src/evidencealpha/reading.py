@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import dataclasses
+import types
 import re
 import typing
 
 from evidencealpha import artifacts
+from evidencealpha import preparation
 
 if typing.TYPE_CHECKING:
     from evidencealpha import documents
@@ -31,6 +34,94 @@ def _units(block: dict, text: str, limit: int) -> list[tuple[int, int]]:
     ]
 
 
+@dataclasses.dataclass(frozen=True)
+class Index:
+    """Immutable structural and chunk-binding indexes for one source version."""
+
+    text: str
+    original_path: str
+    blocks: tuple
+    units: tuple
+    block_units: typing.Mapping[str, tuple[int, ...]]
+    block_chunks: typing.Mapping[str, tuple]
+    chunk_focus: typing.Mapping[str, int]
+
+    def __init__(
+        self,
+        source: dict,
+        text: str,
+        limit: int,
+        check: typing.Callable[[], None] = preparation.noop,
+    ) -> None:
+        blocks = []
+        for block in source["blocks"]:
+            check()
+            blocks.append(
+                types.MappingProxyType(
+                    {
+                        k: tuple(v) if isinstance(v, list) else v
+                        for k, v in block.items()
+                    }
+                )
+            )
+        blocks.sort(
+            key=lambda b: (
+                b.get("page") or 0,
+                (b.get("bbox") or [0, b["start"]])[1],
+                (b.get("bbox") or [0])[0],
+                b["start"],
+            )
+        )
+        units, block_units, block_chunks, focus = [], {}, {}, {}
+        for block in blocks:
+            check()
+            indexes = []
+            for a, z in _units(block, text, limit):
+                check()
+                indexes.append(len(units))
+                units.append((block, a, z))
+            block_units[block["id"]] = tuple(indexes)
+        for chunk in source["chunks"]:
+            check()
+            focus[chunk["id"]] = chunk["spans"][-1]["start"]
+            binding = (
+                chunk["id"],
+                json.dumps(chunk["spans"]),
+                tuple((span["start"], span["end"]) for span in chunk["spans"]),
+            )
+            for block_id in chunk["block_ids"]:
+                block_chunks.setdefault(block_id, []).append(binding)
+        for name, value in {
+            "text": text,
+            "original_path": source["original_path"],
+            "blocks": tuple(blocks),
+            "units": tuple(units),
+            "block_units": types.MappingProxyType(block_units),
+            "block_chunks": types.MappingProxyType(
+                {key: tuple(value) for key, value in block_chunks.items()}
+            ),
+            "chunk_focus": types.MappingProxyType(focus),
+        }.items():
+            object.__setattr__(self, name, value)
+
+    def bindings(
+        self,
+        block_id: str,
+        start: int,
+        end: int,
+        check: typing.Callable[[], None] = preparation.noop,
+    ) -> list[dict]:
+        """Return fresh bindings without exposing cached mutable state."""
+        found = []
+        for chunk_id, encoded, spans in self.block_chunks.get(block_id, ()):
+            check()
+            if any(a < end and z > start for a, z in spans):
+                found.append(
+                    {"chunk_id": chunk_id, "spans": json.loads(encoded)}
+                )
+        return found
+
+
 def window(
     store: documents.SourceStore,
     source_id: str,
@@ -40,6 +131,7 @@ def window(
     page: int | None = None,
     continuation: str | None = None,
     characters: int = 8000,
+    check: typing.Callable[[], None] = preparation.noop,
 ) -> dict:
     """Read whole structural units, with version-bound continuation cursors.
 
@@ -54,19 +146,11 @@ def window(
         raise ValueError("surrounding must be 0..2")
     if sum(x is not None for x in (chunk_id, page, continuation)) != 1:
         raise ValueError("Choose exactly one chunk, page or continuation")
-    original = store.open_source(source_id)
-    source, text = original["source"], original["text"]
+    check()
+    index = store.reading_index(source_id, characters, check)
+    text, blocks, units = index.text, index.blocks, index.units
     identity = store.source_context(source_id)
-    blocks = sorted(
-        source["blocks"],
-        key=lambda b: (
-            b.get("page") or 0,
-            (b.get("bbox") or [0, b["start"]])[1],
-            (b.get("bbox") or [0])[0],
-            b["start"],
-        ),
-    )
-    units = [(b, a, z) for b in blocks for a, z in _units(b, text, characters)]
+    check()
     if not units:
         raise ValueError("No readable structural units")
     cursor = None
@@ -92,22 +176,23 @@ def window(
             raise ValueError("Unknown page")
         focus = found[0]
     else:
-        chunk = next((c for c in source["chunks"] if c["id"] == chunk_id), None)
-        if chunk is None:
+        if chunk_id not in index.chunk_focus:
             raise ValueError("Unknown chunk; use exact chunk_id")
-        # The last span is the focal row when a chunk repeats its table header.
-        focus = chunk["spans"][-1]["start"]
+        # The last span remains the focal row of a repeated-header chunk.
+        focus = index.chunk_focus[chunk_id]
     center = next(i for i, (_, a, z) in enumerate(units) if a <= focus < z)
     block = units[center][0]
     bi = blocks.index(block)
     eligible_blocks = blocks[max(0, bi - surrounding) : bi + surrounding + 1]
     if page is not None:
         eligible_blocks = [b for b in blocks if b.get("page") == page]
-    eligible = [i for i, (b, _, _) in enumerate(units) if b in eligible_blocks]
+    eligible = sorted(
+        i for b in eligible_blocks for i in index.block_units[b["id"]]
+    )
     # Repeat the first original row; its header association remains unknown.
     required = {center}
     if block["kind"] == "table":
-        required.add(next(i for i, (b, _, _) in enumerate(units) if b == block))
+        required.add(index.block_units[block["id"]][0])
 
     def size(indexes: set[int]) -> int:
         return sum(units[i][2] - units[i][1] for i in indexes)
@@ -115,18 +200,15 @@ def window(
     selected = set(required) if size(required) <= characters else set()
     if selected:
         for i in sorted(eligible, key=lambda i: (abs(i - center), i)):
+            check()
             if size(selected | {i}) <= characters:
                 selected.add(i)
     omitted = [i for i in eligible if i not in selected]
     passages = []
     for i in sorted(selected):
         b, a, z = units[i]
-        bindings = [
-            {"chunk_id": c["id"], "spans": c["spans"]}
-            for c in source["chunks"]
-            if b["id"] in c["block_ids"]
-            and any(s["start"] < z and s["end"] > a for s in c["spans"])
-        ]
+        check()
+        bindings = index.bindings(b["id"], a, z, check)
         passages.append(
             {
                 **identity,
@@ -149,6 +231,7 @@ def window(
         )
         for i in omitted
     ]
+    check()
     refs = [reference(p) for p in passages]
     focal_refs = [
         reference(p)
@@ -181,6 +264,6 @@ def window(
         "original_page": {
             "source_id": source_id,
             "page": block.get("page"),
-            "path": str(store.root / source_id / source["original_path"]),
+            "path": str(store.root / source_id / index.original_path),
         },
     }

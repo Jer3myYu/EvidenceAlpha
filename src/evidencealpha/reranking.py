@@ -18,6 +18,7 @@ import typing
 
 from evidencealpha import artifacts
 from evidencealpha import config
+from evidencealpha import preparation
 
 _SLOT = threading.BoundedSemaphore(1)
 _ACTIVE: set[LocalReranker] = set()
@@ -42,6 +43,7 @@ class Scorer(typing.Protocol):
 
 def cancel_all() -> None:
     """Cancel local inference alongside provider cancellation."""
+    preparation.cancel_all()
     with _LOCK:
         active = list(_ACTIVE)
     for scorer in active:

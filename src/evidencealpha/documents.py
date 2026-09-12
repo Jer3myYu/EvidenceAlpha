@@ -5,11 +5,14 @@ import copy
 import pathlib
 import re
 import threading
+import typing
+
 
 import bs4
 import pymupdf
 
 from evidencealpha import artifacts
+from evidencealpha import preparation
 from evidencealpha import retrieval
 from evidencealpha import reading
 
@@ -196,6 +199,7 @@ class SourceStore:
         self.chunk_characters = chunk_characters
         self._lock = threading.RLock()
         self._validated: dict[str, tuple] = {}
+        self._reading_indexes: dict[tuple[str, int], tuple] = {}
 
     def _validated_source(self, source_id: str) -> tuple[dict, str]:
         folder = artifacts.contained(self.root, source_id)
@@ -237,6 +241,40 @@ class SourceStore:
                 raise ValueError("Source version was changed in place")
             self._validated[source_id] = (version, source, text)
             return source, text
+
+    def reading_index(
+        self,
+        source_id: str,
+        characters: int,
+        check: typing.Callable[[], None] = preparation.noop,
+    ) -> reading.Index:
+        """Reuse an immutable index only for a revalidated source version."""
+        check()
+        with self._lock:
+            source, text = self._validated_source(source_id)
+            check()
+            key = (source_id, characters)
+            cached = self._reading_indexes.get(key)
+            if cached is None or cached[0] is not source:
+                index = reading.Index(source, text, characters, check)
+                check()
+                self._reading_indexes[key] = (source, index)
+            return self._reading_indexes[key][1]
+
+    def iter_passages(
+        self,
+        source_id: str,
+        check: typing.Callable[[], None] = preparation.noop,
+    ) -> typing.Iterator[dict]:
+        """Read one validated source snapshot without repeated chunk scans."""
+        check()
+        source, text = self._validated_source(source_id)
+        context = self._context(artifacts.contained(self.root, source_id))
+        check()
+        for chunk in source["chunks"]:
+            check()
+            yield self._passage(source, text, chunk, context)
+        check()
 
     def ingest(
         self,
