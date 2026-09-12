@@ -1331,7 +1331,15 @@ def run(
                 "draft": path.read_text(),
                 "review_mode": True,
                 "recovered_followup_notes": notes.get("followup"),
-                "coverage": coverage,
+                "coverage": {
+                    **coverage,
+                    "items": [
+                        x
+                        for x in coverage["items"]
+                        if x["status"] != "supported"
+                    ],
+                    "scope_note": "Open gaps only; originals for all claims remain supplied",
+                },
                 "supplemental_findings": execution.get(
                     "supplemental_findings", []
                 ),
