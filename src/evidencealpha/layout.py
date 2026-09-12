@@ -10,8 +10,8 @@ import pymupdf
 from evidencealpha import artifacts
 
 CSS = """
-@font-face {font-family: Report; src: url(fonts/regular-v4.otf);}
-@font-face {font-family: Report; src: url(fonts/bold-v4.otf); font-weight: bold;}
+@font-face {font-family: Report; src: url(fonts/regular-v5.otf);}
+@font-face {font-family: Report; src: url(fonts/bold-v5.otf); font-weight: bold;}
 body {font-family: Report; font-size: 10.5pt; line-height: 1.55;
       color: #303842; margin: 0;}
 h1 {font-size: 21pt; color: #16334c; margin: 0 0 12pt;}
@@ -19,6 +19,7 @@ h2 {font-size: 14pt; color: #16334c; margin: 12pt 0 7pt;}
 h3 {font-size: 11.5pt; color: #16334c; margin: 9pt 0 5pt;}
 p {margin: 0 0 7pt;} li {margin-bottom: 4pt;}
 a {color: #235d80;}
+code {font-family: Report;}
 """
 
 
@@ -34,7 +35,7 @@ def fonts(folder: pathlib.Path) -> dict:
         path = pathlib.Path("/usr/share/fonts/opentype/noto") / source
         if not path.is_file():
             raise ValueError(f"Installed Chinese font unavailable: {path}")
-        output = target / f"{weight}-v4.otf"
+        output = target / f"{weight}-v5.otf"
         if not output.exists():
             collection = fontTools.ttLib.TTCollection(path)
             try:
@@ -55,7 +56,11 @@ def fonts(folder: pathlib.Path) -> dict:
                         (
                             0
                             if item[0] < 128
-                            else 1 if 0x3400 <= item[0] <= 0x9FFF else 2
+                            else (
+                                1
+                                if 0x4E00 <= item[0] <= 0x9FFF
+                                else 2 if 0x3400 <= item[0] <= 0x4DBF else 3
+                            )
                         ),
                         item[0],
                     ),
@@ -236,7 +241,7 @@ class Pages:
         for i, page in enumerate(self.document):
             page.insert_font(
                 fontname="Report",
-                fontfile=str(self.folder / "fonts/regular-v4.otf"),
+                fontfile=str(self.folder / "fonts/regular-v5.otf"),
             )
             page.insert_text(
                 (475, 818),
