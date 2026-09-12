@@ -1338,7 +1338,9 @@ def run(
                         for x in coverage["items"]
                         if x["status"] != "supported"
                     ],
-                    "scope_note": "Open gaps only; originals for all claims remain supplied",
+                    "scope_note": (
+                        "Open gaps only; originals for all claims remain supplied"
+                    ),
                 },
                 "supplemental_findings": execution.get(
                     "supplemental_findings", []
