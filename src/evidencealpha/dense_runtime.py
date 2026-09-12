@@ -17,6 +17,7 @@ from evidencealpha import artifacts
 from evidencealpha import config
 from evidencealpha import documents
 from evidencealpha import preparation
+from evidencealpha import reranking
 
 _SLOT = threading.Lock()
 
@@ -73,7 +74,7 @@ def supervised(
                     try:
                         status = pathlib.Path(
                             f"/proc/{process.pid}/status"
-                        ).read_text()
+                        ).read_text(encoding="utf-8")
                         rss = next(
                             (
                                 int(x.split()[1]) * 1024
@@ -96,7 +97,9 @@ def supervised(
             if process.returncode:
                 raise RuntimeError(
                     "Dense worker failed: "
-                    + (folder / "worker.log").read_text()[-3000:]
+                    + (folder / "worker.log").read_text(encoding="utf-8")[
+                        -3000:
+                    ]
                 )
             result = artifacts.read(folder / "response.json")
             result["supervision"] = {
@@ -146,20 +149,27 @@ class Candidates:
         check()
         started = time.monotonic()
         lexical = retrieval.candidates(store, query, source_id, limit, check)
-        result = supervised(
-            {
-                "operation": "query",
-                "settings": dataclasses.asdict(self.settings),
-                "corpus": str(store.root.resolve()),
-                "query": query,
-                "source_id": source_id,
-                "limit": limit,
-            },
-            self.settings.dense_python or sys.executable,
-            time.monotonic() + self.settings.dense_operation_seconds,
-            self.settings.reranker_memory_bytes,
-            check,
-        )
+        try:
+            result = supervised(
+                {
+                    "operation": "query",
+                    "settings": dataclasses.asdict(self.settings),
+                    "corpus": str(store.root.resolve()),
+                    "query": query,
+                    "source_id": source_id,
+                    "limit": limit,
+                },
+                self.settings.dense_python or sys.executable,
+                time.monotonic() + self.settings.dense_operation_seconds,
+                self.settings.reranker_memory_bytes,
+                check,
+            )
+        except preparation.Stopped:
+            raise
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise reranking.RerankerError(
+                "dense_retrieval_failed: " + str(exc)
+            ) from exc
         self.last_metrics = {
             **result["metrics"],
             **result["supervision"],

@@ -231,7 +231,10 @@ def main() -> None:
             raise ValueError(
                 "Explicit installed encoder configuration required"
             )
-        if args.output.exists():
+        if (
+            args.output.exists()
+            or args.output.with_name(args.output.name + "-operation").exists()
+        ):
             raise ValueError(
                 "Index output exists; use a new additive directory"
             )
