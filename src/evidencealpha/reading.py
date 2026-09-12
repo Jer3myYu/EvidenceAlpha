@@ -34,6 +34,40 @@ def _units(block: dict, text: str, limit: int) -> list[tuple[int, int]]:
     ]
 
 
+def _same_paragraph(
+    previous: typing.Mapping, current: typing.Mapping, text: str
+) -> bool:
+    """Join adjacent PDF lines using indentation, spacing and column geometry.
+
+    This is navigation context, not a certified semantic association. Original
+    spans remain separate; ambiguous layout boundaries are not crossed.
+    """
+    a, b = previous.get("bbox"), current.get("bbox")
+    if (
+        previous["kind"] != "paragraph"
+        or current["kind"] != "paragraph"
+        or not a
+        or not b
+        or previous.get("page") != current.get("page")
+    ):
+        return False
+    height = max(a[3] - a[1], b[3] - b[1])
+    if height <= 0 or not 0 <= b[1] - a[3] <= height * 1.5:
+        return False
+    if (
+        b[0] > a[0] + height * 0.5
+        or abs(b[3] - b[1] - (a[3] - a[1])) > height * 0.2
+    ):
+        return False
+    if abs(b[2] - a[2]) > max(height * 3, (a[2] - a[0]) * 0.2):
+        return False
+    if a[2] - a[0] < 0.7 * (b[2] - b[0]) and text[
+        previous["start"] : previous["end"]
+    ].rstrip().endswith(("。", ".", "！", "？")):
+        return False
+    return True
+
+
 @dataclasses.dataclass(frozen=True)
 class Index:
     """Immutable structural and chunk-binding indexes for one source version."""
@@ -45,6 +79,8 @@ class Index:
     block_units: typing.Mapping[str, tuple[int, ...]]
     block_chunks: typing.Mapping[str, tuple]
     chunk_focus: typing.Mapping[str, int]
+    groups: tuple
+    group_for_block: typing.Mapping[str, int]
 
     def __init__(
         self,
@@ -72,6 +108,17 @@ class Index:
                 b["start"],
             )
         )
+        groups = []
+        for block in blocks:
+            check()
+            previous = groups[-1][-1] if groups else None
+            if previous is not None and _same_paragraph(previous, block, text):
+                groups[-1].append(block)
+            else:
+                groups.append([block])
+        group_for_block = {
+            block["id"]: i for i, group in enumerate(groups) for block in group
+        }
         units, block_units, block_chunks, focus = [], {}, {}, {}
         for block in blocks:
             check()
@@ -92,6 +139,8 @@ class Index:
             for block_id in chunk["block_ids"]:
                 block_chunks.setdefault(block_id, []).append(binding)
         for name, value in {
+            "groups": tuple(tuple(group) for group in groups),
+            "group_for_block": types.MappingProxyType(group_for_block),
             "text": text,
             "original_path": source["original_path"],
             "blocks": tuple(blocks),
@@ -182,15 +231,25 @@ def window(
         focus = index.chunk_focus[chunk_id]
     center = next(i for i, (_, a, z) in enumerate(units) if a <= focus < z)
     block = units[center][0]
-    bi = blocks.index(block)
-    eligible_blocks = blocks[max(0, bi - surrounding) : bi + surrounding + 1]
+    group = index.group_for_block[block["id"]]
+    eligible_blocks = [
+        b
+        for g in index.groups[
+            max(0, group - surrounding) : group + surrounding + 1
+        ]
+        for b in g
+    ]
     if page is not None:
         eligible_blocks = [b for b in blocks if b.get("page") == page]
     eligible = sorted(
         i for b in eligible_blocks for i in index.block_units[b["id"]]
     )
     # Repeat the first original row; its header association remains unknown.
-    required = {center}
+    required = (
+        {i for b in index.groups[group] for i in index.block_units[b["id"]]}
+        if block["kind"] == "paragraph"
+        else {center}
+    )
     if block["kind"] == "table":
         required.add(index.block_units[block["id"]][0])
 

@@ -46,3 +46,28 @@ A statement-boundary worker observer replaces global tracing; no resident warm
 model or hidden warmup is used. See the continuation ledger and separate neural-1
 and neural-2 directories for actual outcomes; these settings are not themselves
 a readiness or quality pass.
+
+## Context and duplicate-window follow-up
+
+Real evaluation showed the legacy PDF parser's individual visual lines were
+being treated as complete paragraphs. Rendered Luw page2 confirms the financial
+paragraph spans c30–c39; a window at c36 omitted its revenue/causal context.
+Reading indexes now group adjacent same-page PDF lines by indentation, spacing,
+font height and column geometry. They retain separate exact original spans and
+chunk bindings; ambiguous boundaries remain separate. The8000-character ceiling
+is unchanged; oversized indivisible groups remain explicit gaps. This changes
+reading context to address observed omissions, not ranking or candidate depth.
+
+Recorded scoring also repeated identical texts (S01:64windows,42unique texts).
+The local worker now caches identical window logits per query. Scored views and
+candidate order remain unchanged; only actual forwards are charged. A fake-module
+check confirms two identical views invoke one forward and retain both scores.
+Seven paragraph/cache/deadline checks and the separate window-cache check passed.
+
+C02's long table windows averaged2.90seconds per forward and hit150seconds after49
+forwards. Before targeted continuation, search allowance became300seconds within
+1800 cumulative neural seconds/2048 charged pairs, including previous failures.
+Completed cases were not blindly rerun: neural-3 contains only affected quality
+failures and remaining controls. Broad-query candidate misses stay recorded as
+failures; no frozen criterion is relaxed. Actual subsequent results live in the
+additive continuation ledger and separate attempt directories.

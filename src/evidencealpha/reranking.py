@@ -147,6 +147,7 @@ def _worker(connection: typing.Any, settings: dict) -> None:
                 connection.send({"error": "focused_query_required"})
                 continue
             results = []
+            window_scores = {}
             for view in views:
                 windows = bounded_views(
                     query,
@@ -157,18 +158,23 @@ def _worker(connection: typing.Any, settings: dict) -> None:
                     settings["reranker_pair_tokens"],
                 )
                 logits = []
+                evaluated = 0
                 for text in windows:
+                    if text in window_scores:
+                        logits.append(window_scores[text])
+                        continue
                     encoded = tokenizer(
                         query, text, truncation=False, return_tensors="pt"
                     )
                     with torch.inference_mode():
-                        logits.append(
-                            float(model(**encoded).logits.reshape(-1)[0])
-                        )
+                        value = float(model(**encoded).logits.reshape(-1)[0])
+                    window_scores[text] = value
+                    logits.append(value)
+                    evaluated += 1
                 results.append(
                     {
                         "score": max(logits) if logits else None,
-                        "pairs": len(logits),
+                        "pairs": evaluated,
                         "scored_views": windows,
                         "status": (
                             (
