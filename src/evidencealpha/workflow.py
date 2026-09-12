@@ -34,8 +34,8 @@ class ResearchHandoffError(providers.ProviderError):
         self.handoff = handoff
 
 
-def revision_input(review: dict, findings: dict) -> dict:
-    """Keep the draft, requirements and originals; omit upstream repetition."""
+def review_followup_input(review: dict) -> dict:
+    """Keep writing originals; compact navigation repeated after review."""
     return {
         **{
             key: value
@@ -47,8 +47,20 @@ def revision_input(review: dict, findings: dict) -> dict:
                 "gaps",
                 "unsynthesized_evidence",
                 "supplemental_findings",
+                "review_inventory",
             )
         },
+        "sources": [
+            {k: v for k, v in source.items() if k != "identifying_passage"}
+            for source in review.get("sources", [])
+        ],
+    }
+
+
+def revision_input(review: dict, findings: dict) -> dict:
+    """Keep the draft, requirements and originals; omit upstream repetition."""
+    return {
+        **review_followup_input(review),
         "findings": {
             k: v for k, v in findings.items() if k in ("content", "issues")
         },
@@ -1609,7 +1621,7 @@ def run(
                 "recheck",
                 "recheck",
                 {
-                    **review_input(current),
+                    **review_followup_input(review_input(current)),
                     "prior_issues": material,
                     "required_scope": [
                         {"id": f"finding-{i}", "question": issue["location"]}
