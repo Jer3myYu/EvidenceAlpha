@@ -23,7 +23,7 @@ from evidencealpha import workflow
 
 
 def main():
-    """Continue under the original elapsed deadline and cumulative call count."""
+    """Continue under the original deadline and cumulative call count."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
