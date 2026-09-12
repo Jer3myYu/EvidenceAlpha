@@ -815,6 +815,8 @@ def run(
                 if role in ("review", "recheck")
                 else (1 if final_notes_only else settings.tool_rounds)
             )
+            if role == "plan" and execution.get("required_research_roles"):
+                rounds = 1
             if name == "followup":
                 rounds = min(rounds, 3)
             if isinstance(ledger, budget.ExecutionLedger):
@@ -881,6 +883,9 @@ def run(
                 "plan",
                 {
                     **base,
+                    "planning_constraints": execution.get(
+                        "planning_constraints", {}
+                    ),
                     "reused_industry_scope": bool(
                         execution.get("industry_import")
                     ),
@@ -897,6 +902,11 @@ def run(
         tasks = plan["output"].get("tasks", [])
         if not isinstance(tasks, list) or len(tasks) > 12:
             raise ValueError("Plan tasks must be a short list")
+        required_roles = execution.get("required_research_roles")
+        if required_roles and sorted(
+            t.get("role", "") for t in tasks
+        ) != sorted(required_roles):
+            raise ValueError("Plan exceeds admitted research role allocation")
         jobs = []
         for index, task in enumerate(tasks):
             if task.get("role") not in ("industry", "company") or not task.get(
@@ -944,7 +954,11 @@ def run(
                         "required_scope": [
                             r
                             for r in required_scope
-                            if r.get("task", name) == name
+                            if (
+                                r.get("role") == task["role"]
+                                if "role" in r
+                                else r.get("task", name) == name
+                            )
                         ],
                     },
                     settings.stage_allocations[1],
