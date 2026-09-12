@@ -16,6 +16,8 @@ Coherent retrieval: use stable question IDs from questions; create focused child
 
 When required_scope is supplied, return scope entries for those exact IDs. Research uses supported/partial/unresolved/undisclosed with explanations and original_passages (source_id, chunk_id, verbatim quote). Undisclosed means a qualified corpus limitation, never proof of absence from an unopened source. Review/recheck use examined/unexamined, specifying the claims and originals actually checked. Empty scope or empty issues never certifies full coverage. Do not infer answers from scope labels. Preserve material omissions, units, relationships, explanations and status qualifiers in final writing. support_bundles identifies source/chunk locators in settled_evidence; exact offsets remain in that evidence.
 
+For review with review_inventory, the claim-based review_checks contract in the role instructions replaces legacy scope labels. Other roles leave review_checks, inventory_assessment and editorial_assessment empty. Only synthesis and a reviewer adding omitted claims populate review_claims. A recheck uses its own focused required_scope, never upgrades unrelated initial review coverage.
+
 Use prior_searches and settled_evidence before repeating a search. Follow-ups address remaining essential questions from the brief and your findings, not supplied expected answers. If a prior search missed the answer, choose a focused query or a returned locator/context open.
 
 Compact chunk_bindings encode exact original chunk references as [[chunk_id, [[start, end, page], ...]], ...]. Offsets are source Unicode code points, end-exclusive. This is locator compression only; evidence text and primary spans remain unchanged.

@@ -21,6 +21,7 @@ from evidencealpha import reading
 from evidencealpha import render
 from evidencealpha import retrieval
 from evidencealpha import reranking
+from evidencealpha import review as review_contract
 from evidencealpha import stage_context
 from evidencealpha import tools
 
@@ -194,6 +195,8 @@ class StageRunner:
         phase = "evidence"
         longest_call = 0.0
         phase_outcomes = []
+        review_feedback = 0
+        incomplete_review: dict = {}
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
@@ -242,6 +245,20 @@ class StageRunner:
                 else self.settings.tool_rounds
             )
             for turn in range(rounds):
+                if incomplete_review and live_execution:
+                    calls_left = self.settings.command_calls - len(
+                        artifacts.read(self.ledger.path)["invocations"]
+                    )
+                    if calls_left <= 2 or deadline - time.monotonic() <= max(
+                        reserve, longest_call * 2
+                    ):
+                        artifacts.event(
+                            event_path,
+                            "review_completion_not_admitted",
+                            reason="Preserve revision/recheck capacity",
+                        )
+                        status = "complete"
+                        return incomplete_review
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
                     final_notes_only
@@ -342,18 +359,32 @@ class StageRunner:
                             "an unsuccessful search or a narrow excerpt."
                         ),
                     }
-                prompt, current_context = context.request(
-                    instructions,
-                    available_tools,
-                    phase,
-                    rounds - turn,
-                    (
-                        self.settings.request_memory_bytes
-                        if live_execution
-                        else self.settings.stage_context_bytes
-                    ),
-                    input_tokens,
-                )
+                try:
+                    prompt, current_context = context.request(
+                        instructions,
+                        available_tools,
+                        phase,
+                        rounds - turn,
+                        (
+                            self.settings.request_memory_bytes
+                            if live_execution
+                            else self.settings.stage_context_bytes
+                        ),
+                        input_tokens,
+                    )
+                except ValueError as exc:
+                    if not incomplete_review or not any(
+                        word in str(exc).lower()
+                        for word in ("budget", "capacity")
+                    ):
+                        raise
+                    artifacts.event(
+                        event_path,
+                        "review_completion_not_admitted",
+                        reason=str(exc),
+                    )
+                    status = "complete"
+                    return incomplete_review
                 artifacts.write(call_dir / "context.json", current_context)
                 if final_turn:
                     artifacts.write(
@@ -485,6 +516,21 @@ class StageRunner:
                 if time.monotonic() >= deadline:
                     raise providers.ProviderError("Stage deadline expired")
                 output = parse_output(result.text, role)
+                if incomplete_review and not output.get("tool_calls"):
+                    output["issues"] = review_contract.findings(
+                        incomplete_review["output"]["issues"]
+                        + output["issues"],
+                        [],
+                    )
+                    for key in ("review_checks", "review_claims"):
+                        prior_entries = {
+                            x["id"]: x
+                            for x in incomplete_review["output"].get(key, [])
+                        }
+                        prior_entries.update(
+                            {x["id"]: x for x in output.get(key, [])}
+                        )
+                        output[key] = list(prior_entries.values())
                 try:
                     context.update_coverage(
                         output.get("coverage_updates", []),
@@ -522,6 +568,83 @@ class StageRunner:
                                     raise ValueError(
                                         "Review quote is absent from original"
                                     )
+                    if role == "review" and portable.get("review_inventory"):
+                        assessment = review_contract.assess(
+                            output,
+                            portable["review_inventory"],
+                            stage_tools.store,
+                            portable["draft"],
+                        )
+                        artifacts.write(
+                            call_dir / "review-assessment.json", assessment
+                        )
+                        calls_left = rounds - turn - 1
+                        if live_execution:
+                            calls_left = self.settings.command_calls - len(
+                                artifacts.read(self.ledger.path)["invocations"]
+                            )
+                        can_complete = (
+                            review_feedback
+                            < self.settings.review_completion_calls
+                            and turn + 1 < rounds
+                            and not final_turn
+                            and calls_left > 2
+                            and deadline - time.monotonic()
+                            > max(reserve, longest_call * 3)
+                        )
+                        if assessment["status"] != "complete":
+                            artifacts.event(
+                                event_path,
+                                "review_completion",
+                                scheduled=can_complete,
+                                capacity_status="pending actual request check",
+                                remaining_calls=calls_left,
+                                assessment=assessment,
+                            )
+                            if can_complete:
+                                artifacts.write(
+                                    folder / "initial-review.json", output
+                                )
+                                artifacts.write(folder / "output.json", output)
+                                artifacts.write(
+                                    folder / "output.md", output["content"]
+                                )
+                                incomplete_review = {
+                                    "path": str(folder.relative_to(root)),
+                                    "input_hash": artifacts.digest(portable),
+                                    "output_hash": artifacts.digest(output),
+                                    "output": output,
+                                }
+                                review_feedback += 1
+                                context.data["task"]["review_completion"] = {
+                                    "prior_findings": [
+                                        {
+                                            "location": i["location"],
+                                            "suggestion": i["suggestion"],
+                                        }
+                                        for i in output["issues"]
+                                    ],
+                                    "added_claims": output.get(
+                                        "review_claims", []
+                                    ),
+                                    "missing_ids": assessment["unexamined_ids"],
+                                    "errors": assessment["errors"],
+                                    "unmapped_requirement_ids": [
+                                        r["id"]
+                                        for r in assessment[
+                                            "unmapped_requirements"
+                                        ]
+                                    ],
+                                    "instruction": (
+                                        "Complete records once or leave "
+                                        "checks partial. Prior findings are "
+                                        "retained by the controller; originals "
+                                        "remain supplied. Return the full "
+                                        "assessment, including added claims; "
+                                        "preserve revision/recheck capacity."
+                                    ),
+                                }
+                                continue
                     phase_outcomes.append(
                         {"phase": "final_notes", "outcome": "complete"}
                     )
@@ -922,6 +1045,10 @@ def run(
                 for k in ("brief", "task", "required_scope")
             ):
                 raise ValueError("Recovered research scope changed")
+            if name == "review" and prior.get(
+                "review_inventory"
+            ) != portable.get("review_inventory"):
+                raise ValueError("Recovered review contract changed")
             return old
         if (
             old
@@ -954,6 +1081,7 @@ def run(
                     "brief",
                     "draft",
                     "required_scope",
+                    "review_inventory",
                     "settled_evidence",
                 )
             ):
@@ -1319,6 +1447,7 @@ def run(
             **assembled,
             "coverage": coverage,
             "gaps": manifest.get("research_gaps", {}),
+            "review_requirements": required_scope if execution else [],
             "instruction": (
                 "Write from originals, retaining explanations, units "
                 "and technical qualifiers. Disclose unresolved essential "
@@ -1358,6 +1487,17 @@ def run(
                 "brief": brief,
                 "draft": path.read_text(),
                 "review_mode": True,
+                "review_inventory": review_contract.inventory(
+                    synthesis["output"],
+                    draft.read_text(),
+                    required_scope if execution else [],
+                    {
+                        entry["source_id"]: alias
+                        for alias, entry in artifacts.read(
+                            reports / "source-map.json"
+                        ).items()
+                    },
+                ),
                 "recovered_followup_notes": notes.get("followup"),
                 "coverage": {
                     **coverage,
@@ -1377,21 +1517,7 @@ def run(
                 "settled_evidence": assembled["settled_evidence"],
                 "upstream_omissions": assembled["upstream_omissions"],
                 "required_original_refs": assembled["required_original_refs"],
-                "required_scope": [
-                    {"id": f"section-{i}", "question": heading}
-                    for i, heading in enumerate(
-                        re.findall(
-                            r"^#{1,6} .+$", path.read_text(), re.MULTILINE
-                        )
-                    )
-                ]
-                + [
-                    {"id": f"figure-{i}", "question": f["title"]}
-                    for i, f in enumerate(
-                        artifacts.read(reports / "figures.json")
-                    )
-                ]
-                or [{"id": "report", "question": "All material report claims"}],
+                "required_scope": [],
                 "sources": sources,
                 "source_map": artifacts.read(reports / "source-map.json"),
                 "figures": artifacts.read(reports / "figures.json"),
@@ -1416,14 +1542,16 @@ def run(
             settings.stage_allocations[3],
         )
         save("review", review)
-        examined = evidence_handoff.scope(
+        examined = review_contract.assess(
             review["output"],
-            review_input(current)["required_scope"],
+            review_input(current)["review_inventory"],
             store,
-            review=True,
+            current.read_text(),
         )
         manifest["review_scope"] = examined
         manifest["review_status"] = examined["status"]
+        manifest["factual_status"] = examined["factual_status"]
+        manifest["initial_factual_status"] = examined["factual_status"]
         supplemental = execution.get("supplemental_findings", [])
         if supplemental:
             parse_output(
@@ -1438,7 +1566,8 @@ def run(
         support = evidence_handoff.validate_quotes(
             review["output"]["issues"]
             + supplemental
-            + review["output"].get("scope", []),
+            + review["output"].get("scope", [])
+            + review["output"].get("review_checks", []),
             store,
         )
         reviewed_originals = evidence_handoff.collect(
@@ -1452,9 +1581,14 @@ def run(
         )
         material = [
             i
-            for i in review["output"]["issues"] + supplemental
+            for i in review_contract.findings(
+                review["output"]["issues"], supplemental
+            )
             if i["severity"] == "material"
         ]
+        known_claims = {x["id"] for x in examined["items"]}
+        if any(set(i.get("claim_ids", [])) - known_claims for i in material):
+            raise ValueError("Finding references an unknown review claim")
         manifest["supplemental_findings"] = supplemental
         if material:
             revision_portable = revision_input(
@@ -1504,6 +1638,13 @@ def run(
                 )
                 else "unverified_or_unresolved"
             )
+            if manifest["revision_resolution"] == "complete":
+                manifest["factual_resolution"] = review_contract.resolution(
+                    examined, material, manifest["recheck_scope"]
+                )
+                manifest["factual_status"] = manifest["factual_resolution"][
+                    "status"
+                ]
             material = [
                 i
                 for i in recheck["output"]["issues"]
@@ -1514,6 +1655,7 @@ def run(
             if (
                 material
                 or examined["status"] != "complete"
+                or manifest["factual_status"] != "supported"
                 or manifest.get("revision_resolution")
                 == "unverified_or_unresolved"
             )

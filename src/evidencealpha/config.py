@@ -6,7 +6,7 @@ import pathlib
 
 RUNTIME_MODEL = "gpt-5.6-sol"
 REHEARSAL_MODEL = "gpt-5.5"
-PROMPT_VERSION = "coherent-retrieval-1"
+PROMPT_VERSION = "review-contract-2"
 LIMITS = {
     "session_seconds": 28800,
     "isolated_attempts": 10,
@@ -95,6 +95,8 @@ class Settings:
     command_observable_tokens: int = 40000
     writing_provider_reserve: int = 900
     writing_calls_reserve: int = 4
+    # One optional review completion turn; leave revision/recheck capacity.
+    review_completion_calls: int = 1
     writing_tokens_reserve: int = 16000
 
     def __post_init__(self) -> None:
@@ -128,6 +130,10 @@ class Settings:
             raise ValueError("Unknown retrieval mode")
         if self.embedding_model:
             raise ValueError("Embedding fusion is retired; use retrieval_mode")
+        if self.review_completion_calls not in (0, 1):
+            raise ValueError(
+                "Review permits at most one completion opportunity"
+            )
         for value in (
             self.request_memory_bytes,
             self.followup_seconds,

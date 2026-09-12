@@ -52,6 +52,47 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     }
     schema = record(
         {
+            "review_claims": array(
+                record(
+                    {
+                        "id": string,
+                        "claim": string,
+                        "location": string,
+                        "requirement_id": string,
+                    }
+                )
+            ),
+            "inventory_assessment": string,
+            "editorial_assessment": string,
+            "review_checks": array(
+                record(
+                    {
+                        "id": string,
+                        "status": choice(["examined", "partial", "unexamined"]),
+                        "outcome": choice(
+                            [
+                                "supported",
+                                "contradicted",
+                                "insufficient_evidence",
+                                "not_assessed",
+                            ]
+                        ),
+                        "checked_claim": string,
+                        "explanation": string,
+                        "remaining": string,
+                        "checks_performed": string,
+                        "original_passages": array(
+                            record(
+                                {
+                                    "source_id": string,
+                                    "chunk_id": string,
+                                    "quote": string,
+                                }
+                            )
+                        ),
+                    }
+                )
+            ),
             "scope": array(
                 record(
                     {
@@ -141,6 +182,7 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
                 record(
                     {
                         "severity": choice(["material", "optional"]),
+                        "claim_ids": array(string),
                         "location": string,
                         "evidence": string,
                         "original_passages": array(
