@@ -1,0 +1,13 @@
+{
+  "metadata_path": "/home/cobot/.codex/models_cache.json",
+  "metadata_sha256": "999d32efbf3c1b7e2fbb38bb658ee33762100332cbbe53f0eeec9553f6b16883",
+  "model": "gpt-5.6-sol",
+  "context_window": 272000,
+  "effective_percent": 95,
+  "effective_context": 258400,
+  "output_reserve": 12000,
+  "transport_reserve": 4096,
+  "application_allowance": 242304,
+  "method": "UTF8 byte upper estimate plus exact schema; actual request checked before each invocation; no cumulative token stop",
+  "max_context_window_not_used": 872000
+}

@@ -465,3 +465,19 @@ def test_live_stage_targets_allow_tool_free_completion(tmp_path):
     calls = artifacts.read(ledger.path)["invocations"]
     assert len(calls) == 2
     assert (tmp_path / "run" / result["path"] / "writing-context.json").exists()
+
+
+def test_review_omits_only_research_navigation(tmp_path):
+    """Reviewer retains exact originals while research labels stay on disk."""
+    _, passage = corpus(tmp_path)
+    state = stage_context.StageContext(
+        tmp_path / "state.json", {"brief": "water", "review_mode": True}
+    )
+    state.settle(documents.group_passages([passage]))
+    _, view = state.request("Review originals", {}, "evidence", 2, 100000)
+    assert state.data["bundles"]
+    assert not view["support_bundles"]
+    originals = documents.ungroup_passages(view["settled_evidence"])
+    assert originals[0]["text"] == passage["text"]
+    assert originals[0]["spans"] == passage["spans"]
+    assert originals[0]["source_id"] == passage["source_id"]

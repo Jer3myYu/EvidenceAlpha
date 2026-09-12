@@ -3,6 +3,7 @@
 import copy
 import json
 import pathlib
+import shutil
 
 from evidencealpha import artifacts
 from evidencealpha import documents
@@ -253,3 +254,69 @@ def require_support(
     assembly["required_original_refs"] = sorted(
         set(assembly.get("required_original_refs", []) + incoming)
     )
+
+
+def recover_stages(
+    descriptor: dict,
+    root: pathlib.Path,
+    brief: dict,
+    store: documents.SourceStore,
+) -> dict:
+    """Import explicit completed checkpoints into a new run, never ledgers."""
+    old_root = pathlib.Path(descriptor["root"]).resolve()
+    manifest_path = artifacts.contained(old_root, descriptor["manifest"])
+    if artifacts.digest(manifest_path.read_bytes()) != descriptor["sha256"]:
+        raise ValueError("Recovery manifest changed")
+    old = artifacts.read(manifest_path)
+    if old["brief"] != brief:
+        raise ValueError("Recovery brief changed")
+    if {s["id"]: s["hash"] for s in store.sources()} != {
+        s["id"]: s["hash"]
+        for s in documents.SourceStore(old_root / "sources").sources()
+    }:
+        raise ValueError("Recovery source inventory/version changed")
+    result = {}
+    for name, files in descriptor["stages"].items():
+        if name not in ("plan", "synthesis") and not name.startswith(
+            "research-"
+        ):
+            raise ValueError(
+                "Only completed planning/research/draft can recover"
+            )
+        record = old["stages"][name]
+        folder = artifacts.contained(old_root, record["path"])
+        if (
+            not {
+                "input.json",
+                "output.json",
+                "context-state.json",
+                "writing-context.json",
+            }
+            <= files.keys()
+        ):
+            raise ValueError("Incomplete recovery checkpoint")
+        for filename, digest in files.items():
+            if (
+                artifacts.digest(
+                    artifacts.contained(folder, filename).read_bytes()
+                )
+                != digest
+            ):
+                raise ValueError("Recovery checkpoint changed")
+        if (
+            artifacts.digest(artifacts.read(folder / "output.json"))
+            != record["output_hash"]
+        ):
+            raise ValueError("Recovery output hash mismatch")
+        originals(
+            store, artifacts.read(folder / "context-state.json")["evidence"]
+        )
+        target = root / "recovered-stages" / name
+        shutil.copytree(folder, target)
+        result[name] = {
+            **record,
+            "path": str(target.relative_to(root)),
+            "recovery_origin": str(folder),
+        }
+    artifacts.write(root / "recovery-provenance.json", descriptor)
+    return result

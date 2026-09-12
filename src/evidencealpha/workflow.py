@@ -851,6 +851,11 @@ def run(
                 "fixture plumbing only" if mode == "fixture" else "pending"
             ),
         }
+    if execution.get("recovery") and not resume:
+        manifest["stages"] = evidence_handoff.recover_stages(
+            execution["recovery"], root, brief, store
+        )
+        manifest["validation"] = "Recovery from saved stages; new calls only"
     reports = root / "reports"
     reports.mkdir(exist_ok=True)
     runner = StageRunner(
@@ -899,6 +904,16 @@ def run(
         if checkpoint:
             portable = {**portable, "continuation_checkpoint": checkpoint}
         old = manifest["stages"].get(name)
+        if old and old.get("recovery_origin"):
+            prior = artifacts.read(root / old["path"] / "input.json")[
+                "portable"
+            ]
+            if name.startswith("research-") and any(
+                prior.get(k) != portable.get(k)
+                for k in ("brief", "task", "required_scope")
+            ):
+                raise ValueError("Recovered research scope changed")
+            return old
         if (
             old
             and resume
@@ -1174,6 +1189,12 @@ def run(
                     for name, r in research_records.items()
                 },
                 "initial_gaps": gaps,
+                "supplemental_findings": execution.get(
+                    "supplemental_findings", []
+                ),
+                "supplemental_provenance": (
+                    "Explicit prior source checks, not autonomous discoveries"
+                ),
             }
             artifacts.write(
                 root
@@ -1308,6 +1329,12 @@ def run(
             return {
                 "brief": brief,
                 "draft": path.read_text(),
+                "review_mode": True,
+                "recovered_followup_notes": notes.get("followup"),
+                "coverage": coverage,
+                "supplemental_findings": execution.get(
+                    "supplemental_findings", []
+                ),
                 "settled_evidence": assembled["settled_evidence"],
                 "upstream_omissions": assembled["upstream_omissions"],
                 "required_original_refs": assembled["required_original_refs"],

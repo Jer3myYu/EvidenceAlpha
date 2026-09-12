@@ -394,7 +394,11 @@ class StageContext:
                 ),
             }
             for bid, b in bundles.items()
-            if phase != "final_notes" and set(b["refs"]) <= selected
+            if phase != "final_notes"
+            and not self.data["task"].get("review_mode")
+            and not set(b["refs"])
+            <= set(self.data["task"].get("required_original_refs", []))
+            and set(b["refs"]) <= selected
         }
         priorities = {"essential": 0, "important": 1, "optional": 2}
         pending_questions = sorted(
