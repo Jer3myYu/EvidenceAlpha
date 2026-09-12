@@ -222,6 +222,8 @@ def main() -> None:
                 "execution_status",
                 "coverage_status",
                 "review_status",
+                "readiness",
+                "unresolved_issues",
                 "export_status",
                 "error",
                 "elapsed_seconds",

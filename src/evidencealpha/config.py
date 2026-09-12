@@ -6,7 +6,7 @@ import pathlib
 
 RUNTIME_MODEL = "gpt-5.6-sol"
 REHEARSAL_MODEL = "gpt-5.5"
-PROMPT_VERSION = "review-contract-2"
+PROMPT_VERSION = "rubric-review-1"
 LIMITS = {
     "session_seconds": 28800,
     "isolated_attempts": 10,
@@ -96,6 +96,7 @@ class Settings:
     writing_provider_reserve: int = 900
     writing_calls_reserve: int = 4
     # One optional review completion turn; leave revision/recheck capacity.
+    # Accepted only for saved configuration compatibility; no completion loop.
     review_completion_calls: int = 1
     writing_tokens_reserve: int = 16000
 

@@ -207,8 +207,6 @@ class StageRunner:
         phase = "evidence"
         longest_call = 0.0
         phase_outcomes = []
-        review_feedback = 0
-        incomplete_review: dict = {}
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
@@ -257,20 +255,6 @@ class StageRunner:
                 else self.settings.tool_rounds
             )
             for turn in range(rounds):
-                if incomplete_review and live_execution:
-                    calls_left = self.settings.command_calls - len(
-                        artifacts.read(self.ledger.path)["invocations"]
-                    )
-                    if calls_left <= 2 or deadline - time.monotonic() <= max(
-                        reserve, longest_call * 2
-                    ):
-                        artifacts.event(
-                            event_path,
-                            "review_completion_not_admitted",
-                            reason="Preserve revision/recheck capacity",
-                        )
-                        status = "complete"
-                        return incomplete_review
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
                     final_notes_only
@@ -371,32 +355,18 @@ class StageRunner:
                             "an unsuccessful search or a narrow excerpt."
                         ),
                     }
-                try:
-                    prompt, current_context = context.request(
-                        instructions,
-                        available_tools,
-                        phase,
-                        rounds - turn,
-                        (
-                            self.settings.request_memory_bytes
-                            if live_execution
-                            else self.settings.stage_context_bytes
-                        ),
-                        input_tokens,
-                    )
-                except ValueError as exc:
-                    if not incomplete_review or not any(
-                        word in str(exc).lower()
-                        for word in ("budget", "capacity")
-                    ):
-                        raise
-                    artifacts.event(
-                        event_path,
-                        "review_completion_not_admitted",
-                        reason=str(exc),
-                    )
-                    status = "complete"
-                    return incomplete_review
+                prompt, current_context = context.request(
+                    instructions,
+                    available_tools,
+                    phase,
+                    rounds - turn,
+                    (
+                        self.settings.request_memory_bytes
+                        if live_execution
+                        else self.settings.stage_context_bytes
+                    ),
+                    input_tokens,
+                )
                 artifacts.write(call_dir / "context.json", current_context)
                 if final_turn:
                     artifacts.write(
@@ -528,21 +498,6 @@ class StageRunner:
                 if time.monotonic() >= deadline:
                     raise providers.ProviderError("Stage deadline expired")
                 output = parse_output(result.text, role)
-                if incomplete_review and not output.get("tool_calls"):
-                    output["issues"] = review_contract.findings(
-                        incomplete_review["output"]["issues"]
-                        + output["issues"],
-                        [],
-                    )
-                    for key in ("review_checks", "review_claims"):
-                        prior_entries = {
-                            x["id"]: x
-                            for x in incomplete_review["output"].get(key, [])
-                        }
-                        prior_entries.update(
-                            {x["id"]: x for x in output.get(key, [])}
-                        )
-                        output[key] = list(prior_entries.values())
                 try:
                     context.update_coverage(
                         output.get("coverage_updates", []),
@@ -580,83 +535,11 @@ class StageRunner:
                                     raise ValueError(
                                         "Review quote is absent from original"
                                     )
-                    if role == "review" and portable.get("review_inventory"):
-                        assessment = review_contract.assess(
-                            output,
-                            portable["review_inventory"],
-                            stage_tools.store,
-                            portable["draft"],
-                        )
+                    if role in ("review", "recheck"):
                         artifacts.write(
-                            call_dir / "review-assessment.json", assessment
+                            call_dir / "review-assessment.json",
+                            review_contract.assess(output, stage_tools.store),
                         )
-                        calls_left = rounds - turn - 1
-                        if live_execution:
-                            calls_left = self.settings.command_calls - len(
-                                artifacts.read(self.ledger.path)["invocations"]
-                            )
-                        can_complete = (
-                            review_feedback
-                            < self.settings.review_completion_calls
-                            and turn + 1 < rounds
-                            and not final_turn
-                            and calls_left > 2
-                            and deadline - time.monotonic()
-                            > max(reserve, longest_call * 3)
-                        )
-                        if assessment["status"] != "complete":
-                            artifacts.event(
-                                event_path,
-                                "review_completion",
-                                scheduled=can_complete,
-                                capacity_status="pending actual request check",
-                                remaining_calls=calls_left,
-                                assessment=assessment,
-                            )
-                            if can_complete:
-                                artifacts.write(
-                                    folder / "initial-review.json", output
-                                )
-                                artifacts.write(folder / "output.json", output)
-                                artifacts.write(
-                                    folder / "output.md", output["content"]
-                                )
-                                incomplete_review = {
-                                    "path": str(folder.relative_to(root)),
-                                    "input_hash": artifacts.digest(portable),
-                                    "output_hash": artifacts.digest(output),
-                                    "output": output,
-                                }
-                                review_feedback += 1
-                                context.data["task"]["review_completion"] = {
-                                    "prior_findings": [
-                                        {
-                                            "location": i["location"],
-                                            "suggestion": i["suggestion"],
-                                        }
-                                        for i in output["issues"]
-                                    ],
-                                    "added_claims": output.get(
-                                        "review_claims", []
-                                    ),
-                                    "missing_ids": assessment["unexamined_ids"],
-                                    "errors": assessment["errors"],
-                                    "unmapped_requirement_ids": [
-                                        r["id"]
-                                        for r in assessment[
-                                            "unmapped_requirements"
-                                        ]
-                                    ],
-                                    "instruction": (
-                                        "Complete records once or leave "
-                                        "checks partial. Prior findings are "
-                                        "retained by the controller; originals "
-                                        "remain supplied. Return the full "
-                                        "assessment, including added claims; "
-                                        "preserve revision/recheck capacity."
-                                    ),
-                                }
-                                continue
                     phase_outcomes.append(
                         {"phase": "final_notes", "outcome": "complete"}
                     )
@@ -848,8 +731,14 @@ def parse_output(text: str, role: str) -> dict:
                 for key in ("location", "evidence", "impact", "suggestion")
             ):
                 raise ValueError("Malformed review finding")
+            if issue.get("kind", "factual") not in review_contract.ISSUE_KINDS:
+                raise ValueError("Unknown material issue kind")
             refs = issue.get("original_passages", [])
-            if issue["severity"] == "material" and not refs:
+            if (
+                issue["severity"] == "material"
+                and issue.get("kind", "factual") == "factual"
+                and not refs
+            ):
                 raise ValueError(
                     "Material objections require original passages"
                 )
@@ -1122,7 +1011,7 @@ def run(
             )
             if role == "plan" and execution.get("required_research_roles"):
                 rounds = 1
-            if name == "followup":
+            if name in ("followup", "review-followup"):
                 rounds = min(rounds, 3)
             stage_settings = dataclasses.replace(settings, tool_rounds=rounds)
             if isinstance(runner, StageRunner):
@@ -1499,18 +1388,18 @@ def run(
                 "brief": brief,
                 "draft": path.read_text(),
                 "review_mode": True,
-                "review_inventory": review_contract.inventory(
-                    synthesis["output"],
-                    draft.read_text(),
-                    required_scope if execution else [],
-                    {
-                        entry["source_id"]: alias
-                        for alias, entry in artifacts.read(
-                            reports / "source-map.json"
-                        ).items()
-                    },
-                ),
+                "questions": required_scope
+                or [
+                    {"id": key, "question": key}
+                    for key in review_contract.CRITERIA
+                ],
                 "recovered_followup_notes": notes.get("followup"),
+                "review_followup_notes": notes.get("review-followup"),
+                "review_followup_coverage": (
+                    manifest.get("review_followup_coverage")
+                    if "review-followup" in notes
+                    else None
+                ),
                 "coverage": {
                     **coverage,
                     "items": [
@@ -1554,16 +1443,11 @@ def run(
             settings.stage_allocations[3],
         )
         save("review", review)
-        examined = review_contract.assess(
-            review["output"],
-            review_input(current)["review_inventory"],
-            store,
-            current.read_text(),
-        )
+        examined = review_contract.assess(review["output"], store)
         manifest["review_scope"] = examined
         manifest["review_status"] = examined["status"]
-        manifest["factual_status"] = examined["factual_status"]
-        manifest["initial_factual_status"] = examined["factual_status"]
+        manifest["readiness"] = examined["decision"]
+        manifest["factual_status"] = "targeted_checks_only"
         supplemental = execution.get("supplemental_findings", [])
         if supplemental:
             parse_output(
@@ -1578,8 +1462,7 @@ def run(
         support = evidence_handoff.validate_quotes(
             review["output"]["issues"]
             + supplemental
-            + review["output"].get("scope", [])
-            + review["output"].get("review_checks", []),
+            + review["output"].get("scope", []),
             store,
         )
         reviewed_originals = evidence_handoff.collect(
@@ -1598,10 +1481,92 @@ def run(
             )
             if i["severity"] == "material"
         ]
-        known_claims = {x["id"] for x in examined["items"]}
-        if any(set(i.get("claim_ids", [])) - known_claims for i in material):
-            raise ValueError("Finding references an unknown review claim")
+        if (
+            not material
+            and examined["status"] == "complete"
+            and examined["decision"] == "needs revision"
+        ):
+            # A substantive negative rubric still drives one revision when
+            # the reviewer omitted its actionable issue list. No new verdict.
+            material = [
+                {
+                    "severity": "material",
+                    "kind": "explanation",
+                    "location": "Report against the user brief",
+                    "evidence": json.dumps(
+                        examined["rubric"], ensure_ascii=False
+                    ),
+                    "impact": "Reviewer judged the report not ready "
+                    "for its user.",
+                    "suggestion": "Address the stated rubric deficiencies; "
+                    "preserve evidence and disclose unresolved gaps.",
+                    "original_passages": [],
+                    "origins": ["rubric_routing"],
+                }
+            ]
+        material = review_contract.route(material)
+        if material:
+            manifest["readiness"] = "needs revision"
+        manifest["initial_review_issues"] = material
+        manifest["unresolved_issues"] = material
         manifest["supplemental_findings"] = supplemental
+        research_issues = [x for x in material if x["action"] == "research"]
+        if research_issues:
+            # One shared post-review investigation, never a research restart.
+            gap_input = {
+                **base,
+                **assembled,
+                "task": {
+                    "role": "company",
+                    "question": "Investigate only these essential review gaps. "
+                    "Use the authorized corpus; preserve original support "
+                    "and scope unresolved results accurately.",
+                },
+                "questions": [
+                    {"id": x["id"], "question": x["suggestion"]}
+                    for x in research_issues
+                ],
+                "required_scope": [
+                    {"id": x["id"], "question": x["suggestion"]}
+                    for x in research_issues
+                ],
+                "review_gaps": research_issues,
+                "draft": current.read_text(),
+            }
+            try:
+                recovery = stage(
+                    "review-followup",
+                    "company",
+                    gap_input,
+                    settings.followup_seconds,
+                )
+                save("review-followup", recovery)
+                recovered = evidence_handoff.collect(
+                    root, {"review-followup": recovery}, store
+                )
+                evidence_handoff.require_support(
+                    assembled,
+                    recovered["settled_evidence"],
+                    recovered["required_original_refs"],
+                )
+                assembled["upstream_omissions"].update(
+                    recovered["upstream_omissions"]
+                )
+                notes["review-followup"] = recovery["output"]["content"]
+                manifest["review_followup_coverage"] = evidence_handoff.scope(
+                    recovery["output"], gap_input["required_scope"], store
+                )
+            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                if isinstance(exc, providers.ProviderCancelled):
+                    raise
+                manifest["review_followup_error"] = str(exc)
+                notes["review-followup"] = "Focused research failed: " + str(
+                    exc
+                )
+                if isinstance(exc, ResearchHandoffError):
+                    evidence_handoff.require_support(
+                        assembled, exc.handoff.get("settled_evidence", {})
+                    )
         if material:
             revision_portable = revision_input(
                 review_input(current), {**review["output"], "issues": material}
@@ -1623,61 +1588,34 @@ def run(
                 {
                     **review_followup_input(review_input(current)),
                     "prior_issues": material,
-                    "required_scope": [
-                        {"id": f"finding-{i}", "question": issue["location"]}
-                        for i, issue in enumerate(material)
-                    ],
+                    "initial_review_assessment": examined,
+                    "required_scope": [],
                 },
                 settings.stage_allocations[5],
             )
             save("recheck", recheck)
-            manifest["recheck_scope"] = evidence_handoff.scope(
-                recheck["output"],
-                [
-                    {"id": f"finding-{i}", "question": issue["location"]}
-                    for i, issue in enumerate(material)
-                ],
-                store,
-                review=True,
-            )
-            evidence_handoff.validate_quotes(recheck["output"]["issues"], store)
+            rechecked = review_contract.assess(recheck["output"], store)
+            manifest["recheck_scope"] = rechecked
+            material = review_contract.unresolved(material, recheck["output"])
             manifest["revision_resolution"] = (
                 "complete"
-                if manifest["recheck_scope"]["status"] == "complete"
-                and not any(
-                    i["severity"] == "material"
-                    for i in recheck["output"]["issues"]
-                )
+                if not material and rechecked["status"] == "complete"
                 else "unverified_or_unresolved"
             )
-            if manifest["revision_resolution"] == "complete":
-                manifest["factual_resolution"] = review_contract.resolution(
-                    examined, material, manifest["recheck_scope"]
-                )
-                manifest["factual_status"] = manifest["factual_resolution"][
-                    "status"
-                ]
-            material = [
-                i
-                for i in recheck["output"]["issues"]
-                if i["severity"] == "material"
-            ]
-        review_status = (
-            "reviewed_with_limitations"
-            if (
-                material
-                or examined["status"] != "complete"
-                or manifest["factual_status"] != "supported"
-                or manifest.get("revision_resolution")
-                == "unverified_or_unresolved"
+            manifest["readiness"] = (
+                "needs revision" if material else rechecked["decision"]
             )
-            else "reviewed"
+        review_status = (
+            "reviewed"
+            if manifest["readiness"] == "ready"
+            else "reviewed_with_limitations"
         )
         if manifest["execution_status"] == "running":
             manifest["execution_status"] = "complete"
         manifest["unresolved_issues"] = material
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         manifest["execution_status"] = "failed"
+        manifest["readiness"] = "needs revision"
         manifest["error"] = {"type": type(exc).__name__, "message": str(exc)}
         if current is None and (reports / "draft.md").exists():
             current = reports / "draft.md"

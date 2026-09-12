@@ -2,9 +2,11 @@
 
 import json
 
+from evidencealpha import review
+
 
 def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
-    """Return a closed JSON schema without changing the shared role contract."""
+    """Return the shared tool envelope and user-focused review rubric."""
     string = {"type": "string"}
 
     def record(properties: dict) -> dict:
@@ -52,44 +54,24 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     }
     schema = record(
         {
-            "review_claims": array(
+            "rubric": array(
                 record(
                     {
-                        "id": string,
-                        "claim": string,
-                        "location": string,
-                        "requirement_id": string,
+                        "criterion": choice(list(review.CRITERIA)),
+                        "rating": choice(list(review.RATINGS)),
+                        "explanation": string,
                     }
                 )
             ),
-            "inventory_assessment": string,
-            "editorial_assessment": string,
-            "review_checks": array(
+            "decision": choice(["", *review.DECISIONS]),
+            "review_scope": string,
+            "review_limitations": string,
+            "resolutions": array(
                 record(
                     {
                         "id": string,
-                        "status": choice(["examined", "partial", "unexamined"]),
-                        "outcome": choice(
-                            [
-                                "supported",
-                                "contradicted",
-                                "insufficient_evidence",
-                                "not_assessed",
-                            ]
-                        ),
-                        "checked_claim": string,
+                        "status": choice(["resolved", "unresolved"]),
                         "explanation": string,
-                        "remaining": string,
-                        "checks_performed": string,
-                        "original_passages": array(
-                            record(
-                                {
-                                    "source_id": string,
-                                    "chunk_id": string,
-                                    "quote": string,
-                                }
-                            )
-                        ),
                     }
                 )
             ),
@@ -182,7 +164,7 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
                 record(
                     {
                         "severity": choice(["material", "optional"]),
-                        "claim_ids": array(string),
+                        "kind": choice(list(review.ISSUE_KINDS)),
                         "location": string,
                         "evidence": string,
                         "original_passages": array(

@@ -1,149 +1,66 @@
-"""Bounded material-claim review; references are not factual certification."""
+"""User-focused rubric review and bounded material-issue routing."""
 
 from evidencealpha import artifacts
 from evidencealpha import documents
 
-
-def inventory(
-    output: dict,
-    draft: str,
-    requirements: list[dict],
-    aliases: dict | None = None,
-) -> dict:
-    """Bind the writer's provisional claim list to the exact draft and brief."""
-    items = []
-    seen = set()
-    required_ids = {r["id"] for r in requirements}
-    for claim in output.get("review_claims", []):
-        claim = dict(claim)
-        for source_id, alias in (aliases or {}).items():
-            claim["location"] = claim.get("location", "").replace(
-                source_id, alias
-            )
-        if (
-            not claim.get("id")
-            or claim["id"] in seen
-            or not claim.get("claim", "").strip()
-            or not claim.get("location", "").strip()
-            or claim.get("requirement_id") not in required_ids | {""}
-        ):
-            raise ValueError(
-                "Review claim identity/location/requirement invalid"
-            )
-        seen.add(claim["id"])
-        items.append(
-            {
-                **claim,
-                "kind": "factual",
-                "location_verified": claim["location"] in draft,
-            }
-        )
-    mapped = {c["requirement_id"] for c in items}
-    gaps = [r for r in requirements if r["id"] not in mapped]
-    # Historical writers had no claim inventory. Keep omissions explicit;
-    # never reinterpret heading counts as a complete factual audit.
-    return {
-        "version": 2,
-        "items": items,
-        "unmapped_requirements": gaps,
-        "requirements": requirements,
-        "status": "provisional" if items and not gaps else "incomplete",
-        "draft_hash": artifacts.digest(draft),
-    }
+CRITERIA = (
+    "answers_brief",
+    "builds_understanding",
+    "useful_analysis",
+    "responsible_evidence",
+    "clear_communication",
+)
+RATINGS = ("Meets", "Partly meets", "Does not meet")
+DECISIONS = ("ready", "ready with disclosed limitations", "needs revision")
+ISSUE_KINDS = (
+    "missing_evidence",
+    "factual",
+    "explanation",
+    "source_limitation",
+)
 
 
-def assess(
-    output: dict,
-    specification: dict,
-    store: documents.SourceStore,
-    draft: str = "",
-) -> dict:
-    """Validate documented checks while keeping interpretation provisional."""
-    additions = output.get("review_claims", [])
-    if additions:
-        specification = inventory(
-            {"review_claims": specification["items"] + additions},
-            draft,
-            specification["requirements"],
-        )
-    claims = {c["id"]: c for c in specification["items"]}
-    checks = {}
-    errors = []
-    for check in output.get("review_checks", []):
-        cid = check.get("id")
-        if cid in checks or cid not in claims:
-            raise ValueError("Unknown or duplicate review claim ID")
-        checks[cid] = check
-    items = []
-    for cid, claim in claims.items():
-        check = checks.get(cid, {})
-        status = check.get("status", "unexamined")
-        outcome = check.get("outcome", "not_assessed")
-        refs = check.get("original_passages", [])
-        problem = None
-        if not claim.get("location_verified", True):
-            problem = "Location is not an exact draft excerpt; check unverified"
-        elif status not in (
-            "examined",
-            "partial",
-            "unexamined",
-        ) or outcome not in (
-            "supported",
-            "contradicted",
-            "insufficient_evidence",
-            "not_assessed",
-        ):
-            problem = "Invalid examination/outcome combination"
-        elif not check.get("explanation", "").strip():
-            problem = "Missing explanation of examination or its limits"
-        elif status == "examined" and (
-            check.get("checked_claim") != claim["claim"]
-            or check.get("remaining", "").strip()
-            or outcome == "not_assessed"
-        ):
-            problem = "Complete examination must identify the exact whole claim"
-        elif status != "examined" and outcome in ("supported", "contradicted"):
-            problem = "Partial examination cannot certify the whole claim"
-        elif outcome in ("supported", "contradicted") and not refs:
-            problem = "Factual judgment requires supporting originals"
-        elif (
-            outcome == "insufficient_evidence"
-            and not check.get("checks_performed", "").strip()
-        ):
-            problem = (
-                "Record actual checks and their limits; do not prove absence"
-            )
-        for ref in refs:
+def assess(output: dict, store: documents.SourceStore) -> dict:
+    """Validate rubric completeness and references, not every report claim."""
+    entries = output.get("rubric", [])
+    ids = [x.get("criterion") for x in entries]
+    complete = len(ids) == len(CRITERIA) and set(ids) == set(CRITERIA)
+    complete = complete and all(
+        x.get("rating") in RATINGS and x.get("explanation", "").strip()
+        for x in entries
+    )
+    decision = output.get("decision", "")
+    complete = bool(
+        complete
+        and decision in DECISIONS
+        and output.get("review_scope", "").strip()
+    )
+    for issue in output.get("issues", []):
+        for ref in issue.get("original_passages", []):
             original = store.open_source(ref["source_id"], ref["chunk_id"])
             if not ref.get("quote") or ref["quote"] not in original["text"]:
-                problem = "Quote is absent from its original"
-        if problem:
-            errors.append({"id": cid, "error": problem})
-            status, outcome = "unexamined", "not_assessed"
-        items.append({**claim, **check, "status": status, "outcome": outcome})
-    missing = [x["id"] for x in items if x["status"] != "examined"]
-    inventory_complete = specification["status"] != "incomplete"
-    complete = (
-        bool(items)
-        and inventory_complete
-        and not missing
-        and bool(output.get("inventory_assessment", "").strip())
-    )
-    factual = complete and all(x["outcome"] == "supported" for x in items)
+                raise ValueError("Review quote is absent from original")
+    material = [
+        x for x in output.get("issues", []) if x["severity"] == "material"
+    ]
+    if (
+        not complete
+        or material
+        or any(x.get("rating") == "Does not meet" for x in entries)
+    ):
+        decision = "needs revision"
+    elif decision == "ready" and any(
+        x["rating"] == "Partly meets" for x in entries
+    ):
+        decision = "ready with disclosed limitations"
     return {
         "status": "complete" if complete else "partial",
-        "factual_status": "supported" if factual else "unresolved",
-        "items": items,
-        "errors": errors,
-        "unexamined_ids": missing,
-        "unmapped_requirements": specification["unmapped_requirements"],
-        "editorial_assessment": output.get("editorial_assessment", ""),
-        "inventory_assessment": output.get("inventory_assessment", ""),
-        "provisional": True,
-        "limitation": (
-            "Exact references checked; semantic support and inventory "
-            "completeness remain model judgments, not certification."
-        ),
+        "decision": decision,
+        "rubric": entries,
+        "examined_scope": output.get("review_scope", ""),
+        "limitations": output.get("review_limitations", ""),
+        "basis": "Rubric-reviewed with targeted source checks; "
+        "not exhaustively fact-verified.",
     }
 
 
@@ -167,38 +84,45 @@ def findings(autonomous: list[dict], supplemental: list[dict]) -> list[dict]:
             merged[key]["origins"] = sorted(
                 set(merged[key]["origins"] + entry.get("origins", [origin]))
             )
-            merged[key]["claim_ids"] = sorted(
-                set(
-                    merged[key].get("claim_ids", [])
-                    + entry.get("claim_ids", [])
-                )
-            )
     return list(merged.values())
 
 
-def resolution(assessment: dict, issues: list[dict], recheck: dict) -> dict:
-    """Map a focused recheck only to explicitly linked original claims."""
-    checked = {
-        x["id"] for x in recheck.get("items", []) if x["status"] == "examined"
-    }
-    affected = {}
-    for i, issue in enumerate(issues):
-        for cid in issue.get("claim_ids", []):
-            affected.setdefault(cid, set()).add(f"finding-{i}")
-    resolved = {cid for cid, ids in affected.items() if ids <= checked}
-    outstanding = [
-        x["id"]
-        for x in assessment["items"]
-        if x["status"] != "examined"
-        or (x["outcome"] != "supported" and x["id"] not in resolved)
+def route(issues: list[dict]) -> list[dict]:
+    """Assign stable IDs and deterministic actions without another model."""
+    return [
+        {
+            **issue,
+            "id": f"finding-{i}",
+            "action": (
+                "research"
+                if issue.get("kind") == "missing_evidence"
+                else (
+                    "qualify"
+                    if issue.get("kind") == "source_limitation"
+                    else "revise"
+                )
+            ),
+        }
+        for i, issue in enumerate(findings(issues, []))
+        if issue["severity"] == "material"
     ]
-    return {
-        "status": (
-            "supported"
-            if assessment["status"] == "complete" and not outstanding
-            else "unresolved"
-        ),
-        "resolved_claim_ids": sorted(resolved),
-        "outstanding_claim_ids": outstanding,
-        "limitation": "Focused recheck does not upgrade unexamined scope.",
+
+
+def unresolved(issues: list[dict], output: dict) -> list[dict]:
+    """Keep every issue unless its focused recheck explicitly resolves it."""
+    records = output.get("resolutions", [])
+    ids = [x.get("id") for x in records]
+    known = {x["id"] for x in issues}
+    if len(ids) != len(set(ids)) or set(ids) - known:
+        raise ValueError("Unknown or duplicate recheck finding ID")
+    resolved = {
+        x["id"]
+        for x in records
+        if x.get("status") == "resolved" and x.get("explanation", "").strip()
     }
+    remaining = [x for x in issues if x["id"] not in resolved]
+    return findings(
+        remaining
+        + [x for x in output.get("issues", []) if x["severity"] == "material"],
+        [],
+    )
