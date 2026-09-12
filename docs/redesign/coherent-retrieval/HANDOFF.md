@@ -129,3 +129,16 @@ test is reused, not repeated or relabeled as validation of this implementation.
 
 See [READINESS.md](READINESS.md) for the concrete bounded next proposal. No further
 work is scheduled or authorized by this handoff. Stop after local delivery.
+
+## Execution-proposal amendment
+
+The amended [READINESS.md](READINESS.md) and frozen
+[EVALUATION.json](EVALUATION.json) now specify exact queries/annotations and
+pass/partial/failure criteria, reload-per-search measurement, interacting
+search/stage/evaluation budgets, and isolated preparation ceilings. They supersede
+the earlier open-ended control-selection step and optional readiness preload.
+Runtime remains `0aa3f2f`; all completed deterministic results are reused.
+Separate initialization/scoring telemetry needs an external execution observer;
+it is not currently a runtime feature or a completed measurement. Full model SHA,
+artifact hashes and dependency pins require authorized remote preparation.
+No installs, downloads, inference or provider evaluation occurred in this amendment.

@@ -1,0 +1,2389 @@
+{
+  "schema_version": 1,
+  "status": "Frozen before inference; assessor-only, not production question state",
+  "implementation_commit": "0aa3f2fd71373ba35f7d974d575848f5846dfe8a",
+  "selection_method": "S01–S12 copied in chronological order from saved trace. C01–C03 chosen from source text for explanation, named noncommercial relationship discrimination, and operational mechanism; no new ranks examined. C04 uses existing synthetic different-domain fixture. Controls are selected without neural output, not independently blinded or claimed held-out; historical diagnostic bundles are explicitly reused only on saved cases.",
+  "corpus_path": "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus",
+  "input_artifacts": {
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/company-stage-corrected/retrieval-trace.json": "db4c8f4bf27dbf590f75d85eca4b7d0580ddf4c8d9de093160087b1b2754bea5",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/company-stage-corrected/source-checks.json": "f3bbf3bbeb4c89b02ada3927d4090d003e59086261be4fd8e76ee7c569ce72bf",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/company-stage-corrected/freeze.json": "32ff6eb1e595b8f2c5eba4a3fd795d32cbabf4aa36462401df97160438bae325",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/company-stage-corrected/frozen/docs/redesign/company-stage-test/input.json": "7ab722f6014a8197c74d5459f7b12e7cfcf8331f067b17dd8697cf294add8ac0"
+  },
+  "corpus_files": {
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08/identity.json": "6c666371f9fa8ae3a9569e176e561b040c0eceeb5d84ce60f2d799e2bd0bc8f0",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08/original.pdf": "a842b88902a1f8b99ec212296c29af426293252c3b5501f4a1c7cfc30793160c",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08/source.json": "68cea6219c3608c156c9e849a0c679311dba880347be3287fe40c7641598a2c9",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08/text.txt": "3a089980f1b2679b7dfce9a0965bc3303278732f217bf8a91c261cc8ad65fa4a",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b/identity.json": "c218bc0486411a3db5d28fcf26a0e61b3845bfcc5ca865bc92a94170c50c8649",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b/original.pdf": "3941daaefdb0ed86d0479f7340f66b0ed7e99d8e73275da5402642b96457f599",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b/source.json": "9481f59a17a48f336189dd92105b0fa217c3729c431ca3f3da818f1bf372d46e",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b/text.txt": "26095d12d3391bd411ff910502e38642dca292f0f6a1282cf6e99471c0d5c5c3",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd/identity.json": "d41168ad006a30ee4a4e5c939fd4f7bc24af1614276af1ed88e0a3a858c25b99",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd/original.html": "12d2191a35066c23b0bd286ea55683a50035415b0cdeaaabad64d04cb6f3b9c0",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd/source.json": "b444f636db899ce85a88a912fa1487dde3901852de202f212c2a38024f2191d5",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/8e233a86876dd1b01b6611dc56bc9d91f14106f40fdc57f61aa5e0196a515ffd/text.txt": "000b54cfb9e319e1765c8bb32f5c0b4579929d13b9235d00642536d2604acce0",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7/identity.json": "3e06b712a3867ecbdfd286ed628e8cbc6c297a453ede97423c8793d1eb622bbb",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7/original.pdf": "6148ddfdcd6d27636144b4c31c860de4d98902ce4e6d784f1cf7cc7a737424f0",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7/source.json": "a4e458a6ced2194980a8ddb4457dfa65d01d2a2d9985b61a07a2c4bfe7ed5f98",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7/text.txt": "396cfd87c687f540a2804b1c007e7c57dce9697f543578d9a79ae64ce75edbad",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394/identity.json": "5fea87cd6823fecad09d3a0035f7070b69d761077e9d71d9e01e714505c40ec0",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394/original.pdf": "0722bca312924292269bfc3f8e8bed9f704bf7191046f15957334c12addb44e9",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394/source.json": "9b237a52d7e577273d67d3f0c6d073364c63f2681982d364fb2c1d50456a6125",
+    "/home/cobot/cobot_storage/webproject/EvidenceAlpha/data/redesign/focused-diagnostic/frozen/corpus/fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394/text.txt": "87b4274fe309a0735f4afe3ee041b3e64d7bf5a6feb933bea5e6f593a8af4bb3"
+  },
+  "control_fixture": {
+    "path": "/home/cobot/cobot_storage/webproject/EvidenceAlpha-coherent-retrieval/tests/fixtures/redesign/service.html",
+    "sha256": "881997409b5dab7656817fc217f93363a3d2ca6220cb81baa94ab4f0933ae052"
+  },
+  "order": [
+    "S01",
+    "S02",
+    "S03",
+    "S04",
+    "S05",
+    "S06",
+    "S07",
+    "S08",
+    "S09",
+    "S10",
+    "S11",
+    "S12",
+    "C01",
+    "C02",
+    "C03",
+    "C04"
+  ],
+  "cases": [
+    {
+      "id": "S01",
+      "group": "saved_company",
+      "query": "2025年 营业收入 归属于上市公司股东的净利润",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_bundles": [
+        "q_fin"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "ranked_ids": [
+            "c9212",
+            "c289",
+            "c291",
+            "c3023",
+            "c3053",
+            "c1920"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.6612960593774915,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S02",
+      "group": "saved_company",
+      "query": "2025年 营业收入 归属于上市公司股东的净利润",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_bundles": [
+        "l_fin"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "ranked_ids": [
+            "c36",
+            "c195",
+            "c198",
+            "c181",
+            "c182",
+            "c186"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.5113883740268648,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S03",
+      "group": "saved_company",
+      "query": "2025年 营业收入 归属于上市公司股东的净利润",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_bundles": [
+        "t_fin"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "ranked_ids": [
+            "c278",
+            "c282",
+            "c284",
+            "c302",
+            "c304",
+            "c407"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.44080327777191997,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S04",
+      "group": "saved_company",
+      "query": "半导体 掩膜版 制程 节点 量产 客户 供应商 产能 项目",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_bundles": [
+        "q_tech",
+        "q_suppliers"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "ranked_ids": [
+            "c7569",
+            "c7589",
+            "c3172",
+            "c694",
+            "c811",
+            "c896"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.49979686504229903,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S05",
+      "group": "saved_company",
+      "query": "半导体 掩膜版 制程 节点 量产 客户 供应商 产能 项目",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_bundles": [
+        "l_tech",
+        "l_customers"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "ranked_ids": [
+            "c44",
+            "c43",
+            "c12",
+            "c29",
+            "c78",
+            "c40"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.5050532068125904,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S06",
+      "group": "saved_company",
+      "query": "半导体 掩膜版 制程 节点 量产 客户 供应商 产能 项目",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_bundles": [
+        "t_tech"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "ranked_ids": [
+            "c89",
+            "c201",
+            "c198",
+            "c77",
+            "c195",
+            "c134"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.4414881970733404,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S07",
+      "group": "saved_company",
+      "query": "营业收入",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_bundles": [
+        "q_revenue"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "ranked_ids": [
+            "c8378",
+            "c8225",
+            "c9561",
+            "c5093",
+            "c8379",
+            "c8226"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.4944956381805241,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S08",
+      "group": "saved_company",
+      "query": "营业收入",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_bundles": [
+        "l_revenue"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "ranked_ids": [
+            "c30",
+            "c195",
+            "c31",
+            "c65",
+            "c7",
+            "c29"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.5005418476648629,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S09",
+      "group": "saved_company",
+      "query": "营业收入",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_bundles": [
+        "t_revenue"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "ranked_ids": [
+            "c280",
+            "c301",
+            "c295",
+            "c407",
+            "c45",
+            "c88"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.42455900413915515,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S10",
+      "group": "saved_company",
+      "query": "产品 应用 制程 节点 量产 验证 产能 项目 客户 供应商 风险 经营驱动",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_bundles": [
+        "q_tech",
+        "q_drivers",
+        "q_suppliers"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+          "ranked_ids": [
+            "c1828",
+            "c1796",
+            "c1806",
+            "c1811",
+            "c7590",
+            "c8142"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.4353805207647383,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S11",
+      "group": "saved_company",
+      "query": "产品 应用 制程 节点 量产 验证 产能 项目 客户 供应商 风险 经营驱动",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_bundles": [
+        "t_tech"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+          "ranked_ids": [
+            "c89",
+            "c307",
+            "c110",
+            "c207",
+            "c181",
+            "c152"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.4953011218458414,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "S12",
+      "group": "saved_company",
+      "query": "客户 供应商 量产 验证 路芯 项目 14nm 130-40nm 半导体 收入结构 净利润",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_bundles": [
+        "l_tech",
+        "l_customers",
+        "l_fin"
+      ],
+      "baseline_results": [
+        {
+          "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+          "ranked_ids": [
+            "c97",
+            "c44",
+            "c43",
+            "c45",
+            "c12",
+            "c47"
+          ]
+        }
+      ],
+      "baseline_seconds": 0.5027962923049927,
+      "baseline_match": "Exact saved query/source/version; six historical chunks versus six new structural blocks, not identical result units."
+    },
+    {
+      "id": "C01",
+      "group": "controls",
+      "query": "为什么掩膜版核心人才培养周期长，公司扩张面临什么人才风险？",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_bundles": [
+        "c_talent"
+      ],
+      "baseline_match": "Unmatched: new control, no historical ranking comparison."
+    },
+    {
+      "id": "C02",
+      "group": "controls",
+      "query": "清溢光电2026年7月10日厂区参观由哪些机构组织，任新航以什么职务陪同？",
+      "source_id": "134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08",
+      "required_bundles": [
+        "c_visit"
+      ],
+      "baseline_match": "Unmatched: new control, no historical ranking comparison."
+    },
+    {
+      "id": "C03",
+      "group": "controls",
+      "query": "路维光电如何通过barcode自动化和ODB++数据处理提升图档处理效率？",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_bundles": [
+        "c_automation"
+      ],
+      "baseline_match": "Unmatched: new control, no historical ranking comparison."
+    },
+    {
+      "id": "C04",
+      "group": "controls",
+      "query": "What precedes hosted operation, and is customer retention the same as factory qualification?",
+      "source_id": "fixture:service.html",
+      "required_bundles": [
+        "c_service"
+      ],
+      "baseline_match": "Unmatched: synthetic different-domain mechanism control; no real-world generalization claim."
+    }
+  ],
+  "bundles": [
+    {
+      "id": "q_fin",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_claim": "2025 company revenue 123967.01 万元; attributable profit 18730.56 万元; adjusted profit 16760.05 万元 and stated growth. Currency is not explicitly proved by these lines; retain that limitation.",
+      "required_originals": [
+        {
+          "chunk_id": "c1919",
+          "spans": [
+            {
+              "start": 46004,
+              "end": 46051,
+              "page": 43,
+              "bbox": [
+                110.87999725341797,
+                444.456298828125,
+                521.0457763671875,
+                458.16668701171875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "报告期内，公司实现营业收入123,967.01 万元，同比增长11.46%；归属于母公司股东的"
+        },
+        {
+          "chunk_id": "c1920",
+          "spans": [
+            {
+              "start": 46053,
+              "end": 46101,
+              "page": 43,
+              "bbox": [
+                89.87999725341797,
+                464.8562927246094,
+                521.0411987304688,
+                478.5666809082031
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "净利润为18,730.56 万元，同比增长8.89%；归属于上市公司股东的扣除非经常性损益的净利"
+        },
+        {
+          "chunk_id": "c1921",
+          "spans": [
+            {
+              "start": 46103,
+              "end": 46160,
+              "page": 43,
+              "bbox": [
+                89.87999725341797,
+                485.2572937011719,
+                526.3298950195312,
+                498.9676818847656
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "润为16,760.05 万元，同比增长9.75%。净资产为277,860.69 万元，基本每股收益为0.63 元。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "q_drivers",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_claim": "Issuer attributes revenue growth to capacity/technology/downstream demand/orders, margin to utilization/mix/OLED/efficiency, and profits to revenue and margin; not independent causal proof.",
+      "required_originals": [
+        {
+          "chunk_id": "c646",
+          "spans": [
+            {
+              "start": 21074,
+              "end": 21123,
+              "page": 21,
+              "bbox": [
+                110.4000015258789,
+                445.5103454589844,
+                531.6080932617188,
+                455.9603271484375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "1、报告期内，公司营业收入较上年同期增加12,742.05 万元，同比增长11.46%，核心增长得"
+        },
+        {
+          "chunk_id": "c647",
+          "spans": [
+            {
+              "start": 21125,
+              "end": 21168,
+              "page": 21,
+              "bbox": [
+                89.87999725341797,
+                465.9103698730469,
+                531.6073608398438,
+                476.3603515625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "益于公司产能持续放量、核心技术不断升级，叠加下游厂商新品开发力度加大，带动掩膜版需求增"
+        },
+        {
+          "chunk_id": "c648",
+          "spans": [
+            {
+              "start": 21170,
+              "end": 21193,
+              "page": 21,
+              "bbox": [
+                89.87999725341797,
+                486.31036376953125,
+                326.8819274902344,
+                496.7603454589844
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "长，公司订单承接量显著提升，整体经营态势良好。"
+        },
+        {
+          "chunk_id": "c649",
+          "spans": [
+            {
+              "start": 21195,
+              "end": 21239,
+              "page": 21,
+              "bbox": [
+                110.4000015258789,
+                506.7103576660156,
+                531.6045532226562,
+                517.1603393554688
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "2、报告期内，公司整体毛利率较上年同期增长1.50 个百分点，主要系因公司整体产能利用率"
+        },
+        {
+          "chunk_id": "c650",
+          "spans": [
+            {
+              "start": 21241,
+              "end": 21287,
+              "page": 21,
+              "bbox": [
+                89.87999725341797,
+                527.1103515625,
+                531.6082153320312,
+                537.5603637695312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "高，对产品、业务和客户进行了结构性优化，OLED 等显示中高端产品收入占比提升，提质增效力度"
+        },
+        {
+          "chunk_id": "c651",
+          "spans": [
+            {
+              "start": 21289,
+              "end": 21305,
+              "page": 21,
+              "bbox": [
+                89.87999725341797,
+                547.5103149414062,
+                254.77000427246094,
+                557.9603271484375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "加大，产品获利能力优于上年同期。"
+        },
+        {
+          "chunk_id": "c652",
+          "spans": [
+            {
+              "start": 21307,
+              "end": 21356,
+              "page": 21,
+              "bbox": [
+                110.4000015258789,
+                568.029296875,
+                536.77001953125,
+                578.4793090820312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "3、报告期内，归属于母公司所有者的净利润较上年同期增长1,529.30 万元，同比增长8.89%；"
+        },
+        {
+          "chunk_id": "c653",
+          "spans": [
+            {
+              "start": 21358,
+              "end": 21408,
+              "page": 21,
+              "bbox": [
+                89.87999725341797,
+                588.4293212890625,
+                536.77001953125,
+                598.8793334960938
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "归属于母公司所有者的扣除非经常性损益的净利润较上年同期增长1,488.78万元，同比增长9.75%，"
+        },
+        {
+          "chunk_id": "c654",
+          "spans": [
+            {
+              "start": 21410,
+              "end": 21454,
+              "page": 21,
+              "bbox": [
+                89.87999725341797,
+                608.829345703125,
+                489.0086669921875,
+                619.2793579101562
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "主要系因公司营业收入同比增长11.46%，同时公司整体毛利率同比增长1.50 个百分点。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "q_tech",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_claim": "180nm scale mass production,150nm small-scale mass production/supply;130–40nm PSM/OPC research;28nm planning; preserve distinctions.",
+      "required_originals": [
+        {
+          "chunk_id": "c810",
+          "spans": [
+            {
+              "start": 27455,
+              "end": 27495,
+              "page": 26,
+              "bbox": [
+                110.87999725341797,
+                282.0703430175781,
+                531.4727172851562,
+                292.52032470703125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "半导体芯片掩膜版技术研发方面，公司持续加大研发投入，聚焦成熟制程与高端制程协同突"
+        },
+        {
+          "chunk_id": "c811",
+          "spans": [
+            {
+              "start": 27497,
+              "end": 27545,
+              "page": 26,
+              "bbox": [
+                89.87999725341797,
+                302.4703674316406,
+                531.3668823242188,
+                312.92034912109375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "破，目前已成功实现180nm 工艺节点半导体芯片掩膜版的规模化量产，完成150nm 工艺节点掩膜"
+        },
+        {
+          "chunk_id": "c812",
+          "spans": [
+            {
+              "start": 27547,
+              "end": 27588,
+              "page": 26,
+              "bbox": [
+                89.87999725341797,
+                322.870361328125,
+                531.489990234375,
+                333.3203430175781
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "版的小规模量产，产品已批量供应下游相关客户，获得市场广泛认可。同时，公司正全力推进"
+        },
+        {
+          "chunk_id": "c813",
+          "spans": [
+            {
+              "start": 27590,
+              "end": 27640,
+              "page": 26,
+              "bbox": [
+                89.87999725341797,
+                343.2703552246094,
+                531.488525390625,
+                353.7203369140625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "130nm–40nm 工艺节点的PSM（相移掩膜）和OPC（光学邻近校正）掩膜版研发工作，已初步掌握"
+        },
+        {
+          "chunk_id": "c814",
+          "spans": [
+            {
+              "start": 27642,
+              "end": 27687,
+              "page": 26,
+              "bbox": [
+                89.87999725341797,
+                363.79034423828125,
+                531.4877319335938,
+                374.2403259277344
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "电子束光刻及干法蚀刻工艺技术，为后续量产取得重大进展；同步着手规划28nm 半导体芯片所需"
+        },
+        {
+          "chunk_id": "c815",
+          "spans": [
+            {
+              "start": 27689,
+              "end": 27714,
+              "page": 26,
+              "bbox": [
+                89.87999725341797,
+                384.1893615722656,
+                352.3209533691406,
+                394.63934326171875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "掩膜版的工艺开发，逐步向高端半导体掩膜版领域突破。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "q_suppliers",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_claim": "Imported equipment/raw-material dependence; Mycronic and Heidelberg are equipment suppliers; Mycronic high-end display exposure. Preserve conditional supply/price/trade/export risk qualification.",
+      "required_originals": [
+        {
+          "chunk_id": "c1798",
+          "spans": [
+            {
+              "start": 42181,
+              "end": 42199,
+              "page": 40,
+              "bbox": [
+                110.87999725341797,
+                227.49630737304688,
+                294.4840087890625,
+                241.20669555664062
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "1、主要设备和原材料均依赖进口的风险"
+        },
+        {
+          "chunk_id": "c1799",
+          "spans": [
+            {
+              "start": 42201,
+              "end": 42241,
+              "page": 40,
+              "bbox": [
+                110.87999725341797,
+                249.42935180664062,
+                531.4727172851562,
+                259.87933349609375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "公司主要原材料为掩膜版基板，且主要由境外供应商提供。公司主要生产设备光刻机均向境"
+        },
+        {
+          "chunk_id": "c1800",
+          "spans": [
+            {
+              "start": 42243,
+              "end": 42289,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                268.2962951660156,
+                531.4892578125,
+                282.0066833496094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "外供应商采购，且供应商集中度较高，主要为瑞典Mycronic、德国海德堡仪器两家公司，其中最"
+        },
+        {
+          "chunk_id": "c1801",
+          "spans": [
+            {
+              "start": 42291,
+              "end": 42338,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                288.8172912597656,
+                531.482421875,
+                302.5276794433594
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "高端的平板显示用光刻机由瑞典Mycronic 生产，全球主要掩膜版制造商对其生产的设备都存在较"
+        },
+        {
+          "chunk_id": "c1802",
+          "spans": [
+            {
+              "start": 42340,
+              "end": 42382,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                310.7503662109375,
+                531.4719848632812,
+                321.2003479003906
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "高程度依赖。公司存在主要设备和原材料均依赖进口的风险。未来，如果公司的重要原材料、主"
+        },
+        {
+          "chunk_id": "c1803",
+          "spans": [
+            {
+              "start": 42384,
+              "end": 42427,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                331.1503601074219,
+                536.6500244140625,
+                341.600341796875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "要设备与备件发生供应短缺、价格大幅上涨，或者供应商所处的国家和地区与中国发生贸易摩擦、"
+        },
+        {
+          "chunk_id": "c1804",
+          "spans": [
+            {
+              "start": 42429,
+              "end": 42471,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                351.67034912109375,
+                531.4719848632812,
+                362.1203308105469
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "外交冲突等进而影响到原材料、主要设备与备件的出口许可，将会对公司生产经营产生不利的影"
+        },
+        {
+          "chunk_id": "c1805",
+          "spans": [
+            {
+              "start": 42473,
+              "end": 42475,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                372.0703430175781,
+                110.76984405517578,
+                382.52032470703125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "响。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "l_fin",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_claim": "2025 company revenue115523.17 万元, attributable profit25198.43 万元, adjusted profit23031.38 万元 with growth. Explicit currency uncertainty unless original support accompanies it.",
+      "required_originals": [
+        {
+          "chunk_id": "c30",
+          "spans": [
+            {
+              "start": 1027,
+              "end": 1068,
+              "page": 2,
+              "bbox": [
+                109.08000183105469,
+                119.33843994140625,
+                505.44000244140625,
+                131.33843994140625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "报告期内，公司实现营业收入115,523.17 万元，较上年同期增加31.94%。"
+        },
+        {
+          "chunk_id": "c36",
+          "spans": [
+            {
+              "start": 1265,
+              "end": 1304,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                259.3784484863281,
+                505.44000244140625,
+                271.3784484863281
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "利能力得以加强；报告期内，公司实现归属于上市公司股东的净利润25,198.43"
+        },
+        {
+          "chunk_id": "c37",
+          "spans": [
+            {
+              "start": 1306,
+              "end": 1344,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                282.7784423828125,
+                505.44000244140625,
+                294.7784423828125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "万元，较上年同期增加32.02%；实现归属于上市公司股东的扣除非经常性损益的"
+        },
+        {
+          "chunk_id": "c38",
+          "spans": [
+            {
+              "start": 1346,
+              "end": 1389,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                306.0584411621094,
+                505.44000244140625,
+                318.0584411621094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "净利润23,031.38 万元，较上年同期增加32.58%。具体内容详见公司同日于上海"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "l_drivers",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_claim": "Issuer explains revenue with capacity/demand/high-value display mix and profits with scale/product mix/operations; future capacity growth is expectation.",
+      "required_originals": [
+        {
+          "chunk_id": "c30",
+          "spans": [
+            {
+              "start": 1027,
+              "end": 1068,
+              "page": 2,
+              "bbox": [
+                109.08000183105469,
+                119.33843994140625,
+                505.44000244140625,
+                131.33843994140625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "报告期内，公司实现营业收入115,523.17 万元，较上年同期增加31.94%。"
+        },
+        {
+          "chunk_id": "c31",
+          "spans": [
+            {
+              "start": 1070,
+              "end": 1108,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                142.7384490966797,
+                505.44000244140625,
+                154.7384490966797
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "主要得益于公司产能有序提升，加之下游行业需求旺盛。从收入结构看，OLED 用"
+        },
+        {
+          "chunk_id": "c32",
+          "spans": [
+            {
+              "start": 1110,
+              "end": 1150,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                166.01844787597656,
+                505.44000244140625,
+                178.01844787597656
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "掩膜版、G8.6 以及G11 等高附加值掩膜版的增速明显，带动平板显示掩膜版的整"
+        },
+        {
+          "chunk_id": "c33",
+          "spans": [
+            {
+              "start": 1152,
+              "end": 1189,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                189.41844177246094,
+                505.44000244140625,
+                201.41844177246094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "体增长；公司的第二成长曲线半导体掩膜版发展前景广阔，尤其是IC 制造掩膜版"
+        },
+        {
+          "chunk_id": "c34",
+          "spans": [
+            {
+              "start": 1191,
+              "end": 1226,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                212.69744873046875,
+                505.4386291503906,
+                224.69744873046875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "的表现亮眼。随着新增投资项目产能的陆续释放，公司期待在未来可以实现双轮"
+        },
+        {
+          "chunk_id": "c35",
+          "spans": [
+            {
+              "start": 1228,
+              "end": 1263,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                236.09744262695312,
+                505.4386291503906,
+                248.09744262695312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "驱动发展。规模效应释放与产品结构持续优化，同时公司持续强化运营管理，盈"
+        },
+        {
+          "chunk_id": "c36",
+          "spans": [
+            {
+              "start": 1265,
+              "end": 1304,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                259.3784484863281,
+                505.44000244140625,
+                271.3784484863281
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "利能力得以加强；报告期内，公司实现归属于上市公司股东的净利润25,198.43"
+        },
+        {
+          "chunk_id": "c37",
+          "spans": [
+            {
+              "start": 1306,
+              "end": 1344,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                282.7784423828125,
+                505.44000244140625,
+                294.7784423828125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "万元，较上年同期增加32.02%；实现归属于上市公司股东的扣除非经常性损益的"
+        },
+        {
+          "chunk_id": "c38",
+          "spans": [
+            {
+              "start": 1346,
+              "end": 1389,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                306.0584411621094,
+                505.44000244140625,
+                318.0584411621094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "净利润23,031.38 万元，较上年同期增加32.58%。具体内容详见公司同日于上海"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "l_customers",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_claim": "Distinguish named display customers from semiconductor customers; anonymous leading customer remains anonymous; do not call all names semiconductor customers.",
+      "required_originals": [
+        {
+          "chunk_id": "c24",
+          "spans": [
+            {
+              "start": 820,
+              "end": 853,
+              "page": 1,
+              "bbox": [
+                109.08000183105469,
+                664.37841796875,
+                505.4386291503906,
+                676.37841796875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "经过近三十年的技术研发与产品开发，公司积累了丰富的客户资源，在平板"
+        },
+        {
+          "chunk_id": "c25",
+          "spans": [
+            {
+              "start": 855,
+              "end": 892,
+              "page": 1,
+              "bbox": [
+                85.08000183105469,
+                687.6574096679688,
+                505.44000244140625,
+                699.6574096679688
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "显示掩膜版领域，公司服务的主要客户包括京东方、天马微电子、信利、TCL 华"
+        },
+        {
+          "chunk_id": "c26",
+          "spans": [
+            {
+              "start": 894,
+              "end": 931,
+              "page": 1,
+              "bbox": [
+                85.08000183105469,
+                711.0574340820312,
+                505.4390869140625,
+                723.0574340820312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "星、上海显耀（JBD）、寰采星等；在半导体领域，公司服务的主要客户包括国内"
+        },
+        {
+          "chunk_id": "c27",
+          "spans": [
+            {
+              "start": 933,
+              "end": 973,
+              "page": 1,
+              "bbox": [
+                85.08000183105469,
+                734.3384399414062,
+                511.44000244140625,
+                746.3384399414062
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "某领先芯片公司及其配套供应商、某三维多芯片集成龙头（2.5D/3D）、华天科技、"
+        },
+        {
+          "chunk_id": "c28",
+          "spans": [
+            {
+              "start": 975,
+              "end": 1010,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                72.658447265625,
+                505.4386291503906,
+                84.658447265625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "宁波中芯集成、晶方半导体、通富微电、三安光电、光迅科技等，路维光电已经"
+        },
+        {
+          "chunk_id": "c29",
+          "spans": [
+            {
+              "start": 1012,
+              "end": 1025,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                95.93844604492188,
+                241.0800018310547,
+                107.93844604492188
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "成为掩膜版行业知名供应商。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "l_tech",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_claim": "Luxin phase1 130–40nm,90nm+sets supplied,40/28nm single plates supplied,40nm sets sampling;phase2 28–14nm planned2026,not mass production. Preserve planned applications as future project coverage, not current deliveries.",
+      "required_originals": [
+        {
+          "chunk_id": "c43",
+          "spans": [
+            {
+              "start": 1540,
+              "end": 1573,
+              "page": 2,
+              "bbox": [
+                109.08000183105469,
+                422.8184509277344,
+                505.4386291503906,
+                434.8184509277344
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "公司投资建设的路芯半导体掩膜版项目进展顺利，制程节点布局居于国内厂"
+        },
+        {
+          "chunk_id": "c44",
+          "spans": [
+            {
+              "start": 1575,
+              "end": 1617,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                446.21844482421875,
+                505.4385986328125,
+                458.21844482421875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "商前列。该项目一期产品覆盖130-40nm 制程节点半导体掩膜版，2025 年已逐步"
+        },
+        {
+          "chunk_id": "c45",
+          "spans": [
+            {
+              "start": 1619,
+              "end": 1662,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                469.4974365234375,
+                505.44000244140625,
+                481.4974365234375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "实现产品量产，实现90nm 及以上成套掩膜版客户端验证通过并供货，40nm 和28nm"
+        },
+        {
+          "chunk_id": "c46",
+          "spans": [
+            {
+              "start": 1664,
+              "end": 1703,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                492.7784423828125,
+                517.4400024414062,
+                504.7784423828125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "单片掩膜版客户端验证通过并供货，并持续推进40nm 成套掩膜版客户端送样工作；"
+        },
+        {
+          "chunk_id": "c47",
+          "spans": [
+            {
+              "start": 1705,
+              "end": 1747,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                516.1784057617188,
+                505.44000244140625,
+                528.1784057617188
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "二期布局28-14nm 半导体掩膜版，计划于2026 年陆续投建。未来伴随项目的顺利"
+        },
+        {
+          "chunk_id": "c48",
+          "spans": [
+            {
+              "start": 1749,
+              "end": 1790,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                539.5784301757812,
+                505.44000244140625,
+                551.5784301757812
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "投产，其产品将逐步覆盖MCU（微控制芯片），SiPh（硅光子）、CIS（互补金属氧"
+        },
+        {
+          "chunk_id": "c49",
+          "spans": [
+            {
+              "start": 1792,
+              "end": 1834,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                562.857421875,
+                505.3197021484375,
+                574.857421875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "化物半导体图像传感器），BCD（双极-互补-双扩散-金属氧化物半场效应管），DDIC"
+        },
+        {
+          "chunk_id": "c50",
+          "spans": [
+            {
+              "start": 1836,
+              "end": 1880,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                586.2573852539062,
+                511.0799865722656,
+                598.2573852539062
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "（显示驱动芯片），MS/RF（混合射频信号），Embd. NVM（嵌入式非易失存储器），"
+        },
+        {
+          "chunk_id": "c51",
+          "spans": [
+            {
+              "start": 1882,
+              "end": 1927,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                609.5383911132812,
+                505.44000244140625,
+                621.5383911132812
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "NOR/NAND Flash（非易失闪存），DRAM（动态随机存取存储器）等半导体制造相关"
+        },
+        {
+          "chunk_id": "c52",
+          "spans": [
+            {
+              "start": 1929,
+              "end": 1952,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                632.9384155273438,
+                361.08001708984375,
+                644.9384155273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "行业，进一步完善产业链供给、推动国产替代进程。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "t_fin",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_claim": "2025 total revenue246658302.88 RMB,attributable profit56088527.42,adjusted profit54295887.78; preserve split row labels,year columns and original RMB yuan unit.",
+      "required_originals": [
+        {
+          "chunk_id": "c276",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8700,
+              "end": 8713,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n增减(%) | 2023年"
+        },
+        {
+          "chunk_id": "c280",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8858,
+              "end": 8920,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n营业收入 | 246,658,302.88 | 246,503,467.92 | 0.06 | 218,292,698.54"
+        },
+        {
+          "chunk_id": "c281",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8921,
+              "end": 8983,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n利润总额 | 57,637,393.08 | 102,009,994.51 | -43.50 | 95,260,821.25"
+        },
+        {
+          "chunk_id": "c282",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8984,
+              "end": 8992,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n归属于上市公司股"
+        },
+        {
+          "chunk_id": "c283",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8993,
+              "end": 9055,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n东的净利润 | 56,088,527.42 | 91,832,934.36 | -38.92 | 83,608,662.12"
+        },
+        {
+          "chunk_id": "c284",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 9056,
+              "end": 9064,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n归属于上市公司股"
+        },
+        {
+          "chunk_id": "c285",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 9065,
+              "end": 9073,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n东的扣除非经常性"
+        },
+        {
+          "chunk_id": "c286",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 9074,
+              "end": 9137,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n损益的净利润 | 54,295,887.78 | 90,359,606.47 | -39.91 | 81,786,730.18"
+        },
+        {
+          "chunk_id": "c314",
+          "spans": [
+            {
+              "start": 9940,
+              "end": 9951,
+              "page": 12,
+              "bbox": [
+                416.0400085449219,
+                200.1103515625,
+                531.4883422851562,
+                210.5603485107422
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "单位：元\n币种：人民币"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "t_tech",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_claim": "Zhuhai90nm PSM mass production,65nm sampling/validation,40nm equipment layout;2026 revenue conversion is expectation; unnamed domestic relationships remain unnamed.",
+      "required_originals": [
+        {
+          "chunk_id": "c205",
+          "spans": [
+            {
+              "start": 6043,
+              "end": 6085,
+              "page": 9,
+              "bbox": [
+                111.0,
+                408.93731689453125,
+                531.4890747070312,
+                422.647705078125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "公司不断增加投入进行技术攻关和产品迭代，产品广泛应用于信号链及电源管理IC 等成熟制"
+        },
+        {
+          "chunk_id": "c206",
+          "spans": [
+            {
+              "start": 6087,
+              "end": 6135,
+              "page": 9,
+              "bbox": [
+                90.0,
+                432.3373107910156,
+                531.4892578125,
+                446.0476989746094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "程，以及功率器件、MEMS 传感器、先进封装等特色工艺制程。目前珠海工厂90nm PSM 产品已"
+        },
+        {
+          "chunk_id": "c207",
+          "spans": [
+            {
+              "start": 6137,
+              "end": 6184,
+              "page": 9,
+              "bbox": [
+                90.0,
+                455.7373046875,
+                531.4883422851562,
+                469.44769287109375
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "实现量产，65nm 产品已开始送样验证，并已完成40nm 工艺节点的生产设备布局，多项工艺优化"
+        },
+        {
+          "chunk_id": "c208",
+          "spans": [
+            {
+              "start": 6186,
+              "end": 6231,
+              "page": 9,
+              "bbox": [
+                90.0,
+                479.1372985839844,
+                531.4877319335938,
+                492.8476867675781
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "技术已应用于现有生产线，预计2026 年相关研发成果将持续转化为营收增长点。公司与国内重点"
+        },
+        {
+          "chunk_id": "c209",
+          "spans": [
+            {
+              "start": 6233,
+              "end": 6275,
+              "page": 9,
+              "bbox": [
+                90.0,
+                504.0703430175781,
+                531.4724731445312,
+                514.5203247070312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "的晶圆厂及设计公司均建立了深度的合作关系，技术实力及工艺能力在国内独立第三方半导体掩"
+        },
+        {
+          "chunk_id": "c210",
+          "spans": [
+            {
+              "start": 6277,
+              "end": 6289,
+              "page": 9,
+              "bbox": [
+                90.0,
+                527.4703369140625,
+                215.8861083984375,
+                537.9203491210938
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "模版厂商中处于第一梯队。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "c_talent",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_claim": "Issuer explains talent risk by long process training, cross-domain expertise, scarcity and expansion/project-driven gap.",
+      "required_originals": [
+        {
+          "chunk_id": "c1791",
+          "spans": [
+            {
+              "start": 41967,
+              "end": 42007,
+              "page": 40,
+              "bbox": [
+                110.87999725341797,
+                77.82935333251953,
+                531.4727172851562,
+                88.27935028076172
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "掩膜版行业属于典型技术密集型产业，且平板显示、半导体芯片两大赛道的技术路径、工艺"
+        },
+        {
+          "chunk_id": "c1792",
+          "spans": [
+            {
+              "start": 42009,
+              "end": 42051,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                98.22935485839844,
+                531.4719848632812,
+                108.67935180664062
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "要求差异显著，对专业化、复合型核心人才依赖度极高。行业内技术人才需历经长期工艺沉淀，"
+        },
+        {
+          "chunk_id": "c1793",
+          "spans": [
+            {
+              "start": 42053,
+              "end": 42095,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                118.62935638427734,
+                531.4719848632812,
+                129.079345703125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "既要精通光阻涂布、激光光刻、蚀刻等全流程生产工艺，又要深度贴合下游面板、芯片行业的需"
+        },
+        {
+          "chunk_id": "c1794",
+          "spans": [
+            {
+              "start": 42097,
+              "end": 42139,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                139.02935791015625,
+                531.4719848632812,
+                149.47935485839844
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "求迭代，人才培养周期长、市场供给极度稀缺。现有团队虽支撑现有业务开展，但随着公司业务"
+        },
+        {
+          "chunk_id": "c1795",
+          "spans": [
+            {
+              "start": 42141,
+              "end": 42160,
+              "page": 40,
+              "bbox": [
+                89.87999725341797,
+                159.55035400390625,
+                289.3232421875,
+                170.00035095214844
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "扩张、募投项目落地，人才缺口逐步显现。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "c_visit",
+      "source_id": "134a14ccbea168ac6f9bc869c15926134dd42da74dbcab0aeb7e50679f4f7e08",
+      "required_claim": "East Asia Qianhai Securities Shenzhen branch and Shanghai Stock Exchange organized investor visit; Ren Xinhang accompanied as finance head/board secretary. These are visit/organizer roles,not customers/suppliers.",
+      "required_originals": [
+        {
+          "chunk_id": "c49",
+          "spans": [
+            {
+              "start": 546,
+              "end": 563,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 910,
+              "end": 955,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " |  | 20 | 罗泽桐 | \n2026 年 7 月 10 日 14:30，东亚前海证券深圳分公司联合上交所，带领投资者在"
+        },
+        {
+          "chunk_id": "c50",
+          "spans": [
+            {
+              "start": 546,
+              "end": 563,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 956,
+              "end": 993,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " |  | 20 | 罗泽桐 | \n深圳清溢光电股份有限公司（以下简称“公司”）财务总裁、董事会秘书任新航先生"
+        },
+        {
+          "chunk_id": "c51",
+          "spans": [
+            {
+              "start": 546,
+              "end": 563,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 994,
+              "end": 1031,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " |  | 20 | 罗泽桐 | \n的陪同下对公司的生产车间及公司展厅进行了参观考察，对公司的设备及产品等情况"
+        },
+        {
+          "chunk_id": "c52",
+          "spans": [
+            {
+              "start": 546,
+              "end": 563,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 1032,
+              "end": 1043,
+              "page": 2,
+              "bbox": [
+                67.3039976755778,
+                72.23899841308594,
+                542.3000437418619,
+                767.2159830729166
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " |  | 20 | 罗泽桐 | \n有了更直观深入的了解。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "c_automation",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_claim": "AI layout application is being developed; barcode coordinate/generation system automates design; ODB++ processing optimization improves packaging layout handling; do not invent a measured speedup.",
+      "required_originals": [
+        {
+          "chunk_id": "c83",
+          "spans": [
+            {
+              "start": 3047,
+              "end": 3084,
+              "page": 3,
+              "bbox": [
+                85.08000183105469,
+                656.3384399414062,
+                505.44000244140625,
+                668.3384399414062
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "术实力打下坚实基础。公司积极布局AI 在图档处理中的应用以提升效率，开发外"
+        },
+        {
+          "chunk_id": "c84",
+          "spans": [
+            {
+              "start": 3086,
+              "end": 3128,
+              "page": 3,
+              "bbox": [
+                85.08000183105469,
+                679.618408203125,
+                505.44000244140625,
+                691.618408203125
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "框barcode 图形坐标计算和生成系统，实现批量自动化设计，提高外框barcode"
+        },
+        {
+          "chunk_id": "c85",
+          "spans": [
+            {
+              "start": 3130,
+              "end": 3167,
+              "page": 3,
+              "bbox": [
+                85.08000183105469,
+                703.0184326171875,
+                505.4325256347656,
+                715.0184326171875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "图档文件处理效率；针对封装行业ODB++（一种数据格式）的数据文件，优化数"
+        },
+        {
+          "chunk_id": "c86",
+          "spans": [
+            {
+              "start": 3169,
+              "end": 3188,
+              "page": 3,
+              "bbox": [
+                85.08000183105469,
+                726.2974243164062,
+                313.08001708984375,
+                738.2974243164062
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "据处理流程，提高封装行业图形处理效率。"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "c_service",
+      "source_id": "fixture:service.html",
+      "required_claim": "Client configuration precedes hosted operation; customer retention differs from factory qualification; synthetic mechanism evidence,not a real company.",
+      "required_originals": [
+        {
+          "raw_html_start": 41,
+          "raw_html_end": 74,
+          "text": "Synthetic hosted service evidence"
+        },
+        {
+          "raw_html_start": 83,
+          "raw_html_end": 141,
+          "text": "This is a mechanism fixture, not a real company or market."
+        },
+        {
+          "raw_html_start": 174,
+          "raw_html_end": 290,
+          "text": "Client configuration precedes hosted operation. Customer retention is a different metric from factory qualification."
+        }
+      ],
+      "context_rule": "Preserve synthetic identity and both sentences; exact parser spans must be recorded before inference without changing this annotation."
+    },
+    {
+      "id": "q_revenue",
+      "source_id": "b81b85f11d30d9cebd91041d76ffe71f7bdd3dcf4290b98213152aa28b272bf7",
+      "required_claim": "2025 Qingyi company revenue123967.01 万元,11.46% growth; retain currency uncertainty unless separately supported. Profit is not required for this revenue-only query.",
+      "required_originals": [
+        {
+          "chunk_id": "c1919",
+          "spans": [
+            {
+              "start": 46004,
+              "end": 46051,
+              "page": 43,
+              "bbox": [
+                110.87999725341797,
+                444.456298828125,
+                521.0457763671875,
+                458.16668701171875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "报告期内，公司实现营业收入123,967.01 万元，同比增长11.46%；归属于母公司股东的"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "l_revenue",
+      "source_id": "fbbfaa667b9e5166472aa329bf48aa53890d3d43c9b1d54958fe8fe9faf6f394",
+      "required_claim": "2025 Luw company revenue115523.17 万元,31.94% growth; issuer explanation: capacity,demand,high-value display product mix; future semiconductor capacity contribution is an expectation. Profit is not required.",
+      "required_originals": [
+        {
+          "chunk_id": "c30",
+          "spans": [
+            {
+              "start": 1027,
+              "end": 1068,
+              "page": 2,
+              "bbox": [
+                109.08000183105469,
+                119.33843994140625,
+                505.44000244140625,
+                131.33843994140625
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "报告期内，公司实现营业收入115,523.17 万元，较上年同期增加31.94%。"
+        },
+        {
+          "chunk_id": "c31",
+          "spans": [
+            {
+              "start": 1070,
+              "end": 1108,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                142.7384490966797,
+                505.44000244140625,
+                154.7384490966797
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "主要得益于公司产能有序提升，加之下游行业需求旺盛。从收入结构看，OLED 用"
+        },
+        {
+          "chunk_id": "c32",
+          "spans": [
+            {
+              "start": 1110,
+              "end": 1150,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                166.01844787597656,
+                505.44000244140625,
+                178.01844787597656
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "掩膜版、G8.6 以及G11 等高附加值掩膜版的增速明显，带动平板显示掩膜版的整"
+        },
+        {
+          "chunk_id": "c33",
+          "spans": [
+            {
+              "start": 1152,
+              "end": 1189,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                189.41844177246094,
+                505.44000244140625,
+                201.41844177246094
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "体增长；公司的第二成长曲线半导体掩膜版发展前景广阔，尤其是IC 制造掩膜版"
+        },
+        {
+          "chunk_id": "c34",
+          "spans": [
+            {
+              "start": 1191,
+              "end": 1226,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                212.69744873046875,
+                505.4386291503906,
+                224.69744873046875
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "的表现亮眼。随着新增投资项目产能的陆续释放，公司期待在未来可以实现双轮"
+        },
+        {
+          "chunk_id": "c35",
+          "spans": [
+            {
+              "start": 1228,
+              "end": 1263,
+              "page": 2,
+              "bbox": [
+                85.08000183105469,
+                236.09744262695312,
+                505.4386291503906,
+                248.09744262695312
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "驱动发展。规模效应释放与产品结构持续优化，同时公司持续强化运营管理，盈"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    },
+    {
+      "id": "t_revenue",
+      "source_id": "25ae4a74a2feddac299bfb1fd84c1872b309c51fe0519c755498a3e6a960596b",
+      "required_claim": "2025 Longtu company revenue246658302.88 RMB yuan and0.06% growth; preserve year,column,row and currency/unit association. Profit is not required.",
+      "required_originals": [
+        {
+          "chunk_id": "c276",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8700,
+              "end": 8713,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n增减(%) | 2023年"
+        },
+        {
+          "chunk_id": "c280",
+          "spans": [
+            {
+              "start": 8675,
+              "end": 8699,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            },
+            {
+              "start": 8858,
+              "end": 8920,
+              "page": 12,
+              "bbox": [
+                84.47999954223633,
+                213.31999969482422,
+                537.1199951171875,
+                519.0399780273438
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": " | 2025年 | 2024年 | 本年比上年\n营业收入 | 246,658,302.88 | 246,503,467.92 | 0.06 | 218,292,698.54"
+        },
+        {
+          "chunk_id": "c314",
+          "spans": [
+            {
+              "start": 9940,
+              "end": 9951,
+              "page": 12,
+              "bbox": [
+                416.0400085449219,
+                200.1103515625,
+                531.4883422851562,
+                210.5603485107422
+              ],
+              "basis": "canonical Unicode code points; [start,end)"
+            }
+          ],
+          "text": "单位：元\n币种：人民币"
+        }
+      ],
+      "context_rule": "Preserve complete claim, subject, period/status and unit where applicable; source identity metadata is permitted, unsupported currency inference is not."
+    }
+  ],
+  "annotation_policy": "Required bundles define a finite minimum-support benchmark, not exhaustive relevance judgments or full brief coverage. All listed complete claims are required. Grade returned blocks 2=direct evidence for required claim,1=necessary identity/unit/header/qualifier for it,0=unrelated; other valid requested facets are recorded separately without changing frozen denominator. Equivalent original support counts only with cited same-version spans and all frozen claim/context requirements; record adjudication without rewriting this file. Incomplete trailing sentences cannot support their missing continuation. Runtime coverage labels are ignored."
+}
