@@ -13,6 +13,7 @@ from evidencealpha import artifacts
 from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import documents
+from evidencealpha import execution
 from evidencealpha import providers
 from evidencealpha import render
 from evidencealpha import tools
@@ -181,6 +182,17 @@ def parser() -> argparse.ArgumentParser:
     )
     stage2.add_argument("--execute", action="store_true")
     stage2.add_argument("--case", type=pathlib.Path)
+    fixed = commands.add_parser(
+        "fixed-corpus",
+        help="One bounded fixed-corpus report; no external acquisition",
+    )
+    fixed.add_argument("--execution", type=pathlib.Path, required=True)
+    fixed.add_argument("--output", type=pathlib.Path, required=True)
+    fixed.add_argument(
+        "--replay",
+        type=pathlib.Path,
+        help="Hash-bound saved stage outputs; no model calls",
+    )
     return result
 
 
@@ -198,6 +210,27 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     args = parser().parse_args()
     settings = config.load(args.config)
+    if args.command == "fixed-corpus":
+        data = execution.run(args.execution, args.output, args.replay)
+        output = {
+            key: data.get(key)
+            for key in (
+                "run",
+                "execution_status",
+                "coverage_status",
+                "review_status",
+                "export_status",
+                "error",
+                "elapsed_seconds",
+            )
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        raise SystemExit(
+            0
+            if data.get("execution_status") == "complete"
+            and data.get("export_status") == "complete"
+            else 1
+        )
     if args.command == "stage2":
         output = _driver(args, settings)
     elif args.command == "render":

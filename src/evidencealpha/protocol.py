@@ -50,6 +50,33 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     }
     schema = record(
         {
+            "scope": array(
+                record(
+                    {
+                        "id": string,
+                        "status": choice(
+                            [
+                                "supported",
+                                "partial",
+                                "unresolved",
+                                "undisclosed",
+                                "examined",
+                                "unexamined",
+                            ]
+                        ),
+                        "explanation": string,
+                        "original_passages": array(
+                            record(
+                                {
+                                    "source_id": string,
+                                    "chunk_id": string,
+                                    "quote": string,
+                                }
+                            )
+                        ),
+                    }
+                )
+            ),
             "content": string,
             "stop_reason": {"type": ["string", "null"]},
             "coverage_updates": array(

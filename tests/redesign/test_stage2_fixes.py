@@ -65,7 +65,7 @@ def test_research_queue_shares_deadline_and_writer_runs(tmp_path, fake_clock):
         result = workflow.run(
             brief, settings, fixture, sources, tmp_path / "run"
         )
-    assert result["status"] == "reviewed"
+    assert result["status"] == "reviewed_with_limitations"
     assert len(limits) == (1 if fake_clock else 2)
     assert max(limits) <= 0.12 + 1e-9
     assert len(result["research_gaps"]) == 5
@@ -163,7 +163,7 @@ def test_research_leaves_downstream_time_when_plan_is_slow(tmp_path):
         tmp_path / "run",
         campaign_attempt={"deadline": time.time() + 1080},
     )
-    assert result["status"] == "reviewed"
+    assert result["status"] == "reviewed_with_limitations"
     assert result["research_phase"]["seconds"] == 0
     assert not any(c.stage.startswith("research-") for c in fixture.calls)
 

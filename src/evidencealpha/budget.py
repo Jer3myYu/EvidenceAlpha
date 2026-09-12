@@ -327,3 +327,105 @@ class DiagnosticLedger(Ledger):
     def acquire(self, kind: str) -> None:
         """External acquisition is outside this allowance."""
         raise BudgetExceeded(f"Diagnostic acquisition prohibited: {kind}")
+
+
+class ExecutionLedger(Ledger):
+    """Configurable fixed-corpus window; historical ledgers remain untouched."""
+
+    def __init__(self, path: pathlib.Path, settings: config.Settings) -> None:
+        super().__init__(path)
+        self.settings = settings
+        self.stage = ""
+        self.research = False
+        self.final_writing = False
+        self.stage_calls = settings.tool_rounds
+        self.stage_seconds = settings.command_provider_seconds
+        self.stage_tokens = settings.command_observable_tokens
+
+    @property
+    def limits(self) -> dict:
+        """Freeze supplied ceilings in the additive ledger."""
+        return {
+            **config.LIMITS,
+            "session_seconds": self.settings.command_seconds,
+            "full_seconds": self.settings.command_seconds,
+            "full_attempts": 1,
+            "research_workers": 1,
+            "invocation_seconds": self.settings.command_provider_seconds,
+            "observable_tokens": self.settings.command_observable_tokens,
+            "generative_calls": self.settings.command_calls,
+            "search_calls": 0,
+            "fetch_attempts": 0,
+        }
+
+    def _check(self, data: dict) -> float:
+        if any(
+            x["status"] != "running" and x.get("observable_tokens") is None
+            for x in data["invocations"]
+        ):
+            raise BudgetExceeded("Unknown invocation usage blocks admission")
+        if len(data["invocations"]) >= self.settings.command_calls:
+            raise BudgetExceeded("Generative call ceiling reached")
+        return super()._check(data)
+
+    def writing_due(self) -> bool:
+        """Transition before protected research-writing time is spent."""
+        if not self.research:
+            return False
+        data = artifacts.read(self.path)
+        own = [x for x in data["invocations"] if x.get("stage") == self.stage]
+        used = sum(x.get("seconds", x["reserved_seconds"]) for x in own)
+        return (
+            self.stage_seconds - used <= self.settings.invocation_seconds
+            or len(own) >= self.stage_calls - 1
+        )
+
+    def reserve(self, attempt: dict, provider: str, seconds: float) -> dict:
+        """Protect downstream writing and research's final response."""
+        with self.locked() as data:
+            self._check(data)
+            calls = data["invocations"]
+            if any(x["status"] == "running" for x in calls):
+                raise BudgetExceeded("Invocation concurrency exhausted")
+            own = [x for x in calls if x.get("stage") == self.stage]
+            used = sum(x.get("seconds", x["reserved_seconds"]) for x in calls)
+            own_used = sum(x.get("seconds", x["reserved_seconds"]) for x in own)
+            tokens = sum(x.get("observable_tokens") or 0 for x in calls)
+            own_tokens = sum(x.get("observable_tokens") or 0 for x in own)
+            reserve_calls = (
+                self.settings.writing_calls_reserve if self.research else 0
+            )
+            reserve_seconds = (
+                self.settings.writing_provider_reserve if self.research else 0
+            )
+            reserve_tokens = (
+                self.settings.writing_tokens_reserve if self.research else 0
+            )
+            if (
+                len(calls) >= self.settings.command_calls - reserve_calls
+                or len(own) >= self.stage_calls
+                or tokens
+                >= self.settings.command_observable_tokens - reserve_tokens
+                or own_tokens >= self.stage_tokens
+            ):
+                raise BudgetExceeded(
+                    "Stage or protected-writing allowance reached"
+                )
+            final_reserve = (
+                self.settings.invocation_seconds
+                if self.research and not self.final_writing
+                else 0
+            )
+            seconds = min(
+                seconds,
+                self.settings.command_provider_seconds - used - reserve_seconds,
+                self.stage_seconds - own_used - final_reserve,
+            )
+            if seconds <= 0:
+                raise BudgetExceeded("Protected provider writing time reached")
+        entry = super().reserve(attempt, provider, seconds)
+        with self.locked() as data:
+            next(x for x in data["invocations"] if x["id"] == entry["id"])[
+                "stage"
+            ] = self.stage
+        return entry

@@ -252,6 +252,8 @@ class StageContext:
                     else "returned"
                 )
             )
+        if passages:
+            self.data["recent_refs"] = [reading.reference(p) for p in passages]
         entry = {
             "tool": name,
             "arguments": _compact(arguments),
@@ -275,6 +277,7 @@ class StageContext:
 
     def _fixed(self) -> dict:
         task = copy.deepcopy(self.data["task"])
+        task.pop("required_original_refs", None)
         return {
             **task,
             "unresolved_questions": task.get("unresolved_questions", []),
@@ -352,7 +355,7 @@ class StageContext:
         )
         evidence = {
             "status": "unsynthesized_evidence",
-            **documents.group_passages(ordered),
+            **documents.compact_passages(documents.group_passages(ordered)),
             "omitted_passages": previews,
             "omitted_reference_count": len(omitted),
             "unlisted_reference_count": len(omitted) - len(previews),
@@ -385,7 +388,6 @@ class StageContext:
                     {
                         "source_id": originals[r]["source_id"],
                         "chunk_id": originals[r].get("chunk_id"),
-                        "spans": originals[r]["spans"],
                     }
                     for r in b["refs"]
                 ],
@@ -441,9 +443,16 @@ class StageContext:
             )
 
         all_refs = set(originals)
+        if (
+            not set(self.data["task"].get("required_original_refs", []))
+            <= all_refs
+        ):
+            raise ValueError("Required writing originals are unavailable")
         encoded, view, manifest, fits = trial(all_refs)
         if not fits:
-            chosen: set[str] = set()
+            chosen = set(self.data["task"].get("required_original_refs", []))
+            if not chosen <= all_refs:
+                raise ValueError("Required writing originals are unavailable")
             if not trial(chosen)[3]:
                 raise ValueError(
                     "Task and required disclosure exceed context budget"
@@ -496,6 +505,15 @@ class StageContext:
                                 key=lambda pair: (
                                     -int(
                                         pair[1].get("relation") == "conflicts"
+                                    ),
+                                    (
+                                        -len(
+                                            set(pair[1]["refs"]).intersection(
+                                                self.data.get("recent_refs", [])
+                                            )
+                                        )
+                                        if phase == "evidence"
+                                        else 0
                                     ),
                                     sum(
                                         len(originals[r]["text"].encode())

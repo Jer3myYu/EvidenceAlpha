@@ -28,9 +28,10 @@ def _run(tmp_path, name="service", outputs=None):
 def test_complete_generic_report(tmp_path, name):
     """Distinct domains preserve body, figures, source links and PDF."""
     result, provider, root = _run(tmp_path, name)
-    assert result["status"] == "reviewed"
+    assert result["status"] == "reviewed_with_limitations"
     assert result["render"]["pdf_status"] == "complete"
-    assert result["reviewed_hash"] == result["report_hash"]
+    assert result["reviewed_hash"] is None
+    assert result["review_status"] == "partial"
     assert (root / "reports/report.pdf").stat().st_size > 1000
     figures = artifacts.read(root / "reports/figures.json")
     assert (root / "reports" / figures[0]["path"]).exists()
@@ -64,7 +65,7 @@ def test_optional_polish_and_unresolved_recheck_are_bounded(tmp_path):
     result, provider, _ = _run(
         tmp_path, outputs={"review": {"content": "polish", "issues": [issue]}}
     )
-    assert result["status"] == "reviewed"
+    assert result["status"] == "reviewed_with_limitations"
     assert not any(c.stage == "revision" for c in provider.calls)
     issue["severity"] = "material"
     issue["original_passages"] = artifacts.read(

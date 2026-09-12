@@ -41,6 +41,8 @@ class ModelSettings:
 class Settings:
     """Shared defaults with small, validated JSON overrides."""
 
+    runtime_model: str = RUNTIME_MODEL
+    runtime_effort: str = "medium"
     profile: str = "low_claude_quota"
     claude_model: str | None = None
     rehearsal_model: str = REHEARSAL_MODEL
@@ -82,8 +84,33 @@ class Settings:
     final_writing_reserve_seconds: int = 180
     invocation_seconds: int = 300
     export_seconds: int = 120
+    followup_seconds: int = 900
+    review_rounds: int = 4
+    company_provider_seconds: int = 600
+    company_observable_tokens: int = 12000
+    command_seconds: int = 10800
+    command_calls: int = 16
+    command_provider_seconds: int = 3600
+    command_observable_tokens: int = 40000
+    writing_provider_reserve: int = 900
+    writing_calls_reserve: int = 4
+    writing_tokens_reserve: int = 16000
 
     def __post_init__(self) -> None:
+        if (
+            self.runtime_model != RUNTIME_MODEL
+            or self.runtime_effort != "medium"
+        ):
+            raise ValueError(
+                "This execution retains the authorized model/effort"
+            )
+        if self.writer_context_tokens is not None and (
+            self.writer_context_tokens
+            <= self.writer_output_tokens + self.writer_transport_tokens
+        ):
+            raise ValueError(
+                "Provider capacity cannot contain output/transport"
+            )
         if self.rehearsal_model not in (REHEARSAL_MODEL, RUNTIME_MODEL):
             raise ValueError("Rehearsals allow only policy-approved models")
         if self.profile not in ("low_claude_quota", "preferred"):
@@ -101,6 +128,17 @@ class Settings:
         if self.embedding_model:
             raise ValueError("Embedding fusion is retired; use retrieval_mode")
         for value in (
+            self.followup_seconds,
+            self.review_rounds,
+            self.company_provider_seconds,
+            self.company_observable_tokens,
+            self.command_seconds,
+            self.command_calls,
+            self.command_provider_seconds,
+            self.command_observable_tokens,
+            self.writing_provider_reserve,
+            self.writing_calls_reserve,
+            self.writing_tokens_reserve,
             self.candidate_limit,
             self.reading_window_characters,
             self.reranker_pair_tokens,
@@ -131,7 +169,9 @@ class Settings:
     def model(self, role: str, rehearsal: bool = False) -> ModelSettings:
         """Select a model without silently upgrading or changing providers."""
         if role in ("review", "recheck"):
-            return ModelSettings("codex", RUNTIME_MODEL)
+            return ModelSettings(
+                "codex", self.runtime_model, self.runtime_effort
+            )
         if rehearsal:
             return ModelSettings("codex", self.rehearsal_model)
         if self.profile == "preferred":
@@ -140,7 +180,7 @@ class Settings:
                     "Claude model is not configured; use GPT profile"
                 )
             return ModelSettings("claude", self.claude_model)
-        return ModelSettings("codex", RUNTIME_MODEL)
+        return ModelSettings("codex", self.runtime_model, self.runtime_effort)
 
 
 def load(path: pathlib.Path | None = None) -> Settings:

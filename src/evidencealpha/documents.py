@@ -69,6 +69,29 @@ def group_passages(passages: list[dict]) -> dict:
     return {"sources": list(groups.values())}
 
 
+def compact_passages(result: dict) -> dict:
+    """Remove navigation geometry, preserving text and canonical locators.
+
+    Durable evidence is never modified. Offsets, pages, chunk references and
+    source versions remain available in the transport view.
+    """
+    result = copy.deepcopy(result)
+    for source in result.get("sources", []):
+        for passage in source["passages"]:
+            passage.pop("block_ids", None)
+            for record in passage.get("chunk_refs", []):
+                if "spans" in record:
+                    record["spans"] = [
+                        {
+                            k: span[k]
+                            for k in ("start", "end", "page")
+                            if k in span
+                        }
+                        for span in record["spans"]
+                    ]
+    return result
+
+
 def ungroup_passages(result: dict) -> list[dict]:
     """Recover explicit source bindings from grouped tool or handoff data."""
     return [

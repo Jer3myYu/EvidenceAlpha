@@ -15,7 +15,9 @@ from evidencealpha import artifacts
 from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import documents
+from evidencealpha import handoff as evidence_handoff
 from evidencealpha import providers
+from evidencealpha import reading
 from evidencealpha import render
 from evidencealpha import retrieval
 from evidencealpha import reranking
@@ -81,6 +83,9 @@ class StageRunner:
             self.settings,
             None if isinstance(scorer, reranking.LocalReranker) else scorer,
         )
+        # Scores are reusable only for identical query/views/version/settings.
+        # Each uncached search still launches and reloads its own scorer.
+        stage_tools.retriever.cache = self.tools.retriever.cache
         folder = root / "stages" / stage / uuid.uuid4().hex[:12]
         folder.mkdir(parents=True)
         prompt_path = pathlib.Path(__file__).parent / "prompts"
@@ -119,8 +124,7 @@ class StageRunner:
             folder / "context-state.json",
             {k: v for k, v in portable.items() if k != "settled_evidence"},
         )
-        if final_notes_only:
-            context.settle(portable.get("settled_evidence", {}))
+        context.settle(portable.get("settled_evidence", {}))
         started_stage = time.monotonic()
         deadline, stage_limit = min(
             (started_stage + record["seconds"], "worker_elapsed"),
@@ -164,6 +168,10 @@ class StageRunner:
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
                     final_notes_only
+                    or (
+                        isinstance(self.ledger, budget.ExecutionLedger)
+                        and self.ledger.writing_due()
+                    )
                     or requested_writing
                     or tool_count >= self.settings.stage_tool_limit
                     or turn == self.settings.tool_rounds - 1
@@ -221,10 +229,8 @@ class StageRunner:
                 call_dir = folder / f"call-{turn}"
                 available_tools = {} if final_turn else record["tools"]
                 if (
-                    isinstance(
-                        self.provider,
-                        (providers.CodexProvider, providers.ClaudeProvider),
-                    )
+                    stage_tools.mode != "fixture"
+                    and not isinstance(self.provider, providers.FixtureProvider)
                     and not self.settings.writer_context_tokens
                 ):
                     raise ValueError(
@@ -263,6 +269,8 @@ class StageRunner:
                 remaining = call_deadline - admission_started
                 reservation = None
                 if self.ledger:
+                    if isinstance(self.ledger, budget.ExecutionLedger):
+                        self.ledger.final_writing = final_turn
                     reservation = self.ledger.reserve(
                         self.campaign_attempt, settings.provider, remaining
                     )
@@ -674,6 +682,18 @@ def _prepare_report(
         for source in missing_sources:
             label = source["id"]
             body += f'- [{label}]({source["url"]})\n'
+    mapping = {
+        source["id"]: f"S{i}" for i, source in enumerate(store.sources(), 1)
+    }
+    for source_id, alias in mapping.items():
+        body = body.replace(source_id, alias)
+    artifacts.write(
+        reports / "source-map.json",
+        {
+            alias: {**store.source_context(sid), "source_id": sid}
+            for sid, alias in mapping.items()
+        },
+    )
     path = reports / name
     artifacts.write(path, body)
     return path
@@ -690,13 +710,16 @@ def run(
     campaign_attempt: dict | None = None,
     resume: bool = False,
     source_corpus: pathlib.Path | None = None,
+    execution: dict | None = None,
+    replay_runner: object | None = None,
 ) -> dict:
     """Run one plan/research/write/review/revise/recheck path."""
     if mode not in ("fixture", "fixed-corpus", "live"):
         raise ValueError("Unknown run mode")
     if not isinstance(provider, providers.FixtureProvider) and not ledger:
         raise ValueError("Model runs require an admitted campaign attempt")
-    root.mkdir(parents=True, exist_ok=resume)
+    execution = execution or {}
+    root.mkdir(parents=True, exist_ok=resume or bool(execution))
     manifest_path = root / "manifest.json"
     store = documents.SourceStore(root / "sources", settings.chunk_characters)
     if resume:
@@ -737,6 +760,18 @@ def run(
         ledger,
         campaign_attempt,
     )
+    if replay_runner is not None:
+        runner = replay_runner
+        manifest["validation"] = (
+            "Saved-output plumbing replay; no autonomous research "
+            "or model validation"
+        )
+    manifest.update(
+        execution_status="running",
+        coverage_status="unassessed",
+        review_status="not_started",
+        export_status="not_started",
+    )
     original_sources = _source_inputs(store, manifest["initial_sources"])
     base = {"brief": brief, "sources": original_sources}
 
@@ -746,7 +781,16 @@ def run(
         portable: dict,
         seconds: float,
         deadline: float | None = None,
+        final_notes_only: bool = False,
     ) -> dict:
+        if campaign_attempt:
+            outer = (
+                time.monotonic() + campaign_attempt["deadline"] - time.time()
+            )
+            deadline = min(
+                deadline if deadline is not None else outer,
+                outer - settings.export_seconds,
+            )
         if deadline is not None and time.monotonic() >= deadline:
             raise providers.ProviderError("Research phase deadline expired")
         old = manifest["stages"].get(name)
@@ -764,8 +808,54 @@ def run(
                 and stored_input["instructions"] == instructions
             ):
                 return old
+        stage_settings = settings
+        if execution:
+            rounds = (
+                settings.review_rounds
+                if role in ("review", "recheck")
+                else (1 if final_notes_only else settings.tool_rounds)
+            )
+            if name == "followup":
+                rounds = min(rounds, 3)
+            if isinstance(ledger, budget.ExecutionLedger):
+                used_calls = len(artifacts.read(ledger.path)["invocations"])
+                downstream_calls = (
+                    3 if role == "review" else (2 if role == "revision" else 0)
+                )
+                rounds = min(
+                    rounds,
+                    settings.command_calls - used_calls - downstream_calls,
+                )
+                if rounds <= 0:
+                    raise budget.BudgetExceeded(
+                        "No calls after writing/recheck reserve"
+                    )
+            stage_settings = dataclasses.replace(settings, tool_rounds=rounds)
+            if isinstance(runner, StageRunner):
+                runner.settings = stage_settings
+                runner.tools.settings = stage_settings
+        if isinstance(ledger, budget.ExecutionLedger):
+            ledger.stage = name
+            ledger.research = role in ("company", "industry", "plan")
+            ledger.stage_calls = stage_settings.tool_rounds
+            ledger.stage_seconds = (
+                settings.company_provider_seconds
+                if ledger.research
+                else settings.command_provider_seconds
+            )
+            ledger.stage_tokens = (
+                settings.company_observable_tokens
+                if ledger.research
+                else settings.command_observable_tokens
+            )
         value = runner.run(
-            name, role, portable, root, seconds=seconds, deadline=deadline
+            name,
+            role,
+            portable,
+            root,
+            seconds=seconds,
+            deadline=deadline,
+            final_notes_only=final_notes_only,
         )
         return value
 
@@ -776,7 +866,33 @@ def run(
     current = None
     review_status = "draft_review_incomplete"
     try:
-        plan = stage("plan", "plan", base, settings.stage_allocations[0])
+        if execution.get("tasks"):
+            plan = {
+                "output": {
+                    "content": "Explicit scoped tasks reused",
+                    "tasks": execution["tasks"],
+                },
+                "status": "scoped_task_reuse",
+                "input_hash": artifacts.digest(execution["tasks"]),
+            }
+        else:
+            plan = stage(
+                "plan",
+                "plan",
+                {
+                    **base,
+                    "reused_industry_scope": bool(
+                        execution.get("industry_import")
+                    ),
+                    "instruction": (
+                        "Plan scoped company work; do not duplicate "
+                        "imported industry research."
+                        if execution.get("industry_import")
+                        else "Plan focused tasks from the brief."
+                    ),
+                },
+                settings.stage_allocations[0],
+            )
         save("plan", plan)
         tasks = plan["output"].get("tasks", [])
         if not isinstance(tasks, list) or len(tasks) > 12:
@@ -788,6 +904,10 @@ def run(
             ):
                 raise ValueError(
                     "Only scoped industry/company research tasks are allowed"
+                )
+            if execution.get("industry_import") and task["role"] == "industry":
+                raise ValueError(
+                    "Plan duplicated explicitly imported industry scope"
                 )
             jobs.append((f"research-{index}", task))
         research_seconds = settings.stage_allocations[1]
@@ -802,6 +922,13 @@ def run(
             )
         research_deadline = time.monotonic() + max(0, research_seconds)
         manifest["research_phase"] = {"seconds": max(0, research_seconds)}
+        required_scope = execution.get("required_scope", [])
+        imported = None
+        if execution.get("industry_import"):
+            imported = evidence_handoff.import_bundle(
+                pathlib.Path(execution["industry_import"]), store
+            )
+            manifest["industry_import"] = imported["provenance"]
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=settings.workers
         ) as pool:
@@ -810,7 +937,16 @@ def run(
                     stage,
                     name,
                     task["role"],
-                    {**base, "task": task, "plan": plan["output"]["content"]},
+                    {
+                        **base,
+                        "task": task,
+                        "plan": plan["output"]["content"],
+                        "required_scope": [
+                            r
+                            for r in required_scope
+                            if r.get("task", name) == name
+                        ],
+                    },
                     settings.stage_allocations[1],
                     research_deadline,
                 ): name
@@ -856,18 +992,131 @@ def run(
                     config.PROMPT_VERSION,
                 )
         sources = _source_inputs(store, [s["id"] for s in store.sources()])
+        research_records = {
+            name: manifest["stages"][name]
+            for name, _ in jobs
+            if name in manifest["stages"]
+        }
+        assembled = evidence_handoff.collect(root, research_records, store)
+        scope_output = {
+            "scope": [
+                item
+                for record in research_records.values()
+                for item in record["output"].get("scope", [])
+            ]
+        }
+        initial_scope = evidence_handoff.scope(
+            scope_output, required_scope, store
+        )
+        manifest["initial_coverage"] = initial_scope
+        coverage = initial_scope
+        if required_scope and initial_scope["status"] != "complete":
+            gaps = [
+                x
+                for x in initial_scope["items"]
+                if x["status"] not in ("supported", "undisclosed")
+            ]
+            followup_input = {
+                **base,
+                **assembled,
+                "task": {
+                    "role": "company",
+                    "question": (
+                        "Resolve essential gaps using your own focused "
+                        "searches and context opens. Preserve uncertainty "
+                        "and prior useful findings."
+                    ),
+                },
+                "required_scope": [
+                    {"id": x["id"], "question": x["question"]} for x in gaps
+                ],
+                "initial_notes": {
+                    name: r["output"]["content"]
+                    for name, r in research_records.items()
+                },
+                "initial_gaps": gaps,
+            }
+            artifacts.write(root / "initial-coverage.json", initial_scope)
+            try:
+                # Follow-up cannot consume protected downstream time.
+                follow_deadline = None
+                if campaign_attempt:
+                    follow_deadline = (
+                        time.monotonic()
+                        + campaign_attempt["deadline"]
+                        - time.time()
+                        - sum(settings.stage_allocations[2:])
+                        - settings.export_seconds
+                    )
+                followup = stage(
+                    "followup",
+                    "company",
+                    followup_input,
+                    settings.followup_seconds,
+                    follow_deadline,
+                )
+                save("followup", followup)
+                research_records["followup"] = followup
+                follow_scope = evidence_handoff.scope(
+                    followup["output"], followup_input["required_scope"], store
+                )
+                manifest["followup_coverage"] = follow_scope
+                coverage = evidence_handoff.merge_scope(
+                    initial_scope, follow_scope
+                )
+            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                if isinstance(exc, providers.ProviderCancelled):
+                    raise
+                manifest.setdefault("research_gaps", {})["followup"] = str(exc)
+                if isinstance(exc, ResearchHandoffError):
+                    manifest.setdefault("unsynthesized_evidence", {})[
+                        "followup"
+                    ] = exc.handoff
+            assembled = evidence_handoff.collect(root, research_records, store)
+        for failed in manifest.get("unsynthesized_evidence", {}).values():
+            assembled["settled_evidence"] = evidence_handoff.merge(
+                assembled["settled_evidence"],
+                failed.get("settled_evidence", {}),
+            )
+        notes = {
+            name: record["output"]["content"]
+            for name, record in research_records.items()
+        }
+        if imported:
+            notes["imported-industry"] = imported["notes"]
+            assembled["settled_evidence"] = evidence_handoff.merge(
+                assembled["settled_evidence"], imported["evidence"]
+            )
+            assembled["required_original_refs"] = sorted(
+                set(
+                    assembled["required_original_refs"]
+                    + [
+                        reading.reference(p)
+                        for p in documents.ungroup_passages(
+                            imported["evidence"]
+                        )
+                    ]
+                )
+            )
+            assembled["imported_citation_map"] = imported["citation_map"]
+        manifest["coverage"] = coverage
+        manifest["coverage_status"] = coverage["status"]
+        manifest["execution_status"] = (
+            "partial" if manifest.get("research_gaps") else "running"
+        )
+        artifacts.write(root / "research-handoff.json", assembled)
         synthesis_input = {
             "brief": brief,
             "sources": sources,
             "plan": plan["output"]["content"],
-            "notes": {
-                name: manifest["stages"][name]["output"]["content"]
-                for name, _ in jobs
-                if name in manifest["stages"]
-            },
+            "notes": notes,
+            **assembled,
+            "coverage": coverage,
             "gaps": manifest.get("research_gaps", {}),
-            "unsynthesized_evidence": manifest.get(
-                "unsynthesized_evidence", {}
+            "instruction": (
+                "Write from originals, retaining explanations, units "
+                "and technical qualifiers. Disclose unresolved essential "
+                "coverage and payload omissions; notes alone are not evidence."
             ),
         }
         previous_synthesis = manifest["stages"].get("synthesis", {}).get("path")
@@ -876,8 +1125,15 @@ def run(
             "synthesis",
             synthesis_input,
             settings.stage_allocations[2],
+            final_notes_only=bool(execution),
         )
         save("synthesis", synthesis)
+        synthesis_handoff = evidence_handoff.collect(
+            root, {"synthesis": synthesis}, store
+        )
+        assembled["upstream_omissions"].update(
+            synthesis_handoff["upstream_omissions"]
+        )
         draft = reports / "draft.md"
         if not (
             resume
@@ -895,7 +1151,26 @@ def run(
             return {
                 "brief": brief,
                 "draft": path.read_text(),
+                "settled_evidence": assembled["settled_evidence"],
+                "upstream_omissions": assembled["upstream_omissions"],
+                "required_original_refs": assembled["required_original_refs"],
+                "required_scope": [
+                    {"id": f"section-{i}", "question": heading}
+                    for i, heading in enumerate(
+                        re.findall(
+                            r"^#{1,6} .+$", path.read_text(), re.MULTILINE
+                        )
+                    )
+                ]
+                + [
+                    {"id": f"figure-{i}", "question": f["title"]}
+                    for i, f in enumerate(
+                        artifacts.read(reports / "figures.json")
+                    )
+                ]
+                or [{"id": "report", "question": "All material report claims"}],
                 "sources": sources,
+                "source_map": artifacts.read(reports / "source-map.json"),
                 "figures": artifacts.read(reports / "figures.json"),
                 "visual_review_capability": (
                     "Text, figure specifications and hashes only; no native "
@@ -918,18 +1193,56 @@ def run(
             settings.stage_allocations[3],
         )
         save("review", review)
+        examined = evidence_handoff.scope(
+            review["output"],
+            review_input(current)["required_scope"],
+            store,
+            review=True,
+        )
+        manifest["review_scope"] = examined
+        manifest["review_status"] = examined["status"]
+        supplemental = execution.get("supplemental_findings", [])
+        if supplemental:
+            parse_output(
+                json.dumps(
+                    {
+                        "content": "Supplemental source check",
+                        "issues": supplemental,
+                    }
+                ),
+                "review",
+            )
+        support = evidence_handoff.validate_quotes(
+            review["output"]["issues"]
+            + supplemental
+            + review["output"].get("scope", []),
+            store,
+        )
+        reviewed_originals = evidence_handoff.collect(
+            root, {"review": review}, store
+        )
+        evidence_handoff.require_support(assembled, support)
+        evidence_handoff.require_support(
+            assembled,
+            reviewed_originals["settled_evidence"],
+            [],
+        )
         material = [
-            i for i in review["output"]["issues"] if i["severity"] == "material"
+            i
+            for i in review["output"]["issues"] + supplemental
+            if i["severity"] == "material"
         ]
+        manifest["supplemental_findings"] = supplemental
         if material:
             revision_portable = revision_input(
-                review_input(current), review["output"]
+                review_input(current), {**review["output"], "issues": material}
             )
             revision = stage(
                 "revision",
                 "revision",
                 revision_portable,
                 settings.stage_allocations[4],
+                final_notes_only=bool(execution),
             )
             save("revision", revision)
             current = _prepare_report(
@@ -938,18 +1251,56 @@ def run(
             recheck = stage(
                 "recheck",
                 "recheck",
-                {**review_input(current), "prior_issues": material},
+                {
+                    **review_input(current),
+                    "prior_issues": material,
+                    "required_scope": [
+                        {"id": f"finding-{i}", "question": issue["location"]}
+                        for i, issue in enumerate(material)
+                    ],
+                },
                 settings.stage_allocations[5],
             )
             save("recheck", recheck)
+            manifest["recheck_scope"] = evidence_handoff.scope(
+                recheck["output"],
+                [
+                    {"id": f"finding-{i}", "question": issue["location"]}
+                    for i, issue in enumerate(material)
+                ],
+                store,
+                review=True,
+            )
+            evidence_handoff.validate_quotes(recheck["output"]["issues"], store)
+            manifest["revision_resolution"] = (
+                "complete"
+                if manifest["recheck_scope"]["status"] == "complete"
+                and not any(
+                    i["severity"] == "material"
+                    for i in recheck["output"]["issues"]
+                )
+                else "unverified_or_unresolved"
+            )
             material = [
                 i
                 for i in recheck["output"]["issues"]
                 if i["severity"] == "material"
             ]
-        review_status = "reviewed_with_limitations" if material else "reviewed"
+        review_status = (
+            "reviewed_with_limitations"
+            if (
+                material
+                or examined["status"] != "complete"
+                or manifest.get("revision_resolution")
+                == "unverified_or_unresolved"
+            )
+            else "reviewed"
+        )
+        if manifest["execution_status"] == "running":
+            manifest["execution_status"] = "complete"
         manifest["unresolved_issues"] = material
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
+        manifest["execution_status"] = "failed"
         manifest["error"] = {"type": type(exc).__name__, "message": str(exc)}
         if current is None and (reports / "draft.md").exists():
             current = reports / "draft.md"
@@ -959,13 +1310,27 @@ def run(
         if current:
             final = reports / "report.md"
             artifacts.write(final, current.read_bytes())
+            manifest["reviewed_subset_hash"] = (
+                artifacts.digest(current.read_bytes())
+                if manifest.get("review_scope")
+                else None
+            )
             manifest["reviewed_hash"] = (
                 artifacts.digest(current.read_bytes())
-                if review_status != "draft_review_incomplete"
+                if review_status == "reviewed"
                 else None
             )
             manifest["report_hash"] = artifacts.digest(final.read_bytes())
             try:
+                if manifest.get("error", {}).get(
+                    "type"
+                ) == "ProviderCancelled" or (
+                    campaign_attempt
+                    and time.time() >= campaign_attempt["deadline"]
+                ):
+                    raise providers.ProviderCancelled(
+                        "Export cancelled by enclosing deadline"
+                    )
                 manifest["render"] = render.export(final)
             except (OSError, ValueError, RuntimeError) as exc:
                 manifest["render"] = {
@@ -973,6 +1338,10 @@ def run(
                     "error": str(exc),
                     "markdown": str(final),
                 }
+        manifest["export_status"] = manifest.get("render", {}).get(
+            "pdf_status", "not_started"
+        )
+        providers.cancel_all()
         artifacts.write(manifest_path, manifest)
     return manifest
 
