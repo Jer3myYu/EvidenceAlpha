@@ -1,0 +1,134 @@
+{
+  "brief": {
+    "text": "为不熟悉光掩模的投资者撰写完整中文报告：解释行业、价值链、技术壁垒、商业化过程、中国与全球差异、需求与风险；比较清溢光电、路维光电、龙图光罩的技术状态、经营财务、重要驱动因素及代表性客户/供应商关系。管理层解释须归属其观点，不强求每个数字都附解释。财务和技术表分开，提供有来源且口径清楚的营业收入图。仅用现有完整来源库，明确覆盖限制，不作价格预测。",
+    "scope": "现有来源库自主研究评估；不验证网络获取或其他行业泛化。保持公司总收入与半导体业务收入的口径区分。币种仅推定时明确标注；URL路径日期不等于已核实披露日期。引用须可追溯到原文位置；所检索材料的空白不代表完整文件没有信息。"
+  },
+  "corpus": "../data/redesign/focused-diagnostic/frozen/corpus",
+  "required_scope": [
+    {
+      "id": "company-0",
+      "question": "清溢光电：财务总量、期间、单位及可比性",
+      "role": "company"
+    },
+    {
+      "id": "company-1",
+      "question": "清溢光电：产品、应用和技术项目商业化状态",
+      "role": "company"
+    },
+    {
+      "id": "company-2",
+      "question": "清溢光电：经营变化解释、管理层归因与风险",
+      "role": "company"
+    },
+    {
+      "id": "company-3",
+      "question": "清溢光电：代表性上下游关系及其角色、范围",
+      "role": "company"
+    },
+    {
+      "id": "company-4",
+      "question": "路维光电：财务总量、期间、单位及可比性",
+      "role": "company"
+    },
+    {
+      "id": "company-5",
+      "question": "路维光电：产品、应用和技术项目商业化状态",
+      "role": "company"
+    },
+    {
+      "id": "company-6",
+      "question": "路维光电：经营变化解释、管理层归因与风险",
+      "role": "company"
+    },
+    {
+      "id": "company-7",
+      "question": "路维光电：代表性上下游关系及其角色、范围",
+      "role": "company"
+    },
+    {
+      "id": "company-8",
+      "question": "龙图光罩：财务总量、期间、单位及可比性",
+      "role": "company"
+    },
+    {
+      "id": "company-9",
+      "question": "龙图光罩：产品、应用和技术项目商业化状态",
+      "role": "company"
+    },
+    {
+      "id": "company-10",
+      "question": "龙图光罩：经营变化解释、管理层归因与风险",
+      "role": "company"
+    },
+    {
+      "id": "company-11",
+      "question": "龙图光罩：代表性上下游关系及其角色、范围",
+      "role": "company"
+    },
+    {
+      "id": "industry",
+      "role": "industry",
+      "question": "解释行业、价值链、技术壁垒、商业化过程、中国与全球差异、需求与风险；仅基于完整现有来源库，保留覆盖限制。"
+    }
+  ],
+  "settings": {
+    "runtime_model": "gpt-5.6-sol",
+    "runtime_effort": "medium",
+    "workers": 1,
+    "tool_rounds": 3,
+    "review_rounds": 3,
+    "stage_allocations": [
+      180,
+      3000,
+      300,
+      450,
+      300,
+      450
+    ],
+    "followup_seconds": 900,
+    "reranker_search_seconds": 300,
+    "reranker_stage_seconds": 900,
+    "reranker_stage_pairs": 2048,
+    "reranker_memory_bytes": 8589934592,
+    "reranker_threads": 4,
+    "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "reranker_path": "../runtime/reranker",
+    "writer_context_tokens": 258400,
+    "writer_input_tokens": 240000,
+    "writer_output_tokens": 12000,
+    "writer_transport_tokens": 4096,
+    "stage_context_bytes": 250000,
+    "final_writing_reserve_seconds": 300,
+    "invocation_seconds": 900,
+    "export_seconds": 120,
+    "company_provider_seconds": 600,
+    "company_observable_tokens": 12000,
+    "command_seconds": 21600,
+    "command_calls": null,
+    "command_provider_seconds": 3600,
+    "command_observable_tokens": 40000,
+    "writing_calls_reserve": 6,
+    "reviewer_model": "gpt-6-astra",
+    "reviewer_effort": "medium",
+    "web_verification": false,
+    "information_cutoff": "2026-09-12",
+    "search_env_file": ".env"
+  },
+  "environment": {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "TOKENIZERS_PARALLELISM": "false"
+  },
+  "required_research_roles": [
+    "industry",
+    "company"
+  ],
+  "planning_constraints": {
+    "instruction": "Plan one comprehensive industry task and one comprehensive company task from the original brief. Each task may contain multiple questions and must preserve all assigned requirements. Choose focused queries and context opens; stop when sufficient original support is gathered. Aim to complete research efficiently and leave time for synthesis, review and correction. No task-specific call or token quota applies."
+  },
+  "acceptance_provenance": {
+    "basis": "Original photomask brief/full five-source corpus; no imported answers or stage outputs. Offline fixed-corpus example; enabling web verification requires an explicit local setting and verify-report command.",
+    "limits": "Six-hour wall-clock ceiling; no generative-call or cumulative token/time quotas; usage telemetry, real context/output capacity, cancellation, provider watchdog and hardware guards retained.",
+    "cutoff": "2026-09-12; later or uncertain dates require qualification."
+  }
+}
