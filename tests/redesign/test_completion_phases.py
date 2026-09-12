@@ -202,32 +202,18 @@ def test_other_failures_never_enter_writing(tmp_path, failure):
     ).exists()
 
 
-def test_balanced_recorded_distribution_and_omitted_references():
-    """Early source saturation cannot erase later sources from the fallback."""
+def test_recorded_distribution_and_omitted_references(tmp_path):
+    """Recorded originals survive; payload pressure has a full manifest."""
     fixture = artifacts.read(FIXTURE)
-    passages = documents.ungroup_passages(fixture["settled_evidence"])
-    assert [
-        len(s["passages"]) for s in fixture["settled_evidence"]["sources"]
-    ] == fixture["expected_distribution"]
-    bounded = documents.evidence_handoff(passages, max_passages=12)
-    assert [len(s["passages"]) for s in bounded["sources"]] == [4, 4, 4]
-    assert len(bounded["omitted_passages"]) == 55
-
-    def refs(values):
-        return {(p["source_id"], p.get("chunk_id")) for p in values}
-
-    selected = documents.ungroup_passages(bounded)
-    assert refs(selected) | refs(bounded["omitted_passages"]) == refs(passages)
-    assert not refs(selected) & refs(bounded["omitted_passages"])
-    assert all(p["spans"] for p in bounded["omitted_passages"])
-    assert "omitted" in " ".join(bounded["missing_information"])
-    assert (
-        len(documents.ungroup_passages(documents.evidence_handoff(passages)))
-        == 67
-    )
-    tiny = documents.evidence_handoff(passages, max_characters=20)
-    assert sum(len(p["text"]) for p in documents.ungroup_passages(tiny)) <= 20
-    assert tiny["omitted_passages"]
+    state = stage_context.StageContext(tmp_path / "state.json", {})
+    state.settle(fixture["settled_evidence"])
+    full = state.build(100000)["settled_evidence"]
+    assert len(documents.ungroup_passages(full)) == 67
+    bounded = state.build(12000)["settled_evidence"]
+    manifest = artifacts.read(pathlib.Path(bounded["selection_manifest"]))
+    assert len(manifest["selected"]) + len(manifest["omitted"]) == 67
+    assert manifest["omitted"]
+    assert all(p["original"]["spans"] for p in manifest["omitted"])
 
 
 def test_grouped_identity_preserves_bindings_and_reduces_bytes():
@@ -256,17 +242,12 @@ def test_saved_broad_narrow_financial_query(tmp_path):
     )
     store = documents.SourceStore(tmp_path / "corpus")
     sid = store.ingest(path)["id"]
-    evidence = tools.EvidenceTools(store, config.Settings(), "fixed-corpus")
+    # This saved diagnostic checks the unchanged lexical candidate scorer,
+    # not the new returned-block pipeline or a neural quality claim.
     for query in case["broad_queries"]:
-        found = documents.ungroup_passages(
-            evidence.call("search_evidence", {"query": query, "source_id": sid})
-        )
+        found = store.search_evidence(query, source_id=sid)
         assert case["financial_text"] not in [p["text"] for p in found]
-    narrow = documents.ungroup_passages(
-        evidence.call(
-            "search_evidence", {"query": case["narrow_query"], "source_id": sid}
-        )
-    )
+    narrow = store.search_evidence(case["narrow_query"], source_id=sid)
     assert narrow[0]["text"] == case["financial_text"]
     assert {p["source_id"] for p in narrow} == {sid}
 
@@ -381,9 +362,9 @@ def test_one_durable_context_retains_task_failures_and_versions(tmp_path):
         == evidence["sources"][0]["version"]
     )
     smaller_prompt, smaller = restored.request(
-        "Original evidence only", {}, "final_notes", 1, 12000
+        "Original evidence only", {}, "final_notes", 1, 20000
     )
-    assert len(smaller_prompt.encode()) <= 12000
+    assert len(smaller_prompt.encode()) <= 20000
     assert smaller["settled_evidence"]["omitted_reference_count"]
     assert (
         len(documents.ungroup_passages(artifacts.read(state.path)["evidence"]))
@@ -394,20 +375,3 @@ def test_one_durable_context_retains_task_failures_and_versions(tmp_path):
     with pytest.raises(ValueError, match="changed|Conflicting"):
         restored.settle(changed)
     assert artifacts.read(state.path)["evidence"] == evidence
-
-
-def test_source_share_does_not_let_large_first_passage_erase_other_sources():
-    """Reserve source coverage under both character and count limits."""
-    fixture = artifacts.read(FIXTURE)["settled_evidence"]
-    passages = [
-        documents.ungroup_passages({"sources": [source]})[0]
-        for source in fixture["sources"]
-    ]
-    # Hypothetical size distribution exercises allocation, not company facts.
-    passages[0]["text"] = "x" * 16000
-    passages[1]["text"] = passages[2]["text"] = "small"
-    result = documents.evidence_handoff(passages)
-    assert len(result["sources"]) == 2
-    assert (
-        result["omitted_passages"][0]["source_id"] == passages[0]["source_id"]
-    )

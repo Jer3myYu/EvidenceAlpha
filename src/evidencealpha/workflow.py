@@ -1,6 +1,7 @@
 """One bounded research workflow with portable stage inputs and replay."""
 
 import concurrent.futures
+import copy
 import dataclasses
 import json
 import math
@@ -16,6 +17,8 @@ from evidencealpha import config
 from evidencealpha import documents
 from evidencealpha import providers
 from evidencealpha import render
+from evidencealpha import retrieval
+from evidencealpha import reranking
 from evidencealpha import stage_context
 from evidencealpha import tools
 
@@ -71,6 +74,13 @@ class StageRunner:
         final_notes_only: bool = False,
     ) -> dict:
         """Record a new attempt."""
+        stage_tools = copy.copy(self.tools)
+        scorer = self.tools.retriever.scorer
+        stage_tools.retriever = retrieval.Retriever(
+            self.tools.store,
+            self.settings,
+            None if isinstance(scorer, reranking.LocalReranker) else scorer,
+        )
         folder = root / "stages" / stage / uuid.uuid4().hex[:12]
         folder.mkdir(parents=True)
         prompt_path = pathlib.Path(__file__).parent / "prompts"
@@ -88,10 +98,10 @@ class StageRunner:
             "final_notes_only": final_notes_only,
             "portable": portable,
             "instructions": instructions,
-            "tools": self.tools.definitions(),
+            "tools": stage_tools.definitions(),
             "settings": dataclasses.asdict(settings),
             "prompt_version": config.PROMPT_VERSION,
-            "mode": self.tools.mode,
+            "mode": stage_tools.mode,
             "native_tool_enforcement": (
                 "no provider calls"
                 if isinstance(self.provider, providers.FixtureProvider)
@@ -104,6 +114,7 @@ class StageRunner:
             ),
         }
         artifacts.write(folder / "input.json", record)
+        stage_tools.retriever.trace_dir = folder / "retrieval"
         context = stage_context.StageContext(
             folder / "context-state.json",
             {k: v for k, v in portable.items() if k != "settled_evidence"},
@@ -141,6 +152,8 @@ class StageRunner:
                 "final_notes_only": final_notes_only,
             },
         )
+        tool_count = 0
+        requested_writing = False
         phase = "evidence"
         longest_call = 0.0
         phase_outcomes = []
@@ -151,11 +164,28 @@ class StageRunner:
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
                     final_notes_only
+                    or requested_writing
+                    or tool_count >= self.settings.stage_tool_limit
                     or turn == self.settings.tool_rounds - 1
                     or evidence_remaining <= longest_call
                     or (role == "revision" and turn >= 2)
                 )
                 if phase == "evidence" and should_write:
+                    context.data["stop_reason"] = context.data[
+                        "stop_reason"
+                    ] or (
+                        "tool_limit"
+                        if tool_count >= self.settings.stage_tool_limit
+                        else (
+                            "turn_limit"
+                            if turn == self.settings.tool_rounds - 1
+                            else (
+                                "writing_requested"
+                                if requested_writing or final_notes_only
+                                else "protected_writing_deadline"
+                            )
+                        )
+                    )
                     phase = "final_notes"
                     if not phase_outcomes:
                         phase_outcomes.append(
@@ -190,12 +220,31 @@ class StageRunner:
                     raise providers.ProviderError("Stage deadline expired")
                 call_dir = folder / f"call-{turn}"
                 available_tools = {} if final_turn else record["tools"]
+                if (
+                    isinstance(
+                        self.provider,
+                        (providers.CodexProvider, providers.ClaudeProvider),
+                    )
+                    and not self.settings.writer_context_tokens
+                ):
+                    raise ValueError(
+                        "Writer capacity unconfirmed; live admission blocked"
+                    )
+                input_tokens = self.settings.writer_input_tokens
+                if self.settings.writer_context_tokens:
+                    input_tokens = min(
+                        input_tokens,
+                        self.settings.writer_context_tokens
+                        - self.settings.writer_output_tokens
+                        - self.settings.writer_transport_tokens,
+                    )
                 prompt, current_context = context.request(
                     instructions,
                     available_tools,
                     phase,
                     self.settings.tool_rounds - turn,
                     self.settings.stage_context_bytes,
+                    input_tokens,
                 )
                 artifacts.write(call_dir / "context.json", current_context)
                 if final_turn:
@@ -326,15 +375,37 @@ class StageRunner:
                 if time.monotonic() >= deadline:
                     raise providers.ProviderError("Stage deadline expired")
                 output = parse_output(result.text, role)
+                try:
+                    context.update_coverage(
+                        output.get("coverage_updates", []),
+                        output.get("stop_reason"),
+                    )
+                except (ValueError, KeyError, TypeError) as exc:
+                    context.outcome(
+                        "coverage_update", {}, {"error": str(exc)}, "error"
+                    )
                 if output.get("content") and output.get("tool_calls"):
                     context.outcome(
                         "research_note", {}, output["content"], "unverified"
                     )
                 if not output.get("tool_calls"):
+                    if not final_turn and role in (
+                        "company",
+                        "industry",
+                        "revision",
+                    ):
+                        requested_writing = True
+                        context.outcome(
+                            "research_note",
+                            {},
+                            output.get("content", ""),
+                            "unverified",
+                        )
+                        continue
                     if role in ("review", "recheck"):
                         for issue in output["issues"]:
                             for ref in issue.get("original_passages", []):
-                                original = self.tools.store.open_source(
+                                original = stage_tools.store.open_source(
                                     ref["source_id"], ref["chunk_id"]
                                 )
                                 if ref["quote"] not in original["text"]:
@@ -361,7 +432,11 @@ class StageRunner:
                         "Final response requested tools"
                     )
                 for index, call in enumerate(output["tool_calls"]):
-                    if time.monotonic() >= evidence_end:
+                    if (
+                        time.monotonic() >= evidence_end
+                        or tool_count >= self.settings.stage_tool_limit
+                        or index >= self.settings.turn_tool_limit
+                    ):
                         for pending in output["tool_calls"][index:]:
                             context.outcome(
                                 pending["name"],
@@ -371,11 +446,15 @@ class StageRunner:
                             )
                         break
                     source_versions = {
-                        s["id"]: s["hash"] for s in self.tools.store.sources()
+                        s["id"]: s["hash"] for s in stage_tools.store.sources()
                     }
+                    tool_count += 1
                     tool_started = time.monotonic()
                     try:
-                        value = self.tools.call(
+                        qid = call["arguments"].get("question_id")
+                        if qid and qid not in context.data["questions"]:
+                            raise ValueError("Unknown tool question ID")
+                        value = stage_tools.call(
                             call["name"],
                             call["arguments"],
                             deadline=evidence_end,
@@ -397,7 +476,9 @@ class StageRunner:
                         seconds=time.monotonic() - tool_started,
                     )
                     if isinstance(value, dict):
-                        context.settle(value)
+                        context.settle(
+                            value, call["arguments"].get("question_id")
+                        )
                     context.outcome(call["name"], call["arguments"], value)
             raise providers.ProviderError(
                 "Tool-round limit reached; no final output"
@@ -444,6 +525,16 @@ class StageRunner:
                 raise ResearchHandoffError(str(exc), handoff) from exc
             raise
         finally:
+            stage_tools.retriever.close()
+            artifacts.write(
+                folder / "work-usage.json",
+                {
+                    "tool_executions": tool_count,
+                    "reranker_pairs": stage_tools.retriever.pairs,
+                    "retrieval_seconds": stage_tools.retriever.seconds,
+                    "stop_reason": context.data["stop_reason"],
+                },
+            )
             artifacts.write(
                 folder / "status.json",
                 {"status": status, "completed": artifacts.now()},

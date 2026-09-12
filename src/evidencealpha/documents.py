@@ -2,7 +2,6 @@
 
 import dataclasses
 import copy
-import math
 import pathlib
 import re
 import threading
@@ -11,10 +10,11 @@ import bs4
 import pymupdf
 
 from evidencealpha import artifacts
+from evidencealpha import retrieval
+from evidencealpha import reading
 
 PARSER_VERSION = "structural-2-reading-order"
 CHUNK_VERSION = "spans-1"
-EMBEDDING_VERSION = "normalized-cosine-1"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -53,7 +53,13 @@ def group_passages(passages: list[dict]) -> dict:
         groups[source_id]["passages"].append(
             {
                 key: passage[key]
-                for key in ("chunk_id", "text", "spans")
+                for key in (
+                    "chunk_id",
+                    "text",
+                    "spans",
+                    "block_ids",
+                    "chunk_refs",
+                )
                 if key in passage
             }
         )
@@ -72,78 +78,6 @@ def ungroup_passages(result: dict) -> list[dict]:
         for source in result.get("sources", [])
         for passage in source["passages"]
     ]
-
-
-def evidence_handoff(
-    passages: list[dict], max_passages: int = 96, max_characters: int = 16000
-) -> dict:
-    """Share text capacity across sources; retain every omitted locator.
-
-    Full settled evidence remains on disk. Selected text is bounded, and its
-    status must not imply that a researcher verified a finding.
-    """
-    grouped = group_passages(passages)["sources"]
-    selected, pending = [], []
-    characters = 0
-    count_share = max_passages // max(1, len(grouped))
-    text_share = max_characters // max(1, len(grouped))
-    # Allocate across sources before redistributing unused space. Never split
-    # original text just to make a large first document consume the allowance.
-    for source in grouped:
-        used, count = 0, 0
-        for item in source["passages"]:
-            passage = {
-                **{k: v for k, v in source.items() if k != "passages"},
-                **item,
-            }
-            size = len(passage["text"])
-            if count < count_share and used + size <= text_share:
-                selected.append(passage)
-                used += size
-                count += 1
-                characters += size
-            else:
-                pending.append(passage)
-    omitted = []
-    for passage in pending:
-        size = len(passage["text"])
-        if len(selected) < max_passages and characters + size <= max_characters:
-            selected.append(passage)
-            characters += size
-        else:
-            omitted.append(
-                {
-                    k: passage[k]
-                    for k in ("source_id", "version", "chunk_id", "spans")
-                    if k in passage
-                }
-            )
-    return {
-        "status": "unsynthesized_evidence",
-        "limitation": "Retrieved originals, not verified findings. Missing "
-        "coverage and omitted text must remain explicit in final notes.",
-        **group_passages(selected),
-        "omitted_passages": omitted,
-        "missing_information": [
-            "No final researcher assessment is available.",
-            *(
-                ["Some retrieved text was omitted; exact references retained."]
-                if omitted
-                else []
-            ),
-            *(
-                ["No settled original passages available."]
-                if not passages
-                else []
-            ),
-        ],
-        "selection": {
-            "max_passages": max_passages,
-            "max_characters": max_characters,
-            "selected": len(selected),
-            "omitted": len(omitted),
-        },
-    }
 
 
 def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
@@ -262,8 +196,6 @@ class SourceStore:
         self.chunk_characters = chunk_characters
         self._lock = threading.RLock()
         self._validated: dict[str, tuple] = {}
-        self._embedding_models: dict[str, object] = {}
-        self._embedding_index: dict[tuple, object] = {}
 
     def _validated_source(self, source_id: str) -> tuple[dict, str]:
         folder = artifacts.contained(self.root, source_id)
@@ -466,7 +398,11 @@ class SourceStore:
         }
 
     def surrounding_passages(
-        self, source_id: str, chunk_id: str, surrounding: int = 0
+        self,
+        source_id: str,
+        chunk_id: str,
+        surrounding: int = 0,
+        max_characters: int = 8000,
     ) -> list[dict]:
         """Open neighboring original blocks in document reading order.
 
@@ -480,52 +416,30 @@ class SourceStore:
             or not 0 <= surrounding <= 2
         ):
             raise ValueError("surrounding must be an integer from 0 to 2")
-        source, _ = self._validated_source(source_id)
-        ids = [chunk["id"] for chunk in source["chunks"]]
-        if chunk_id not in ids:
-            raise ValueError("Unknown chunk; use the exact chunk_id")
-        selected = {chunk_id}
-        if surrounding:
-            blocks = source["blocks"]
-            if pathlib.Path(source["original_path"]).suffix.lower() == ".pdf":
-                # Also repair navigation over immutable older corpus versions.
-                blocks = sorted(
-                    blocks,
-                    key=lambda b: (b["page"], b["bbox"][1], b["bbox"][0]),
-                )
-            block_ids = [b["id"] for b in blocks]
-            center = source["chunks"][ids.index(chunk_id)]
-            neighbors = set()
-            for block_id in center["block_ids"]:
-                index = block_ids.index(block_id)
-                neighbors.update(
-                    block_ids[
-                        max(0, index - surrounding) : index + surrounding + 1
-                    ]
-                )
-            selected = {
-                chunk["id"]
-                for chunk in source["chunks"]
-                if neighbors.intersection(chunk["block_ids"])
-            }
-            order = {bid: i for i, bid in enumerate(block_ids)}
-            ids = [
-                c["id"]
-                for c in sorted(
-                    source["chunks"],
-                    key=lambda c: min(order[bid] for bid in c["block_ids"]),
-                )
-            ]
-        passages = [
-            self.concise_passage(self.open_source(source_id, item))
-            for item in ids
-            if item in selected
-        ]
-        if sum(len(item["text"]) for item in passages) > 8000:
+        if surrounding == 0:
+            return [self.concise_passage(self.open_source(source_id, chunk_id))]
+        result = reading.window(
+            self,
+            source_id,
+            chunk_id,
+            surrounding=surrounding,
+            characters=max_characters,
+        )
+        if result["status"] != "complete_window":
             raise ValueError(
-                "Window exceeds 8000 characters; narrow the window"
+                f"Window exceeds {max_characters} characters; narrow the window"
             )
-        return passages
+        # Compatibility callers ask for exact old chunks. New runtime callers
+        # use the same window directly, including continuations and block refs.
+        ids = dict.fromkeys(
+            ref["chunk_id"]
+            for p in result["passages"]
+            for ref in p["chunk_refs"]
+        )
+        return [
+            self.concise_passage(self.open_source(source_id, cid))
+            for cid in ids
+        ]
 
     @staticmethod
     def _context(folder: pathlib.Path) -> str | None:
@@ -595,89 +509,11 @@ class SourceStore:
     ) -> list[dict]:
         """Rank original passages lexically."""
 
-        def tokens(value: str) -> set[str]:
-            words = set(
-                re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]", value.lower())
+        if embedding_model:
+            raise ValueError(
+                "Embedding fusion is not part of coherent retrieval"
             )
-            words.update(
-                value[i : i + 2]
-                for i in range(len(value) - 1)
-                if "\u3400" <= value[i] <= "\u9fff"
-            )
-            return words
-
-        sources = self.sources()
-        if source_id is not None and source_id not in {
-            s["id"] for s in sources
-        }:
-            raise ValueError("Unknown source scope")
-        passages = []
-        for source in sources:
-            source, text = self._validated_source(source["id"])
-            context = self._context(self.root / source["id"])
-            passages.extend(
-                self._passage(source, text, chunk, context)
-                for chunk in source["chunks"]
-            )
-        wanted = tokens(query)
-        scores = [
-            len(
-                wanted
-                & tokens(p["text"] + " " + (p["generated_context"] or ""))
-            )
-            / math.sqrt(max(1, len(tokens(p["text"]))))
-            for p in passages
+        return [
+            item["passage"]
+            for item in retrieval.candidates(self, query, source_id, limit)
         ]
-        if embedding_model and passages:
-            # Explicit opt-in: never download or introduce an embedding API.
-            # Optional dependency stays lazy to keep lexical startup small.
-            # pylint: disable=import-outside-toplevel
-            import sentence_transformers
-
-            key = (
-                embedding_model,
-                PARSER_VERSION,
-                CHUNK_VERSION,
-                EMBEDDING_VERSION,
-                tuple(
-                    (
-                        s["id"],
-                        s["hash"],
-                        s["text_hash"],
-                        s["parser_version"],
-                        s["chunker_version"],
-                    )
-                    for s in sources
-                ),
-            )
-            with self._lock:
-                if embedding_model not in self._embedding_models:
-                    self._embedding_models[embedding_model] = (
-                        sentence_transformers.SentenceTransformer(
-                            embedding_model, local_files_only=True
-                        )
-                    )
-                model = self._embedding_models[embedding_model]
-                if key not in self._embedding_index:
-                    # Retain the current index only, not every corpus revision.
-                    self._embedding_index = {
-                        key: model.encode(
-                            [p["text"] for p in passages],
-                            normalize_embeddings=True,
-                        )
-                    }
-                vectors = self._embedding_index[key]
-                query_vector = model.encode([query], normalize_embeddings=True)[
-                    0
-                ]
-            scores = [
-                score + float(query_vector @ vector)
-                for score, vector in zip(scores, vectors)
-            ]
-        ranked = sorted(zip(scores, passages), key=lambda pair: -pair[0])
-        if source_id is not None:
-            # Filter before top-k while retaining one reusable corpus index.
-            ranked = [
-                pair for pair in ranked if pair[1]["source_id"] == source_id
-            ]
-        return [p for score, p in ranked[:limit] if score > 0]

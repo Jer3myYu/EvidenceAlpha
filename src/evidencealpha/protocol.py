@@ -22,10 +22,14 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     tools = {
         "search_evidence": {
             "query": string,
+            "question_id": {"type": ["string", "null"]},
             "source_id": {"type": ["string", "null"]},
         },
         "open_source": {
             "source_id": string,
+            "question_id": {"type": ["string", "null"]},
+            "page": {"type": ["integer", "null"], "minimum": 1},
+            "continuation": {"type": ["string", "null"]},
             "chunk_id": {"type": ["string", "null"]},
             "surrounding": {"type": "integer", "minimum": 0, "maximum": 2},
         },
@@ -47,6 +51,29 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
     schema = record(
         {
             "content": string,
+            "stop_reason": {"type": ["string", "null"]},
+            "coverage_updates": array(
+                record(
+                    {
+                        "question_id": string,
+                        "parent_id": {"type": ["string", "null"]},
+                        "question": string,
+                        "state": choice(
+                            [
+                                "unresolved",
+                                "partial",
+                                "supported",
+                                "conflicting",
+                            ]
+                        ),
+                        "bundle_ids": array(string),
+                        "adequacy": choice(["adequate", "unassessed"]),
+                        "exploration": choice(["active", "exhausted"]),
+                        "next_gap": string,
+                        "next_action": string,
+                    }
+                )
+            ),
             "tool_calls": array(
                 {
                     "anyOf": [

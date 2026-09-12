@@ -15,6 +15,7 @@ from evidencealpha import artifacts
 from evidencealpha import config
 from evidencealpha import claude_runner
 from evidencealpha import protocol
+from evidencealpha import reranking
 
 _ACTIVE: set[int] = set()
 _CANCELLED: set[int] = set()
@@ -23,6 +24,7 @@ _ACTIVE_LOCK = threading.Lock()
 
 def cancel_all() -> None:
     """Terminate active provider groups before controller cancellation exits."""
+    reranking.cancel_all()
     with _ACTIVE_LOCK:
         for pid in _ACTIVE:
             _CANCELLED.add(pid)

@@ -6,7 +6,7 @@ import pathlib
 
 RUNTIME_MODEL = "gpt-5.6-sol"
 REHEARSAL_MODEL = "gpt-5.5"
-PROMPT_VERSION = "redesign-3-phases"
+PROMPT_VERSION = "coherent-retrieval-1"
 LIMITS = {
     "session_seconds": 28800,
     "isolated_attempts": 10,
@@ -47,7 +47,26 @@ class Settings:
     runs_dir: str = "data/redesign/runs"
     ledger: str = "docs/redesign/RUN_BUDGET.json"
     chunk_characters: int = 1600
-    retrieval_limit: int = 6
+    retrieval_limit: int = 6  # Legacy settings reader; now reading-block limit.
+    candidate_limit: int = 64
+    reading_window_characters: int = 8000
+    retrieval_mode: str = "rerank"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_revision: str = "953dc6f"
+    reranker_path: str | None = None
+    reranker_pair_tokens: int = 1024
+    reranker_query_tokens: int = 128
+    reranker_search_seconds: int = 30
+    reranker_stage_seconds: int = 120
+    reranker_stage_pairs: int = 2048
+    reranker_memory_bytes: int = 8 * 1024**3
+    reranker_threads: int = 4
+    stage_tool_limit: int = 32
+    turn_tool_limit: int = 8
+    writer_input_tokens: int = 64000
+    writer_context_tokens: int | None = None
+    writer_output_tokens: int = 12000
+    writer_transport_tokens: int = 4096
     source_open_characters: int = 24000
     embedding_model: str | None = None
     search_env_file: str | None = None
@@ -77,7 +96,25 @@ class Settings:
             value <= 0 for value in self.stage_allocations
         ):
             raise ValueError("Six positive stage allocations required")
+        if self.retrieval_mode not in ("rerank", "degraded_lexical"):
+            raise ValueError("Unknown retrieval mode")
+        if self.embedding_model:
+            raise ValueError("Embedding fusion is retired; use retrieval_mode")
         for value in (
+            self.candidate_limit,
+            self.reading_window_characters,
+            self.reranker_pair_tokens,
+            self.reranker_query_tokens,
+            self.reranker_search_seconds,
+            self.reranker_stage_seconds,
+            self.reranker_stage_pairs,
+            self.reranker_memory_bytes,
+            self.reranker_threads,
+            self.stage_tool_limit,
+            self.turn_tool_limit,
+            self.writer_input_tokens,
+            self.writer_output_tokens,
+            self.writer_transport_tokens,
             self.chunk_characters,
             self.retrieval_limit,
             self.source_open_characters,

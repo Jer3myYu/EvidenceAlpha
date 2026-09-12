@@ -166,7 +166,7 @@ def export(markdown_path: pathlib.Path) -> dict:
         for node in list(table.find_all(string=True)):
             node.replace_with(
                 re.sub(
-                    r"[A-Za-z0-9]{40,}",
+                    r"[\x21-\x7e]{16,}",
                     lambda match: "\u200b".join(
                         match[0][i : i + 12]
                         for i in range(0, len(match[0]), 12)
@@ -191,8 +191,9 @@ def export(markdown_path: pathlib.Path) -> dict:
         "pdf": None,
         "pdf_status": "pending",
     }
+    buffer = io.BytesIO()
+    diagnostics = {}
     try:
-        buffer = io.BytesIO()
         writer = pymupdf.DocumentWriter(buffer)
         try:
             story = pymupdf.Story(
@@ -221,6 +222,8 @@ def export(markdown_path: pathlib.Path) -> dict:
                     "NFKC", "".join(page.get_text() for page in document)
                 ),
             )
+            diagnostics["extracted_text"] = packed
+            diagnostics["pages"] = len(document)
             # Detect visible omissions in body/table text; this is
             # not semantic review.
             for image in soup.find_all("img"):
@@ -232,6 +235,7 @@ def export(markdown_path: pathlib.Path) -> dict:
                     unicodedata.normalize("NFKC", html.unescape(str(node))),
                 )
                 if fragment and fragment not in packed:
+                    diagnostics["missing_fragment"] = fragment
                     raise ValueError(f"PDF omitted text: {fragment[:60]}")
             if len(document) == 0:
                 raise ValueError("PDF contains no pages")
@@ -243,6 +247,24 @@ def export(markdown_path: pathlib.Path) -> dict:
         status.update(pdf=str(pdf_path), pdf_status="complete")
     except (RuntimeError, ValueError, OSError) as exc:
         status["error"] = str(exc)
+        if buffer.getvalue():
+            rejected = markdown_path.with_name(
+                markdown_path.stem
+                + ".rejected-"
+                + artifacts.digest(buffer.getvalue())[:12]
+                + ".pdf"
+            )
+            artifacts.write(rejected, buffer.getvalue())
+            artifacts.write(
+                rejected.with_suffix(".json"),
+                {
+                    **diagnostics,
+                    "error": str(exc),
+                    "markdown_hash": status["markdown_hash"],
+                    "pdf_hash": artifacts.digest(buffer.getvalue()),
+                },
+            )
+            status["rejected_pdf"] = str(rejected)
         # A prior PDF must not be mistaken for the new canonical version.
         if pdf_path.exists():
             pdf_path.rename(pdf_path.with_name(pdf_path.stem + ".previous.pdf"))

@@ -20,15 +20,25 @@ from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import documents
 from evidencealpha import providers
+from evidencealpha import retrieval
+from evidencealpha import reading
+from evidencealpha import reranking
 
 TOOL_DEFINITIONS = {
-    "search_evidence": {"query": "string", "source_id": "optional source ID"},
+    "search_evidence": {
+        "query": "focused question",
+        "source_id": "optional source ID",
+        "question_id": "task question ID",
+    },
     "open_source": {
         "source_id": "string",
+        "question_id": "task question ID",
+        "page": "optional original page; exclusive with chunk/continuation",
+        "continuation": "optional exact version-bound cursor",
         "chunk_id": "optional exact returned ID, e.g. c30, not 30",
         "surrounding": (
             "0: exact chunk; 1..2: complete neighboring paragraph/table "
-            "blocks per side in page reading order, up to 8000 characters"
+            "blocks per side in page order, under the configured window limit"
         ),
     },
     "search_web": {"query": "string"},
@@ -49,11 +59,13 @@ class EvidenceTools:
         settings: config.Settings,
         mode: str,
         ledger: budget.Ledger | None = None,
+        scorer: reranking.Scorer | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self.mode = mode
         self.ledger = ledger
+        self.retriever = retrieval.Retriever(store, settings, scorer)
 
     def definitions(self) -> dict:
         """Expose only capabilities permitted by this execution mode."""
@@ -85,26 +97,48 @@ class EvidenceTools:
                     raise ValueError("Conflicting source scopes")
                 source_id = scopes[0]
                 query = re.sub(r"\bsource_id:[a-f0-9]{64}\b", "", query).strip()
-            return documents.group_passages(
-                [
-                    self.store.concise_passage(passage)
-                    for passage in self.store.search_evidence(
-                        query,
-                        self.settings.retrieval_limit,
-                        self.settings.embedding_model,
-                        source_id,
-                    )
-                ]
+            result = self.retriever.search(
+                query, source_id, arguments.get("question_id"), deadline
             )
+            if result["retrieval_status"] == "reranker_cancelled":
+                raise providers.ProviderCancelled("Local retrieval cancelled")
+            passages = result.pop("passages")
+            if result.get("error") is None:
+                result.pop("error", None)
+            return {**documents.group_passages(passages), **result}
         if name == "open_source":
             source_id = arguments["source_id"]
             chunk_id = arguments.get("chunk_id")
             surrounding = arguments.get("surrounding") or 0
-            if chunk_id is not None:
-                passages = self.store.surrounding_passages(
-                    source_id, chunk_id, surrounding
+            if (
+                chunk_id is not None
+                and not surrounding
+                and arguments.get("page") is None
+                and not arguments.get("continuation")
+            ):
+                passage = self.store.concise_passage(
+                    self.store.open_source(source_id, chunk_id)
                 )
-                return documents.group_passages(passages)
+                return documents.group_passages([passage])
+            if (
+                chunk_id is not None
+                or arguments.get("page") is not None
+                or arguments.get("continuation")
+            ):
+                block = reading.window(
+                    self.store,
+                    source_id,
+                    chunk_id,
+                    surrounding=surrounding,
+                    page=arguments.get("page"),
+                    continuation=arguments.get("continuation"),
+                    characters=self.settings.reading_window_characters,
+                )
+                return {
+                    **documents.group_passages(block["passages"]),
+                    "reading_blocks": [block],
+                    "question_id": arguments.get("question_id"),
+                }
             if surrounding:
                 raise ValueError("Surrounding retrieval requires a chunk_id")
             result = self.store.open_source(source_id)

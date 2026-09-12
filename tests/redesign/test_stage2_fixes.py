@@ -6,12 +6,10 @@ import pathlib
 import sys
 import threading
 import time
-import types
 from unittest import mock
 
 import claude_agent_sdk
 import jsonschema
-import numpy
 import pymupdf
 import pytest
 
@@ -144,31 +142,11 @@ def test_source_cache_reads_original_once_and_detects_mutation(tmp_path):
         store.search_evidence("service")
 
 
-def test_embedding_index_is_reused_and_invalidated_by_new_source(tmp_path):
-    """Only queries are embedded again until corpus membership changes."""
+def test_retired_embedding_fusion_is_explicitly_rejected(tmp_path):
+    """Historical vector-score addition cannot silently enter the new path."""
     store = documents.SourceStore(tmp_path / "corpus", 80)
-    store.ingest(FIXTURES / "service.html")
-    batches = []
-
-    class Encoder:
-        """Offline instrumented embedding boundary."""
-
-        def encode(self, texts, **_kwargs):
-            """Return deterministic vectors and retain invocation shapes."""
-            batches.append(texts)
-            return numpy.ones((len(texts), 2))
-
-    constructor = mock.Mock(return_value=Encoder())
-    module = types.SimpleNamespace(SentenceTransformer=constructor)
-    with mock.patch.dict(sys.modules, {"sentence_transformers": module}):
-        store.search_evidence("first", embedding_model="local-test")
-        store.search_evidence("second", embedding_model="local-test")
-        store.ingest(FIXTURES / "manufacturing.html")
-        store.search_evidence("third", embedding_model="local-test")
-    assert constructor.call_count == 1
-    assert [len(batch) for batch in batches][1:3] == [1, 1]
-    assert len(batches) == 5
-    assert len(batches[3]) > len(batches[0])
+    with pytest.raises(ValueError, match="Embedding fusion"):
+        store.search_evidence("query", embedding_model="local-test")
 
 
 def test_research_leaves_downstream_time_when_plan_is_slow(tmp_path):
@@ -271,13 +249,19 @@ def test_strict_output_schema_preserves_roles_and_limits_tool_names():
         "tasks": [],
         "figures": [],
         "issues": [],
+        "coverage_updates": [],
+        "stop_reason": None,
     }
     value = {
         **envelope,
         "tool_calls": [
             {
                 "name": "search_evidence",
-                "arguments": {"query": "original", "source_id": None},
+                "arguments": {
+                    "query": "original",
+                    "source_id": None,
+                    "question_id": None,
+                },
             }
         ],
     }
@@ -303,7 +287,11 @@ def test_source_scope_excludes_competing_documents_before_top_k(tmp_path):
     target.write_text("revenue 2024")
     store.ingest(first)
     source = store.ingest(target)
-    evidence = tools.EvidenceTools(store, config.Settings(), "fixed-corpus")
+    evidence = tools.EvidenceTools(
+        store,
+        config.Settings(retrieval_mode="degraded_lexical"),
+        "fixed-corpus",
+    )
     explicit = evidence.call(
         "search_evidence", {"query": "revenue 2025", "source_id": source["id"]}
     )
@@ -326,6 +314,8 @@ def test_last_round_returns_notes_instead_of_discarding_research(tmp_path):
         "tasks": [],
         "figures": [],
         "issues": [],
+        "coverage_updates": [],
+        "stop_reason": None,
     }
     tool_output = {
         **output,
