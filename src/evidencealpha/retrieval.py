@@ -80,7 +80,9 @@ class Retriever:
         store: documents.SourceStore,
         settings: config.Settings,
         scorer: reranking.Scorer | None = None,
+        candidate_provider: typing.Callable | None = None,
     ) -> None:
+        self.candidate_provider = candidate_provider or candidates
         self.cancelled = threading.Event()
         self.store = store
         self.settings = settings
@@ -119,7 +121,7 @@ class Retriever:
         ranked, pool, views = [], [], []
         try:
             with preparation.guard(deadline, self.cancelled) as check:
-                pool = candidates(
+                pool = self.candidate_provider(
                     self.store,
                     query,
                     source_id,
@@ -148,6 +150,15 @@ class Retriever:
                             "spans": p["spans"],
                             "lexical_rank": candidate["lexical_rank"],
                             "lexical_score": candidate["lexical_score"],
+                            **(
+                                {
+                                    "candidate_provenance": candidate[
+                                        "candidate_provenance"
+                                    ]
+                                }
+                                if "candidate_provenance" in candidate
+                                else {}
+                            ),
                             "context": view,
                         }
                     )
