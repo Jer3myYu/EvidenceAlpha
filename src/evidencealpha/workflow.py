@@ -150,6 +150,12 @@ class StageRunner:
             ),
             key=lambda item: item[0],
         )
+        live_execution = isinstance(self.ledger, budget.ExecutionLedger)
+        if live_execution:
+            deadline = started_stage + max(
+                0, self.campaign_attempt["deadline"] - time.time()
+            )
+            stage_limit = "campaign_elapsed"
         duration = max(0, deadline - started_stage)
         reserve = min(self.settings.final_writing_reserve_seconds, duration)
         evidence_end = (
@@ -159,6 +165,8 @@ class StageRunner:
         )
         if final_notes_only:
             evidence_end = started_stage
+        if live_execution and not final_notes_only:
+            evidence_end = deadline
         final_end = deadline
         artifacts.write(
             folder / "timing.json",
@@ -196,9 +204,9 @@ class StageRunner:
                 )
                 for call in pending.get("tool_calls", []):
                     if (
-                        tool_count >= self.settings.stage_tool_limit
-                        or time.monotonic() >= evidence_end
-                    ):
+                        not live_execution
+                        and tool_count >= self.settings.stage_tool_limit
+                    ) or time.monotonic() >= evidence_end:
                         raise providers.ProviderError(
                             "Checkpoint tool budget exhausted"
                         )
@@ -219,7 +227,12 @@ class StageRunner:
                         checkpoint_continuation=True,
                     )
                 artifacts.write(context.path, context.data)
-            for turn in range(self.settings.tool_rounds):
+            rounds = (
+                self.settings.command_calls
+                if live_execution
+                else self.settings.tool_rounds
+            )
+            for turn in range(rounds):
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
                     final_notes_only
@@ -228,10 +241,13 @@ class StageRunner:
                         and self.ledger.writing_due()
                     )
                     or requested_writing
-                    or tool_count >= self.settings.stage_tool_limit
-                    or turn == self.settings.tool_rounds - 1
+                    or (
+                        not live_execution
+                        and tool_count >= self.settings.stage_tool_limit
+                    )
+                    or turn == rounds - 1
                     or evidence_remaining <= longest_call
-                    or (role == "revision" and turn >= 2)
+                    or (not live_execution and role == "revision" and turn >= 2)
                 )
                 if phase == "evidence" and should_write:
                     context.data["stop_reason"] = context.data[
@@ -293,18 +309,40 @@ class StageRunner:
                     )
                 input_tokens = self.settings.writer_input_tokens
                 if self.settings.writer_context_tokens:
-                    input_tokens = min(
-                        input_tokens,
+                    input_tokens = (
                         self.settings.writer_context_tokens
                         - self.settings.writer_output_tokens
-                        - self.settings.writer_transport_tokens,
+                        - self.settings.writer_transport_tokens
                     )
+                if live_execution:
+                    used = artifacts.read(self.ledger.path)["invocations"]
+                    context.data["task"]["scheduling_guidance"] = {
+                        "stage_call_target": self.ledger.stage_calls,
+                        "stage_calls_used": sum(
+                            x.get("stage") == stage for x in used
+                        ),
+                        "overall_calls_remaining": self.settings.command_calls
+                        - len(used),
+                        "stage_seconds_target": record["seconds"],
+                        "stage_seconds_used": time.monotonic() - started_stage,
+                        "instruction": (
+                            "Targets are guidance. Finish useful "
+                            "context opens and concise final notes; leave "
+                            "capacity for other researchers, synthesis, review "
+                            "and revision. Do not certify absence from "
+                            "an unsuccessful search or a narrow excerpt."
+                        ),
+                    }
                 prompt, current_context = context.request(
                     instructions,
                     available_tools,
                     phase,
-                    self.settings.tool_rounds - turn,
-                    self.settings.stage_context_bytes,
+                    rounds - turn,
+                    (
+                        self.settings.request_memory_bytes
+                        if live_execution
+                        else self.settings.stage_context_bytes
+                    ),
                     input_tokens,
                 )
                 artifacts.write(call_dir / "context.json", current_context)
@@ -497,7 +535,10 @@ class StageRunner:
                 for index, call in enumerate(output["tool_calls"]):
                     if (
                         time.monotonic() >= evidence_end
-                        or tool_count >= self.settings.stage_tool_limit
+                        or (
+                            not live_execution
+                            and tool_count >= self.settings.stage_tool_limit
+                        )
                         or index >= self.settings.turn_tool_limit
                     ):
                         for pending in output["tool_calls"][index:]:
@@ -572,7 +613,11 @@ class StageRunner:
                         {},
                         "final_notes",
                         0,
-                        self.settings.stage_context_bytes,
+                        (
+                            self.settings.request_memory_bytes
+                            if live_execution
+                            else self.settings.stage_context_bytes
+                        ),
                     )
                 except ValueError as context_error:
                     # The full task/evidence remain durable even when the task
@@ -844,7 +889,7 @@ def run(
             )
             deadline = min(
                 deadline if deadline is not None else outer,
-                outer - settings.export_seconds,
+                outer,
             )
         if deadline is not None and time.monotonic() >= deadline:
             raise providers.ProviderError("Research phase deadline expired")
@@ -896,29 +941,6 @@ def run(
                 rounds = 1
             if name == "followup":
                 rounds = min(rounds, 3)
-            if isinstance(ledger, budget.ExecutionLedger):
-                used_calls = len(artifacts.read(ledger.path)["invocations"])
-                downstream_calls = (
-                    3 if role == "review" else (2 if role == "revision" else 0)
-                )
-                rounds = min(
-                    rounds,
-                    settings.command_calls - used_calls - downstream_calls,
-                )
-                if rounds <= 0:
-                    raise budget.BudgetExceeded(
-                        "No calls after writing/recheck reserve"
-                    )
-            if checkpoint and isinstance(ledger, budget.ExecutionLedger):
-                consumed = sum(
-                    x.get("stage") == name
-                    for x in artifacts.read(ledger.path)["invocations"]
-                )
-                rounds = min(rounds, settings.tool_rounds - consumed)
-                if rounds <= 0:
-                    raise budget.BudgetExceeded(
-                        "Research stage calls exhausted"
-                    )
             stage_settings = dataclasses.replace(settings, tool_rounds=rounds)
             if isinstance(runner, StageRunner):
                 runner.settings = stage_settings
@@ -1032,6 +1054,10 @@ def run(
                 "research_deadline", float("inf")
             ),
         )
+        if isinstance(ledger, budget.ExecutionLedger):
+            research_deadline = (
+                time.monotonic() + campaign_attempt["deadline"] - time.time()
+            )
         manifest["research_phase"] = {"seconds": max(0, research_seconds)}
         required_scope = execution.get("required_scope", [])
         imported = None
@@ -1127,9 +1153,7 @@ def run(
         coverage = initial_scope
         if required_scope and initial_scope["status"] != "complete":
             gaps = [
-                x
-                for x in initial_scope["items"]
-                if x["status"] not in ("supported", "undisclosed")
+                x for x in initial_scope["items"] if x["status"] != "supported"
             ]
             followup_input = {
                 **base,
@@ -1169,6 +1193,8 @@ def run(
                         - sum(settings.stage_allocations[2:])
                         - settings.export_seconds
                     )
+                if isinstance(ledger, budget.ExecutionLedger):
+                    follow_deadline = None
                 followup = stage(
                     "followup",
                     "company",

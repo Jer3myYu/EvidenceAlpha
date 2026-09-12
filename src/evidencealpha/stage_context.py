@@ -558,7 +558,10 @@ class StageContext:
             {
                 "application_utf8_bytes": len(encoded.encode()) + extra_bytes,
                 "token_estimate": len(encoded.encode()) + extra_bytes,
-                "token_method": "UTF-8 byte estimate; not measured tokens",
+                "token_method": (
+                    "Conservative UTF-8 byte upper estimate; not a provider "
+                    "byte limit or measured token count"
+                ),
                 "transport_added_context": "unobservable",
                 "max_bytes": max_bytes,
                 "max_input_tokens": max_tokens,

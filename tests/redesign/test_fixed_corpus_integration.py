@@ -108,28 +108,66 @@ def test_missing_review_scope_is_partial(tmp_path):
         handoff.validate_quotes([{"original_passages": [quote]}], store)
 
 
-def test_additive_ledger_protects_writing_and_unknown_usage(tmp_path):
-    """One-worker/call/time/unknown-usage checks survive provider wrappers."""
-    settings = config.Settings()
+def test_additive_ledger_targets_do_not_block_work(tmp_path):
+    """Telemetry overages do not override deadline, calls or concurrency."""
+    settings = config.Settings(command_calls=3, invocation_seconds=900)
     ledger = budget.ExecutionLedger(tmp_path / "ledger.json", settings)
     ledger.initialize()
     ledger.start()
     attempt = ledger.admit("full")
     ledger.stage = "research"
-    ledger.research = True
-    ledger.stage_seconds = 600
-    reservation = ledger.reserve(attempt, "codex", 500)
-    assert reservation["reserved_seconds"] == 300
+    ledger.stage_calls = 1
+    ledger.stage_seconds = 1
+    ledger.stage_tokens = 1
+    reservation = ledger.reserve(attempt, "codex", 950)
+    assert reservation["reserved_seconds"] == 900
     with pytest.raises(budget.BudgetExceeded, match="concurrency"):
         ledger.reserve(attempt, "codex", 10)
-    ledger.settle(reservation, 300, "complete", {"output_tokens": 20})
-    assert ledger.writing_due()
-    ledger.final_writing = True
+    ledger.settle(reservation, 5000, "complete", {"output_tokens": 50000})
     reservation = ledger.reserve(attempt, "codex", 500)
-    assert reservation["reserved_seconds"] == 300
+    assert reservation["reserved_seconds"] == 500
     ledger.settle(reservation, 1, "failed", {})
-    with pytest.raises(budget.BudgetExceeded, match="Unknown"):
+    reservation = ledger.reserve(attempt, "codex", 1)
+    ledger.settle(reservation, 1, "complete", {"output_tokens": 1})
+    with pytest.raises(budget.BudgetExceeded, match="call ceiling"):
         ledger.reserve(attempt, "codex", 1)
+
+
+def test_execution_deadline_and_closed_attempt_remain_hard(tmp_path):
+    settings = config.Settings()
+    ledger = budget.ExecutionLedger(tmp_path / "ledger.json", settings)
+    ledger.initialize()
+    ledger.start()
+    attempt = ledger.admit("full")
+    with mock.patch(
+        "evidencealpha.budget.time.time", return_value=attempt["deadline"] + 1
+    ):
+        with pytest.raises(budget.BudgetExceeded, match="window"):
+            ledger.reserve(attempt, "codex", 100)
+    ledger.finish(attempt, "failed")
+    with pytest.raises(budget.BudgetExceeded, match="not active"):
+        ledger.reserve(attempt, "codex", 100)
+
+
+def test_undisclosed_is_not_complete_or_recovery(tmp_path):
+    store, _ = corpus(tmp_path)
+    required = [{"id": "customers", "question": "Named customers"}]
+    result = handoff.scope(
+        {
+            "scope": [
+                {
+                    "id": "customers",
+                    "status": "undisclosed",
+                    "explanation": "Not found",
+                    "original_passages": [],
+                }
+            ]
+        },
+        required,
+        store,
+    )
+    assert result["status"] == "partial"
+    assert handoff.merge_scope(result, result)["status"] == "partial"
 
 
 def test_capacity_guard_uses_mode_not_concrete_provider(tmp_path):
@@ -384,3 +422,46 @@ def test_current_run_checkpoint_reuses_evidence_and_pending_tool(tmp_path):
     usage = artifacts.read(root / result["path"] / "work-usage.json")
     assert usage["tool_executions"] == 2
     assert usage["reranker_pairs"] == 4
+
+
+def test_live_stage_targets_allow_tool_free_completion(tmp_path):
+    """A one-turn/time target cannot suppress the final writing response."""
+    store, _ = corpus(tmp_path)
+    settings = config.Settings(
+        tool_rounds=1,
+        command_calls=10,
+        stage_seconds=1,
+        writer_context_tokens=258400,
+    )
+    ledger = budget.ExecutionLedger(tmp_path / "ledger.json", settings)
+    ledger.initialize()
+    ledger.start()
+    attempt = ledger.admit("full")
+    ledger.stage = "research"
+    ledger.research = True
+    provider = providers.FixtureProvider(
+        {
+            "research": [
+                {"content": "Provisional evidence discussion"},
+                {"content": "Final qualified notes"},
+            ]
+        }
+    )
+    runner = workflow.StageRunner(
+        settings,
+        provider,
+        tools.EvidenceTools(store, settings, "fixture"),
+        ledger,
+        attempt,
+    )
+    result = runner.run(
+        "research",
+        "company",
+        {"brief": "water"},
+        tmp_path / "run",
+        seconds=0.001,
+    )
+    assert result["output"]["content"] == "Final qualified notes"
+    calls = artifacts.read(ledger.path)["invocations"]
+    assert len(calls) == 2
+    assert (tmp_path / "run" / result["path"] / "writing-context.json").exists()

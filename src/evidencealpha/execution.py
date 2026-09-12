@@ -69,12 +69,11 @@ class SavedStages:
             {},
             "final_notes",
             1,
-            self.settings.stage_context_bytes,
-            min(
-                self.settings.writer_input_tokens,
+            self.settings.request_memory_bytes,
+            (
                 self.settings.writer_context_tokens
                 - self.settings.writer_output_tokens
-                - self.settings.writer_transport_tokens,
+                - self.settings.writer_transport_tokens
             ),
         )
         artifacts.write(folder / "request.txt", prompt)

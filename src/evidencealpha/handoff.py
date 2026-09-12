@@ -196,7 +196,7 @@ def scope(
             raise ValueError("Unknown or duplicate scope id")
         by_id[item["id"]] = item
     validate_quotes(entries, store)
-    accepted = {"examined"} if review else {"supported", "undisclosed"}
+    accepted = {"examined"} if review else {"supported"}
     result = []
     for item in required:
         claim = by_id.get(item["id"], {})
@@ -219,7 +219,7 @@ def scope(
         "limitation": (
             "References checked; model coverage is not factual "
             "certification. Undisclosed is an attributed corpus "
-            "limitation, not proof of absence."
+            "limitation, not proof of absence; it remains an open gap."
         ),
     }
 
@@ -228,17 +228,13 @@ def merge_scope(initial: dict, followup: dict) -> dict:
     """Keep the initial outcome intact and overlay only explicit recovery."""
     result = copy.deepcopy(initial)
     recovered = {
-        x["id"]: x
-        for x in followup["items"]
-        if x["status"] in ("supported", "undisclosed")
+        x["id"]: x for x in followup["items"] if x["status"] in ("supported",)
     }
     result["items"] = [recovered.get(x["id"], x) for x in result["items"]]
     result["status"] = (
         "complete"
         if result["items"]
-        and all(
-            x["status"] in ("supported", "undisclosed") for x in result["items"]
-        )
+        and all(x["status"] in ("supported",) for x in result["items"])
         else "partial"
     )
     return result

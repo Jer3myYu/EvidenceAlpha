@@ -77,12 +77,13 @@ class Settings:
     contextualize: bool = False
     context_documents: int = 2
     context_characters: int = 12000
+    request_memory_bytes: int = 16 * 1024**2
     stage_context_bytes: int = 100000
     stage_seconds: int = 600
     stage_allocations: tuple[int, ...] = (120, 600, 420, 240, 300, 120)
     # Provisional allowances, not measured completion guarantees.
     final_writing_reserve_seconds: int = 180
-    invocation_seconds: int = 300
+    invocation_seconds: int = 900
     export_seconds: int = 120
     followup_seconds: int = 900
     review_rounds: int = 4
@@ -128,6 +129,7 @@ class Settings:
         if self.embedding_model:
             raise ValueError("Embedding fusion is retired; use retrieval_mode")
         for value in (
+            self.request_memory_bytes,
             self.followup_seconds,
             self.review_rounds,
             self.company_provider_seconds,
@@ -199,4 +201,24 @@ DIAGNOSTIC_LIMITS = {
     "research_workers": 1,
     "search_calls": 0,
     "fetch_attempts": 0,
+}
+
+
+# Prospective fixed-corpus enforcement. Legacy LIMITS retain historical policy.
+# All other stage/cumulative allocations are scheduling guidance and telemetry.
+EXECUTION_HARD_LIMITS = {
+    "command_seconds": "Single elapsed deadline, including tools and waiting",
+    "command_calls": "Admitted generative calls, including failures",
+    "invocation_seconds": "Provider watchdog within overall deadline",
+    "writer_context_tokens": "Supplied verified provider context capacity",
+    "writer_output_tokens": "Output headroom reserved within provider context",
+    "writer_transport_tokens": "Headroom for provider-added framing",
+    "request_memory_bytes": "Request memory protection",
+    "workers": "One provider invocation and reranker worker at a time",
+    "reranker_memory_bytes": "Sampled worker RSS protection",
+    "reranker_threads": "CPU concurrency protection",
+    "reranker_search_seconds": "Per-search preparation/scoring watchdog",
+    "source_open_characters": "Reject oversized opens; expose continuation",
+    "turn_tool_limit": "Bound one response's tool batch; not campaign quota",
+    "export_seconds": "Renderer watchdog, enclosed by command deadline",
 }

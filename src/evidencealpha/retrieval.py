@@ -107,8 +107,6 @@ class Retriever:
         deadline = min(
             deadline or float("inf"),
             started + self.settings.reranker_search_seconds,
-            started
-            + max(0, self.settings.reranker_stage_seconds - self.seconds),
         )
         trace = {
             "query": query,
@@ -171,11 +169,6 @@ class Retriever:
                         trace["cache_hit"] = True
                     else:
                         reserve = 2 * len(pool)
-                        if (
-                            self.pairs + reserve
-                            > self.settings.reranker_stage_pairs
-                        ):
-                            raise reranking.RerankerError("reranker_pair_limit")
                         if time.monotonic() >= deadline:
                             raise reranking.RerankerError("reranker_deadline")
                         # Failed work retains its reserved pair ceiling.

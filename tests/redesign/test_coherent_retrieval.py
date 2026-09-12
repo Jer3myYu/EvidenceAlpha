@@ -254,11 +254,21 @@ def test_budget_and_duplicate_cache_with_injected_scores(tmp_path):
     assert first["passages"] and engine.pairs == 1
     engine.search("Revenue", None, None, time.monotonic() + 30)
     assert engine.pairs == 1
+    engine.seconds = 10000
+    assert engine.search("support", None, None, time.monotonic() + 30)[
+        "passages"
+    ]
+    assert engine.pairs == 2
+    assert engine.search("Revenue support", None, None, time.monotonic() + 30)[
+        "passages"
+    ]
+    assert engine.pairs == 3
+    engine.close()
     assert (
-        engine.search("support", None, None, time.monotonic() + 30)[
+        engine.search("after cancellation", None, None, time.monotonic() + 30)[
             "retrieval_status"
         ]
-        == "reranker_pair_limit"
+        != "complete"
     )
 
 
