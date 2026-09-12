@@ -101,3 +101,44 @@ def test_normal_stage_accepts_unlimited_call_telemetry(tmp_path):
     assert result["output"]["content"] == "Plan"
     assert json.loads(provider.calls[0].prompt)["remaining_calls"] is None
     assert artifacts.read(ledger.path)["invocations"][0]["status"] == "complete"
+
+
+def test_revision_rebinds_figures_and_preserves_chinese_citations(tmp_path):
+    """Prior draft images stay in place; punctuation cannot split citations."""
+    store = documents.SourceStore(tmp_path / "sources")
+    source = tmp_path / "original.txt"
+    source.write_text("Original revenue: 1.25 million in 2025.")
+    captured = store.ingest(source, "https://example.org/original")
+    value = {
+        "content": "# Report\n\n报告日期：2026-09-12 · 信息截止：2026-09-12\n\n"
+        "![Comparison](draft/figures/figure-1.png)\n\n"
+        "| Company | Status |\n|---|---|\n"
+        "| Example | "
+        + "完整状态说明" * 18
+        + "【年报，c1；投资者记录，c2】；单片供货，成套仍送样 |\n",
+        "figures": [
+            {
+                "kind": "bar",
+                "title": "Comparison",
+                "caption": "Comparable revenue",
+                "source_ids": [captured["id"]],
+                "period": "2025",
+                "unit": "million",
+                "caveats": "Scope",
+                "labels": ["Example"],
+                "values": [1.25],
+            }
+        ],
+    }
+    # pylint: disable=protected-access
+    path = workflow._prepare_report(
+        value, tmp_path, store, "revised.md", "2026-09-12"
+    )
+    text = path.read_text()
+    assert text.count("![Comparison]") == 1
+    assert "draft/figures" not in text
+    assert "revised/figures/figure-1.png" in text
+    assert text.count("报告日期：") == 1
+    assert text.count("【年报，c1；投资者记录，c2】") == 1
+    assert "成套仍送样" in text
+    assert text.count("图 1：") == 1

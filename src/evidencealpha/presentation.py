@@ -27,7 +27,9 @@ def table_notes(body: str) -> str:
             cells = lines[index].strip().split("|")[1:-1]
             amended = []
             for cell in cells:
-                citations = re.findall(r"\[(?:S\d+|[a-f0-9]{64})[^\]]*\]", cell)
+                citations = re.findall(
+                    r"\[(?:S\d+|[a-f0-9]{64})[^\]]*\]" r"|【[^】]*】", cell
+                )
                 clean = cell
                 for citation in citations:
                     clean = clean.replace(citation, "")

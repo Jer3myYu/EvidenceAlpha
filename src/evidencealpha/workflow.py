@@ -853,6 +853,20 @@ def _prepare_report(
             figure[key] = f"{version}/{figure[key]}"
     artifacts.write(reports / "figures.json", manifest)
     body = output["content"].replace("](" + "figures/", f"]({version}/figures/")
+    # A revision may retain the prior draft directory. Bind known figure
+    # filenames to the new manifest before deciding a figure is missing.
+    for figure in manifest:
+        filename = pathlib.Path(figure["path"]).name
+        pattern = r"(!\[[^\]]*\]\()([^\s)]+)(\))"
+        body = re.sub(
+            pattern,
+            lambda match, figure=figure, filename=filename: (
+                match[1] + figure["path"] + match[3]
+                if pathlib.Path(match[2]).name == filename
+                else match[0]
+            ),
+            body,
+        )
     for index, figure in enumerate(manifest, 1):
         caption = (
             f'\n图 {index}：{figure["caption"]} '
@@ -903,6 +917,13 @@ def _prepare_report(
         label = presentation.source_label(alias, context)
         url = context["url"]
         body = body.replace(f"[{alias}]({url})", f"[{label}]({url})")
+        body = re.sub(
+            r"(?m)^(来源：[^\n]*)\b" + re.escape(alias) + r"\b",
+            lambda match, label=label, url=url: (
+                match[1] + f"[{label}]({url})"
+            ),
+            body,
+        )
     body = re.sub(r"(\*\*[^*\n]+)([：:])(\*\*)", r"\1\3\2", body)
     body, locations = presentation.citation_pages(
         body, {alias: sid for sid, alias in mapping.items()}, store
@@ -913,11 +934,7 @@ def _prepare_report(
     lines[:8] = [
         line
         for line in lines[:8]
-        if not (
-            line.startswith("报告日期：")
-            and " · 信息截止：" in line
-            and " · 版本：" in line
-        )
+        if not (line.startswith("报告日期：") and " · 信息截止：" in line)
     ]
     body = "\n".join(lines)
     report_date = artifacts.now()[:10]
