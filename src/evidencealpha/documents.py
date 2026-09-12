@@ -16,7 +16,7 @@ from evidencealpha import preparation
 from evidencealpha import retrieval
 from evidencealpha import reading
 
-PARSER_VERSION = "structural-2-reading-order"
+PARSER_VERSION = "structural-3-html-containers"
 CHUNK_VERSION = "spans-1"
 
 
@@ -222,6 +222,89 @@ def ungroup_passages(result: dict) -> list[dict]:
     return result_passages
 
 
+def _html_blocks(root: bs4.Tag) -> list[dict]:
+    """Extract container text once in DOM order, retaining table boundaries."""
+    output = []
+    containers = {
+        "html",
+        "body",
+        "div",
+        "section",
+        "article",
+        "main",
+        "header",
+        "footer",
+        "aside",
+        "address",
+        "blockquote",
+        "ul",
+        "ol",
+        "dl",
+        "li",
+        "dt",
+        "dd",
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "table",
+        "pre",
+        "figure",
+        "figcaption",
+    }
+
+    def visit(tag: bs4.Tag) -> None:
+        if tag.name == "table":
+            rows = [
+                " | ".join(
+                    cell.get_text(" ", strip=True)
+                    for cell in row.find_all(["th", "td"], recursive=False)
+                )
+                for row in tag.find_all("tr")
+            ]
+            output.append({"text": "\n".join(rows), "kind": "table"})
+            return
+        pending = []
+
+        def flush() -> None:
+            text = " ".join(pending).strip()
+            if text:
+                output.append(
+                    {
+                        "text": text,
+                        "kind": (
+                            "heading"
+                            if tag.name in ("h1", "h2", "h3", "h4", "h5", "h6")
+                            else "paragraph"
+                        ),
+                    }
+                )
+            pending.clear()
+
+        for child in tag.children:
+            if isinstance(child, bs4.Comment):
+                continue
+            if isinstance(child, bs4.NavigableString):
+                text = str(child).strip()
+                if text:
+                    pending.append(text)
+            elif isinstance(child, bs4.Tag):
+                if child.name in containers or child.find(list(containers)):
+                    flush()
+                    visit(child)
+                else:
+                    text = child.get_text(" ", strip=True)
+                    if text:
+                        pending.append(text)
+        flush()
+
+    visit(root)
+    return output
+
+
 def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
     blocks = []
     warnings = []
@@ -270,27 +353,8 @@ def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
         soup = bs4.BeautifulSoup(data, "html.parser")
         for tag in soup(["script", "style", "nav"]):
             tag.decompose()
-        for tag in soup.find_all(["h1", "h2", "h3", "h4", "p", "li", "table"]):
-            if tag.find_parent(["table", "li"]):
-                continue
-            if tag.name == "table":
-                rows = [
-                    " | ".join(
-                        cell.get_text(" ", strip=True)
-                        for cell in row.find_all(["th", "td"])
-                    )
-                    for row in tag.find_all("tr")
-                ]
-                text = "\n".join(rows)
-                kind = "table"
-            else:
-                text = tag.get_text(" ", strip=True)
-                kind = "heading" if tag.name.startswith("h") else "paragraph"
-            blocks.append({"text": text, "kind": kind})
-        if not blocks:
-            blocks.append(
-                {"text": soup.get_text("\n", strip=True), "kind": "paragraph"}
-            )
+        blocks.extend(_html_blocks(soup.body or soup))
+
     else:
         text = data.decode("utf-8")
         for block in re.split(r"\n\s*\n", text):
