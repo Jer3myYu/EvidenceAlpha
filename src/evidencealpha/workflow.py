@@ -39,9 +39,18 @@ def revision_input(review: dict, findings: dict) -> dict:
         **{
             key: value
             for key, value in review.items()
-            if key not in ("notes", "plan", "gaps", "unsynthesized_evidence")
+            if key
+            not in (
+                "notes",
+                "plan",
+                "gaps",
+                "unsynthesized_evidence",
+                "supplemental_findings",
+            )
         },
-        "findings": findings,
+        "findings": {
+            k: v for k, v in findings.items() if k in ("content", "issues")
+        },
         "instruction": "Correct supported material issues; reject unsupported "
         "objections against originals. Disclose unresolved conclusions.",
     }
@@ -931,6 +940,25 @@ def run(
             if not same_task or artifacts.digest(saved) != old["output_hash"]:
                 raise ValueError("Completed current-run research changed")
             return old
+        completed_review = execution.get("continuation", {}).get(
+            "review_output_hash"
+        )
+        if name == "review" and old and completed_review:
+            prior = artifacts.read(root / old["path"] / "input.json")[
+                "portable"
+            ]
+            saved = artifacts.read(root / old["path"] / "output.json")
+            if completed_review != artifacts.digest(saved) or any(
+                prior.get(k) != portable.get(k)
+                for k in (
+                    "brief",
+                    "draft",
+                    "required_scope",
+                    "settled_evidence",
+                )
+            ):
+                raise ValueError("Completed review checkpoint changed")
+            return old
         if old and old["input_hash"] == artifacts.digest(portable):
             saved = artifacts.read(root / old["path"] / "output.json")
             stored_input = artifacts.read(root / old["path"] / "input.json")
@@ -1334,7 +1362,7 @@ def run(
                 "coverage": {
                     **coverage,
                     "items": [
-                        x
+                        {k: v for k, v in x.items() if k != "original_passages"}
                         for x in coverage["items"]
                         if x["status"] != "supported"
                     ],
