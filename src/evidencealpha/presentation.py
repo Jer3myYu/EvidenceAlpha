@@ -58,6 +58,8 @@ def source_label(alias: str, context: dict) -> str:
 
     issuer = value("issuer") or "机构未核实"
     title = value("title") or "文档标题未核实"
+    if title.startswith(issuer):
+        title = title[len(issuer) :].lstrip(" ·—-：:")
     date = value("document_date")
     return f"{alias} · {issuer} · {title}" + (f" · {date}" if date else "")
 

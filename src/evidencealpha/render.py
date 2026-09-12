@@ -143,6 +143,8 @@ def export(markdown_path: pathlib.Path) -> dict:
     )
     body = parser.render(text)
     soup = bs4.BeautifulSoup(body, "html.parser")
+    for link in soup.find_all("a"):
+        link["style"] = "color: #235d80; text-decoration: none;"
     for image in soup.find_all("img"):
         path = artifacts.contained(markdown_path.parent, image["src"])
         if not path.is_file():

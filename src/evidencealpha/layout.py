@@ -257,11 +257,18 @@ def pdf(soup: bs4.BeautifulSoup, folder: pathlib.Path) -> tuple[bytes, dict]:
             if block.name == "table":
                 pages.table(block)
             else:
-                keep = 45 if block.name in ("h1", "h2", "h3") else 0
+                keep = 2 if block.name in ("h1", "h2", "h3") else 0
                 if keep:
                     for following in blocks[i + 1 :]:
                         if following.name not in ("h1", "h2", "h3"):
-                            keep += 45
+                            # Images and lists move as whole blocks. Reserve
+                            # their measured height, not a nominal text line.
+                            keep += (
+                                90
+                                if following.name == "table"
+                                else pages.measure(str(following), pages.width)
+                                + 2
+                            )
                             break
                         keep += pages.measure(str(following), pages.width)
                 elif block.name == "p" and block.get_text().rstrip().endswith(
