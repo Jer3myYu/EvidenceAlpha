@@ -112,8 +112,8 @@ def test_revision_rebinds_figures_and_preserves_chinese_citations(tmp_path):
     value = {
         "content": "# Report\n\n报告日期：2026-09-12 · 信息截止：2026-09-12\n\n"
         "![Comparison](draft/figures/figure-1.png)\n\n"
-        "| Company | Status |\n|---|---|\n"
-        "| Example | "
+        "**Name。**Explanation\n\n**A**说明。**B**说明。\n\n"
+        "| Company | Status |\n|---|---|\n| Example | "
         + "完整状态说明" * 18
         + "【年报，c1；投资者记录，c2】；单片供货，成套仍送样 |\n",
         "figures": [
@@ -142,3 +142,5 @@ def test_revision_rebinds_figures_and_preserves_chinese_citations(tmp_path):
     assert text.count("【年报，c1；投资者记录，c2】") == 1
     assert "成套仍送样" in text
     assert text.count("图 1：") == 1
+    assert "**Name**。Explanation" in text
+    assert "**A**说明。**B**说明。" in text

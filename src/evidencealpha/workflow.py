@@ -924,7 +924,7 @@ def _prepare_report(
             ),
             body,
         )
-    body = re.sub(r"(\*\*[^*\n]+)([：:。])(\*\*)", r"\1\3\2", body)
+    body = re.sub(r"(?m)^((?:- )?\*\*[^*\n]+)([：:。])(\*\*)", r"\1\3\2", body)
     body, locations = presentation.citation_pages(
         body, {alias: sid for sid, alias in mapping.items()}, store
     )
