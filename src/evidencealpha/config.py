@@ -77,6 +77,12 @@ class Settings:
     writer_output_tokens: int = 12000
     writer_transport_tokens: int = 4096
     source_open_characters: int = 24000
+    vector_index_path: str | None = None
+    dense_model_path: str | None = None
+    dense_model_revision: str | None = None
+    dense_python: str | None = None
+    embedding_unit_tokens: int = 384
+    dense_operation_seconds: int = 900
     embedding_model: str | None = None
     search_env_file: str | None = None
     tool_rounds: int = 8
@@ -142,6 +148,22 @@ class Settings:
             raise ValueError("Six positive stage allocations required")
         if self.retrieval_mode not in ("rerank", "degraded_lexical"):
             raise ValueError("Unknown retrieval mode")
+        if not 16 <= self.embedding_unit_tokens <= 512:
+            raise ValueError("Embedding units must fit the 512-token encoder")
+        if self.vector_index_path and not (
+            self.dense_model_path and self.dense_model_revision
+        ):
+            raise ValueError(
+                "A vector index requires an explicit local encoder"
+            )
+        if self.dense_model_path and (
+            not self.dense_model_revision
+            or len(self.dense_model_revision) != 40
+            or any(
+                c not in "0123456789abcdef" for c in self.dense_model_revision
+            )
+        ):
+            raise ValueError("Encoder requires a full pinned revision")
         if self.embedding_model:
             raise ValueError("Embedding fusion is retired; use retrieval_mode")
         if self.review_completion_calls not in (0, 1):
@@ -149,6 +171,7 @@ class Settings:
                 "Review permits at most one completion opportunity"
             )
         for value in (
+            self.dense_operation_seconds,
             self.request_memory_bytes,
             self.followup_seconds,
             self.review_rounds,

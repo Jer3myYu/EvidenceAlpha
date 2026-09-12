@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vector-index = ["chromadb==1.1.1"]
+vector-index = ["chromadb==1.1.1", "torch>=2.6,<3", "transformers>=4.38,<6", "sentencepiece>=0.2,<1"]
 retrieval = ["torch>=2.6,<3", "transformers>=4.38,<6", "sentencepiece>=0.2,<1"]
 dev = ["black==26.5.1", "pylint>=3.2,<5", "pytest==9.1.1", "jsonschema>=4,<5"]
 

@@ -1,5 +1,8 @@
 """Command line for the active workflow, offline replay and bounded Stage 2."""
 
+# Optional local inference dependencies are loaded only when selected.
+# pylint: disable=import-outside-toplevel
+
 import argparse
 import dataclasses
 import json
@@ -195,6 +198,12 @@ def parser() -> argparse.ArgumentParser:
             type=pathlib.Path,
             help="Hash-bound saved stage outputs; no model calls",
         )
+    index = commands.add_parser(
+        "index-corpus",
+        help="Build a new local Chroma index from original spans",
+    )
+    index.add_argument("--corpus", type=pathlib.Path, required=True)
+    index.add_argument("--output", type=pathlib.Path, required=True)
     return result
 
 
@@ -212,6 +221,34 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     args = parser().parse_args()
     settings = config.load(args.config)
+    if args.command == "index-corpus":
+        from evidencealpha import (
+            dense_runtime,
+        )  # pylint: disable=import-outside-toplevel
+        import sys  # pylint: disable=import-outside-toplevel
+
+        if not settings.dense_model_path:
+            raise ValueError(
+                "Explicit installed encoder configuration required"
+            )
+        if args.output.exists():
+            raise ValueError(
+                "Index output exists; use a new additive directory"
+            )
+        result = dense_runtime.supervised(
+            {
+                "operation": "build",
+                "settings": dataclasses.asdict(settings),
+                "corpus": str(args.corpus.resolve()),
+                "output": str(args.output.resolve()),
+            },
+            settings.dense_python or sys.executable,
+            time.monotonic() + settings.dense_operation_seconds,
+            settings.reranker_memory_bytes,
+            record_dir=args.output.with_name(args.output.name + "-operation"),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.command in ("fixed-corpus", "verify-report"):
         data = execution.run(
             args.execution,

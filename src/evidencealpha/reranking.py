@@ -85,7 +85,11 @@ def bounded_views(
                 (
                     text[a:z],
                     start + a <= focal < start + z,
-                    passage.get("required_context", False),
+                    passage.get("required_context", False)
+                    or any(
+                        start + a < span["end"] and start + z > span["start"]
+                        for span in view.get("dense_required_spans", [])
+                    ),
                 )
             )
     centers = [i for i, u in enumerate(units) if u[1]]
@@ -126,6 +130,7 @@ def _worker(connection: typing.Any, settings: dict) -> None:
         import torch  # pylint: disable=import-outside-toplevel
         import transformers  # pylint: disable=import-outside-toplevel
 
+        initialized = time.monotonic()
         torch.set_num_threads(settings["reranker_threads"])
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             settings["reranker_path"],
@@ -138,6 +143,7 @@ def _worker(connection: typing.Any, settings: dict) -> None:
             trust_remote_code=False,
             torch_dtype=torch.float32,
         ).eval()
+        initialization_seconds = time.monotonic() - initialized
         while True:
             query, views = connection.recv()
             if (
@@ -146,6 +152,7 @@ def _worker(connection: typing.Any, settings: dict) -> None:
             ):
                 connection.send({"error": "focused_query_required"})
                 continue
+            scoring_started = time.monotonic()
             results = []
             window_scores = {}
             for view in views:
@@ -195,7 +202,15 @@ def _worker(connection: typing.Any, settings: dict) -> None:
                         ),
                     }
                 )
-            connection.send({"results": results})
+            connection.send(
+                {
+                    "results": results,
+                    "metrics": {
+                        "initialization_seconds": initialization_seconds,
+                        "scoring_seconds": time.monotonic() - scoring_started,
+                    },
+                }
+            )
     except (ImportError, OSError, ValueError, RuntimeError, EOFError) as exc:
         try:
             connection.send(
@@ -247,6 +262,8 @@ class LocalReranker:
         self, query: str, views: list[dict], deadline: float
     ) -> list[dict]:
         """Supervise elapsed time and RSS; never download or change scorer."""
+        started = time.monotonic()
+        self.last_metrics = {"sampled_peak_rss": 0}
         self._snapshot()
         if not _SLOT.acquire(timeout=max(0, deadline - time.monotonic())):
             raise RerankerError("reranker_deadline")
@@ -283,6 +300,9 @@ class LocalReranker:
                     for line in status.splitlines()
                     if line.startswith("VmRSS:")
                 )
+                self.last_metrics["sampled_peak_rss"] = max(
+                    rss, self.last_metrics["sampled_peak_rss"]
+                )
                 if rss > self.settings.reranker_memory_bytes:
                     raise RerankerError("reranker_resource_exhausted")
             if self.cancelled.is_set():
@@ -292,6 +312,7 @@ class LocalReranker:
             result = self.connection.recv()
             if "error" in result:
                 raise RerankerError(result["error"])
+            self.last_metrics.update(result.get("metrics", {}))
             return result["results"]
         except (OSError, EOFError, StopIteration) as exc:
             self.close()
@@ -300,6 +321,7 @@ class LocalReranker:
             self.close()
             raise
         finally:
+            self.last_metrics["total_seconds"] = time.monotonic() - started
             self.close()
             _SLOT.release()
 

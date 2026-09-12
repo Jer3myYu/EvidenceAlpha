@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# Optional local inference dependencies are loaded only when selected.
+# pylint: disable=import-outside-toplevel
+
 import dataclasses
 import functools
 import math
@@ -82,6 +85,12 @@ class Retriever:
         scorer: reranking.Scorer | None = None,
         candidate_provider: typing.Callable | None = None,
     ) -> None:
+        if candidate_provider is None and settings.vector_index_path:
+            from evidencealpha import (
+                dense_runtime,
+            )  # pylint: disable=import-outside-toplevel
+
+            candidate_provider = dense_runtime.Candidates(settings, store)
         self.candidate_provider = candidate_provider or candidates
         self.cancelled = threading.Event()
         self.store = store
@@ -128,6 +137,10 @@ class Retriever:
                     self.settings.candidate_limit,
                     check,
                 )
+                if hasattr(self.candidate_provider, "last_metrics"):
+                    trace["candidate_metrics"] = (
+                        self.candidate_provider.last_metrics
+                    )
                 for candidate in pool:
                     check()
                     p = candidate["passage"]
@@ -138,6 +151,18 @@ class Retriever:
                         characters=self.settings.reading_window_characters,
                         check=check,
                     )
+                    if candidate.get("embedding_unit"):
+                        from evidencealpha import (
+                            embedding_chunks,
+                        )  # pylint: disable=import-outside-toplevel
+
+                        view = embedding_chunks.extend_reading(
+                            self.store,
+                            candidate["embedding_unit"],
+                            view,
+                            self.settings.reading_window_characters,
+                            check,
+                        )
                     # Context includes originals, never generated descriptions.
                     views.append(view)
                     trace["candidates"].append(
@@ -163,6 +188,7 @@ class Retriever:
                         }
                     )
                 check()
+                trace["preparation_seconds"] = time.monotonic() - started
                 if self.settings.retrieval_mode == "degraded_lexical":
                     trace["status"] = "degraded_lexical"
                     ranked = list(range(len(pool)))
@@ -220,6 +246,8 @@ class Retriever:
             elapsed = time.monotonic() - started
             self.seconds += elapsed
             trace["seconds"] = elapsed
+            if hasattr(self.scorer, "last_metrics"):
+                trace["reranker_metrics"] = self.scorer.last_metrics
             trace["stage_pairs"] = self.pairs
             trace["stage_seconds"] = self.seconds
         selected, seen = [], set()

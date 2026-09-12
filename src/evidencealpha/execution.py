@@ -1,5 +1,8 @@
 """Fixed-corpus admission and saved-output replay for the shared workflow."""
 
+# Lazy optional inference boundary; fixed-corpus defaults need no Chroma.
+# pylint: disable=import-outside-toplevel
+
 import dataclasses
 import importlib.metadata
 import json
@@ -102,8 +105,17 @@ class SavedStages:
 
 
 def _paths(spec: dict, parent: pathlib.Path) -> dict:
-    for key in ("corpus", "industry_import", "reranker_path"):
-        target = spec["settings"] if key == "reranker_path" else spec
+    for key in (
+        "corpus",
+        "industry_import",
+        "reranker_path",
+        "dense_model_path",
+        "vector_index_path",
+        "dense_python",
+    ):
+        target = (
+            spec if key in ("corpus", "industry_import") else spec["settings"]
+        )
         if target.get(key):
             target[key] = str((parent / target[key]).resolve())
     return spec
@@ -239,6 +251,15 @@ def run(
             frozen,
         )
         store = documents.SourceStore(pathlib.Path(spec["corpus"]))
+        if settings.vector_index_path:
+            from evidencealpha import (
+                dense_runtime,
+            )  # pylint: disable=import-outside-toplevel
+
+            artifacts.write(
+                root / "vector-index-freeze.json",
+                dense_runtime.preflight(settings, store),
+            )
         sources = workflow._source_inputs(  # pylint: disable=protected-access
             store, [s["id"] for s in store.sources()]
         )

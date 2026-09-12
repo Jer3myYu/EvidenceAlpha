@@ -9,6 +9,8 @@ import chromadb.config
 
 from evidencealpha import artifacts
 from evidencealpha import documents
+from evidencealpha import dense_runtime
+from evidencealpha import embedding_chunks
 from evidencealpha import preparation
 from evidencealpha import retrieval
 
@@ -30,6 +32,38 @@ def bindings(store: documents.SourceStore) -> dict:
                 "spans_hash": artifacts.digest(passage["spans"]),
             }
             result[artifacts.digest(metadata)] = metadata
+    return result
+
+
+def unit_bindings(store: documents.SourceStore, units: dict) -> dict:
+    """Verify unit content and resolve only source metadata into Chroma."""
+    result = {}
+    sources = {s["id"]: s for s in store.sources()}
+    blocks_by_source = {
+        key: {b["id"]: b for b in source["blocks"]}
+        for key, source in sources.items()
+    }
+    chunks_by_source = {
+        key: {c["id"] for c in source["chunks"]}
+        for key, source in sources.items()
+    }
+    for identifier, unit in units.items():
+        text = embedding_chunks.text_for(store, unit)
+        if artifacts.digest(text) != unit["text_hash"]:
+            raise ValueError("Embedding original changed")
+        blocks = blocks_by_source[unit["source_id"]]
+        for span in unit["spans"]:
+            b = blocks[span["block_id"]]
+            if not b["start"] <= span["start"] < span["end"] <= b["end"]:
+                raise ValueError("Embedding unit escaped source block")
+        if unit["chunk_id"] not in chunks_by_source[unit["source_id"]]:
+            raise ValueError("Unknown original anchor")
+        result[identifier] = {
+            "source_id": unit["source_id"],
+            "chunk_id": unit["chunk_id"],
+            "text_hash": unit["text_hash"],
+            "spans_hash": artifacts.digest(unit["spans"]),
+        }
     return result
 
 
@@ -73,6 +107,7 @@ class ReferenceIndex:
         store: documents.SourceStore,
         signature: dict,
         vectors: dict[str, list[float]],
+        units: dict | None = None,
     ) -> dict:
         """Publish only a complete new build from explicitly supplied vectors.
 
@@ -93,7 +128,11 @@ class ReferenceIndex:
         dimension = signature["dimension"]
         if not isinstance(dimension, int) or dimension < 1:
             raise ValueError("Invalid embedding dimension")
-        expected = bindings(store)
+        expected = (
+            unit_bindings(store, units)
+            if units is not None
+            else bindings(store)
+        )
         if not expected or expected.keys() != vectors.keys():
             raise ValueError("Embedding coverage does not match corpus")
         for values in vectors.values():
@@ -118,8 +157,13 @@ class ReferenceIndex:
         actual, digest = _contents(collection)
         if actual != expected or corpus_signature(store) != initial:
             raise ValueError("Index build/source validation failed")
+        if units is not None:
+            artifacts.write(path / "units.json", units)
         manifest = {
-            "schema": 1,
+            "schema": 2 if units is not None else 1,
+            "units_hash": (
+                artifacts.digest(units) if units is not None else None
+            ),
             "status": "ready",
             "signature": signature,
             "metric": "cosine",
@@ -149,7 +193,21 @@ class ReferenceIndex:
         self.collection = self.client.get_collection(
             "original_chunks", embedding_function=None
         )
-        expected = bindings(store)
+        self.units = (
+            artifacts.read(path / "units.json")
+            if self.manifest["schema"] == 2
+            else None
+        )
+        if (
+            self.units is not None
+            and artifacts.digest(self.units) != self.manifest["units_hash"]
+        ):
+            raise ValueError("Embedding unit manifest changed")
+        expected = (
+            unit_bindings(store, self.units)
+            if self.units is not None
+            else bindings(store)
+        )
         actual, digest = _contents(self.collection)
         if (
             actual != expected
@@ -201,6 +259,22 @@ class ReferenceIndex:
             passage = self.store.open_source(
                 meta["source_id"], meta["chunk_id"]
             )
+            if not math.isfinite(distance):
+                raise ValueError("Nonfinite vector distance")
+            if self.units is not None:
+                unit = self.units[identifier]
+                text = embedding_chunks.text_for(self.store, unit)
+                if artifacts.digest(text) != meta["text_hash"]:
+                    raise ValueError("Embedding unit original changed")
+                result.append(
+                    {
+                        "passage": passage,
+                        "dense_distance": distance,
+                        "embedding_unit": unit,
+                        "unit_id": identifier,
+                    }
+                )
+                continue
             if (
                 artifacts.digest(passage["text"]) != meta["text_hash"]
                 or artifacts.digest(passage["spans"]) != meta["spans_hash"]
@@ -239,36 +313,20 @@ class HybridCandidates:
         dense = self.index.query(
             self.embed_query(query), source_id, limit, check
         )
-        merged = {}
-        for branch, values in (("lexical", lexical), ("dense", dense)):
-            for rank, item in enumerate(values, 1):
-                passage = item["passage"]
-                key = (passage["source_id"], passage["chunk_id"])
-                entry = merged.setdefault(
-                    key,
-                    {
-                        "passage": passage,
-                        "lexical_rank": None,
-                        "lexical_score": None,
-                        "candidate_provenance": {
-                            "index": artifacts.digest(self.index.manifest),
-                            "ranks": {},
-                            "rrf": 0.0,
-                        },
-                    },
-                )
-                provenance = entry["candidate_provenance"]
-                provenance["ranks"][branch] = rank
-                provenance["rrf"] += 1 / (60 + rank)
-                if branch == "lexical":
-                    entry.update(
-                        lexical_rank=rank, lexical_score=item["lexical_score"]
-                    )
-                else:
-                    provenance["distance"] = item["dense_distance"]
-        keys = sorted(
-            merged,
-            key=lambda key: (-merged[key]["candidate_provenance"]["rrf"], key),
+        resolved = [
+            {
+                "passage": item["passage"],
+                "distance": item["dense_distance"],
+                "unit": item.get("embedding_unit"),
+                "unit_id": item.get("unit_id"),
+            }
+            for item in dense
+        ]
+        return dense_runtime.fuse(
+            store,
+            lexical,
+            resolved,
+            limit,
+            artifacts.digest(self.index.manifest),
+            check,
         )
-        check()
-        return [merged[key] for key in keys[:limit]]
