@@ -1,4 +1,4 @@
-"""Run frozen paired RAG queries through normal source tools, without research."""
+"""Evaluate frozen RAG queries through normal source tools."""
 
 import dataclasses
 import pathlib
@@ -16,6 +16,11 @@ from evidencealpha import tools
 def run(root: pathlib.Path, corpus: pathlib.Path) -> None:
     """Preserve each query and exact writing-handoff result independently."""
     ledger_path = root / "ledger.json"
+    if (
+        artifacts.read(ledger_path)["status"] != "active"
+        or (root / "retrieval-freeze.json").exists()
+    ):
+        raise ValueError("Preserve existing evaluation; use a fresh record")
     settings = config.Settings(**artifacts.read(root / "settings.json"))
     questions = artifacts.read(root / "EVALUATION.json")["questions"]
     artifacts.write(
@@ -80,7 +85,8 @@ def run(root: pathlib.Path, corpus: pathlib.Path) -> None:
                 )
                 state.settle(result, question["id"])
                 _, writing = state.request(
-                    "Prepare sourced investor notes; preserve evidence boundaries.",
+                    "Prepare sourced investor notes; "
+                    "preserve evidence boundaries.",
                     {},
                     "final_notes",
                     1,
@@ -143,6 +149,8 @@ def run(root: pathlib.Path, corpus: pathlib.Path) -> None:
                     round(assessment["seconds"], 2),
                     flush=True,
                 )
+            # Keep every failed case instead of selecting only successes.
+            # pylint: disable-next=broad-exception-caught
             except Exception as exc:
                 artifacts.write(
                     folder / "failure.json",

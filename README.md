@@ -63,3 +63,10 @@ New runs need a new output directory. `resume`, `replay-stage` and `render` oper
 The previous Studio and old workflow entrypoints are retired. The CLI provides the run/report view. Historical sources, runs and databases stay in place; old code is recoverable from Git. [Archive index](docs/archive/README.md).
 
 For the integrated fixed-corpus command, supplied environment/settings, versioned industry import, and bounded saved-output replay, see [the integration handoff](docs/redesign/coherent-retrieval/integration/IMPLEMENTATION.md). `fixed-corpus` uses the same workflow and stage runner; it never enables external acquisition. Execution, coverage, review and export statuses are separate. The reviewer uses five user-focused criteria with targeted source checks. The orchestrator routes essential evidence gaps to one post-review follow-up, then revision/recheck; unresolved issues prevent readiness. This is not exhaustive fact verification. See [rubric review implementation and validation](docs/redesign/coherent-retrieval/rubric-review/IMPLEMENTATION.md).
+
+Optional local hybrid RAG combines lexical candidates with Chroma vectors while
+keeping original evidence on disk. Build a new index with `index-corpus`, then
+supply its path in normal fixed-corpus settings. It uses explicit installed models
+and never opens an old database implicitly. See the [chunking, configuration and
+preservation contract](docs/redesign/chroma-source-index/IMPLEMENTATION.md) and
+[measured RAG evaluation](docs/redesign/chroma-source-index/LIVE-RESULTS.md).
