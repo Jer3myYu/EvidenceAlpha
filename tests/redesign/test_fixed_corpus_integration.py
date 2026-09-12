@@ -330,3 +330,57 @@ def test_cancellation_stops_later_stages_and_export(tmp_path):
     assert run_stage.call_count == 1
     export.assert_not_called()
     cancel.assert_called_once()
+
+
+def test_current_run_checkpoint_reuses_evidence_and_pending_tool(tmp_path):
+    """A continuation executes a pending open, not the prior model call."""
+    store, passage = corpus(tmp_path)
+    root = tmp_path / "checkpoint-run"
+    portable = {
+        "brief": "water",
+        "task": {"role": "company", "question": "water"},
+    }
+    state = stage_context.StageContext(root / "prior/state.json", portable)
+    state.settle(documents.group_passages([passage]))
+    pending = root / "prior/pending.json"
+    artifacts.write(
+        pending,
+        {
+            "content": "",
+            "tool_calls": [
+                {
+                    "name": "open_source",
+                    "arguments": {
+                        "source_id": passage["source_id"],
+                        "chunk_id": passage["chunk_id"],
+                    },
+                }
+            ],
+        },
+    )
+    checkpoint = {
+        "state": "prior/state.json",
+        "state_hash": artifacts.digest(state.path.read_bytes()),
+        "pending_output": "prior/pending.json",
+        "pending_hash": artifacts.digest(pending.read_bytes()),
+        "pairs": 4,
+        "retrieval_seconds": 2.0,
+        "tool_count": 1,
+    }
+    settings = dataclasses.replace(config.Settings(), tool_rounds=1)
+    provider = providers.FixtureProvider(
+        {"company": {"content": "Pilot supply only."}}
+    )
+    runner = workflow.StageRunner(
+        settings, provider, tools.EvidenceTools(store, settings, "fixture")
+    )
+    result = runner.run(
+        "company",
+        "company",
+        {**portable, "continuation_checkpoint": checkpoint},
+        root,
+    )
+    assert len(provider.calls) == 1
+    usage = artifacts.read(root / result["path"] / "work-usage.json")
+    assert usage["tool_executions"] == 2
+    assert usage["reranker_pairs"] == 4

@@ -124,6 +124,22 @@ class StageRunner:
             folder / "context-state.json",
             {k: v for k, v in portable.items() if k != "settled_evidence"},
         )
+        checkpoint = portable.get("continuation_checkpoint")
+        if checkpoint:
+            prior_path = artifacts.contained(root, checkpoint["state"])
+            if (
+                artifacts.digest(prior_path.read_bytes())
+                != checkpoint["state_hash"]
+            ):
+                raise ValueError("Research checkpoint changed")
+            prior = artifacts.read(prior_path)
+            if prior["task"].get("task") != portable.get("task"):
+                raise ValueError("Research checkpoint task changed")
+            current_task = context.data["task"]
+            context.data = copy.deepcopy(prior)
+            context.data["task"] = current_task
+            stage_tools.retriever.pairs = checkpoint["pairs"]
+            stage_tools.retriever.seconds = checkpoint["retrieval_seconds"]
         context.settle(portable.get("settled_evidence", {}))
         started_stage = time.monotonic()
         deadline, stage_limit = min(
@@ -156,7 +172,7 @@ class StageRunner:
                 "final_notes_only": final_notes_only,
             },
         )
-        tool_count = 0
+        tool_count = checkpoint["tool_count"] if checkpoint else 0
         requested_writing = False
         phase = "evidence"
         longest_call = 0.0
@@ -164,6 +180,45 @@ class StageRunner:
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
+            if checkpoint:
+                pending_path = artifacts.contained(
+                    root, checkpoint["pending_output"]
+                )
+                if (
+                    artifacts.digest(pending_path.read_bytes())
+                    != checkpoint["pending_hash"]
+                ):
+                    raise ValueError("Pending response changed")
+                pending = parse_output(pending_path.read_text(), role)
+                context.update_coverage(
+                    pending.get("coverage_updates", []),
+                    pending.get("stop_reason"),
+                )
+                for call in pending.get("tool_calls", []):
+                    if (
+                        tool_count >= self.settings.stage_tool_limit
+                        or time.monotonic() >= evidence_end
+                    ):
+                        raise providers.ProviderError(
+                            "Checkpoint tool budget exhausted"
+                        )
+                    tool_count += 1
+                    tool_started = time.monotonic()
+                    value = stage_tools.call(
+                        call["name"], call["arguments"], deadline=evidence_end
+                    )
+                    context.settle(value, call["arguments"].get("question_id"))
+                    context.outcome(call["name"], call["arguments"], value)
+                    artifacts.event(
+                        event_path,
+                        "tool",
+                        name=call["name"],
+                        arguments=call["arguments"],
+                        result=value,
+                        seconds=time.monotonic() - tool_started,
+                        checkpoint_continuation=True,
+                    )
+                artifacts.write(context.path, context.data)
             for turn in range(self.settings.tool_rounds):
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
@@ -725,9 +780,9 @@ def run(
     if resume:
         manifest = artifacts.read(manifest_path)
         brief = manifest["brief"]
-        if manifest["settings"] != json.loads(
-            json.dumps(dataclasses.asdict(settings))
-        ):
+        if not execution.get("continuation") and manifest[
+            "settings"
+        ] != json.loads(json.dumps(dataclasses.asdict(settings))):
             raise ValueError(
                 "Settings changed; fork a run rather than reuse stale stages"
             )
@@ -793,6 +848,11 @@ def run(
             )
         if deadline is not None and time.monotonic() >= deadline:
             raise providers.ProviderError("Research phase deadline expired")
+        checkpoint = (
+            execution.get("continuation", {}).get("stages", {}).get(name)
+        )
+        if checkpoint:
+            portable = {**portable, "continuation_checkpoint": checkpoint}
         old = manifest["stages"].get(name)
         if old and old["input_hash"] == artifacts.digest(portable):
             saved = artifacts.read(root / old["path"] / "output.json")
@@ -832,6 +892,16 @@ def run(
                     raise budget.BudgetExceeded(
                         "No calls after writing/recheck reserve"
                     )
+            if checkpoint and isinstance(ledger, budget.ExecutionLedger):
+                consumed = sum(
+                    x.get("stage") == name
+                    for x in artifacts.read(ledger.path)["invocations"]
+                )
+                rounds = min(rounds, settings.tool_rounds - consumed)
+                if rounds <= 0:
+                    raise budget.BudgetExceeded(
+                        "Research stage calls exhausted"
+                    )
             stage_settings = dataclasses.replace(settings, tool_rounds=rounds)
             if isinstance(runner, StageRunner):
                 runner.settings = stage_settings
@@ -839,7 +909,11 @@ def run(
         if isinstance(ledger, budget.ExecutionLedger):
             ledger.stage = name
             ledger.research = role in ("company", "industry", "plan")
-            ledger.stage_calls = stage_settings.tool_rounds
+            ledger.stage_calls = (
+                settings.tool_rounds
+                if checkpoint
+                else stage_settings.tool_rounds
+            )
             ledger.stage_seconds = (
                 settings.company_provider_seconds
                 if ledger.research
@@ -868,7 +942,12 @@ def run(
     current = None
     review_status = "draft_review_incomplete"
     try:
-        if execution.get("tasks"):
+        if resume and execution.get("continuation"):
+            plan = manifest["stages"]["plan"]
+            saved_plan = artifacts.read(root / plan["path"] / "output.json")
+            if artifacts.digest(saved_plan) != plan["output_hash"]:
+                raise ValueError("Completed planning checkpoint changed")
+        elif execution.get("tasks"):
             plan = {
                 "output": {
                     "content": "Explicit scoped tasks reused",
@@ -930,7 +1009,12 @@ def run(
                 - sum(settings.stage_allocations[2:])
                 - settings.export_seconds,
             )
-        research_deadline = time.monotonic() + max(0, research_seconds)
+        research_deadline = min(
+            time.monotonic() + max(0, research_seconds),
+            execution.get("continuation", {}).get(
+                "research_deadline", float("inf")
+            ),
+        )
         manifest["research_phase"] = {"seconds": max(0, research_seconds)}
         required_scope = execution.get("required_scope", [])
         imported = None

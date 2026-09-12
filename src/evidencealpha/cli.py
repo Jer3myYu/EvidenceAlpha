@@ -186,6 +186,7 @@ def parser() -> argparse.ArgumentParser:
         "fixed-corpus",
         help="One bounded fixed-corpus report; no external acquisition",
     )
+    fixed.add_argument("--continue-existing", action="store_true")
     fixed.add_argument("--execution", type=pathlib.Path, required=True)
     fixed.add_argument("--output", type=pathlib.Path, required=True)
     fixed.add_argument(
@@ -211,7 +212,9 @@ def main() -> None:
     args = parser().parse_args()
     settings = config.load(args.config)
     if args.command == "fixed-corpus":
-        data = execution.run(args.execution, args.output, args.replay)
+        data = execution.run(
+            args.execution, args.output, args.replay, args.continue_existing
+        )
         output = {
             key: data.get(key)
             for key in (

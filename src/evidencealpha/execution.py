@@ -114,9 +114,10 @@ def run(
     path: pathlib.Path,
     root: pathlib.Path,
     replay_path: pathlib.Path | None = None,
+    continue_existing: bool = False,
 ) -> dict:
     """Admit one command, freeze inputs, supervise setup through export."""
-    if root.exists():
+    if root.exists() and not continue_existing:
         raise ValueError(
             "Output exists; choose a new additive execution directory"
         )
@@ -159,11 +160,22 @@ def run(
         )
     previous_env = {k: os.environ.get(k) for k in environment}
     os.environ.update(environment)
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=continue_existing)
     ledger = budget.ExecutionLedger(root / "execution-ledger.json", settings)
     ledger.initialize()
-    ledger.start()
-    attempt = ledger.admit("full")
+    if continue_existing:
+        data = artifacts.read(ledger.path)
+        attempt = next(a for a in data["attempts"] if a["status"] == "running")
+        if data["limits"] != ledger.limits:
+            raise ValueError(
+                "Continuation needs a frozen, authorized ledger amendment"
+            )
+        if not spec.get("continuation"):
+            raise ValueError("Explicit same-run checkpoint required")
+        ledger._check(data)  # pylint: disable=protected-access
+    else:
+        ledger.start()
+        attempt = ledger.admit("full")
     status = "failed"
     previous_alarm = signal.getsignal(signal.SIGALRM)
 
@@ -191,12 +203,24 @@ def run(
                 for name in ("pymupdf", "markdown-it-py", "matplotlib")
             },
         }
-        artifacts.write(root / "execution-freeze.json", frozen)
+        artifacts.write(
+            root
+            / (
+                "execution-freeze-continuation.json"
+                if continue_existing
+                else "execution-freeze.json"
+            ),
+            frozen,
+        )
         store = documents.SourceStore(pathlib.Path(spec["corpus"]))
         sources = workflow._source_inputs(  # pylint: disable=protected-access
             store, [s["id"] for s in store.sources()]
         )
-        artifacts.write(root / "corpus-freeze.json", sources)
+        if continue_existing:
+            if sources != artifacts.read(root / "corpus-freeze.json"):
+                raise ValueError("Continuation source inventory changed")
+        else:
+            artifacts.write(root / "corpus-freeze.json", sources)
         runner = None
         if replay_path:
             descriptor = artifacts.read(replay_path)
@@ -215,6 +239,7 @@ def run(
             "fixture" if runner else "fixed-corpus",
             ledger,
             attempt,
+            resume=continue_existing,
             source_corpus=pathlib.Path(spec["corpus"]),
             execution=spec,
             replay_runner=runner,
