@@ -387,7 +387,7 @@ class StageRunner:
                     instructions,
                     available_tools,
                     phase,
-                    rounds - turn,
+                    rounds - turn if rounds is not None else None,
                     (
                         self.settings.request_memory_bytes
                         if live_execution
@@ -670,7 +670,7 @@ class StageRunner:
             raise providers.ProviderError(
                 "Tool-round limit reached; no final output"
             )
-        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
             artifacts.event(
                 event_path,
                 "error",
@@ -1258,7 +1258,13 @@ def run(
                 name = futures[future]
                 try:
                     save(name, future.result())
-                except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                except (
+                    OSError,
+                    ValueError,
+                    RuntimeError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
                     if isinstance(exc, providers.ProviderCancelled):
                         raise
                     manifest.setdefault("research_gaps", {})[name] = str(exc)
@@ -1397,7 +1403,13 @@ def run(
                 coverage = evidence_handoff.merge_scope(
                     initial_scope, follow_scope
                 )
-            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                KeyError,
+                TypeError,
+            ) as exc:
                 if isinstance(exc, providers.ProviderCancelled):
                     raise
                 manifest.setdefault("research_gaps", {})["followup"] = str(exc)
@@ -1669,7 +1681,13 @@ def run(
                 manifest["review_followup_coverage"] = evidence_handoff.scope(
                     recovery["output"], gap_input["required_scope"], store
                 )
-            except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                KeyError,
+                TypeError,
+            ) as exc:
                 if isinstance(exc, providers.ProviderCancelled):
                     raise
                 manifest["review_followup_error"] = str(exc)
@@ -1730,7 +1748,7 @@ def run(
         if manifest["execution_status"] == "running":
             manifest["execution_status"] = "complete"
         manifest["unresolved_issues"] = material
-    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
         manifest["execution_status"] = "failed"
         manifest["readiness"] = "needs revision"
         manifest["error"] = {"type": type(exc).__name__, "message": str(exc)}

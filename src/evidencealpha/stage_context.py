@@ -586,7 +586,7 @@ class StageContext:
         instructions: str,
         tools: dict,
         phase: str,
-        remaining_calls: int,
+        remaining_calls: int | None,
         max_bytes: int,
         max_tokens: int | None = None,
     ) -> tuple[str, dict]:

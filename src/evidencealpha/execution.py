@@ -287,6 +287,7 @@ def run(
         ValueError,
         RuntimeError,
         KeyError,
+        TypeError,
         KeyboardInterrupt,
     ) as exc:
         result.update(

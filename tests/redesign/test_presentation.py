@@ -10,6 +10,11 @@ from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import presentation
 from evidencealpha import render
+from evidencealpha import documents
+from evidencealpha import providers
+from evidencealpha import tools
+from evidencealpha import workflow
+import json
 
 
 def test_tables_repeat_headers_and_preserve_links_fonts_text(tmp_path):
@@ -68,3 +73,31 @@ def test_wall_only_calls_retain_concurrency_and_deadline(tmp_path):
     data["campaign_started"] = time.time() - 999999
     with pytest.raises(budget.BudgetExceeded, match="window exhausted"):
         ledger._check(data)
+
+
+def test_normal_stage_accepts_unlimited_call_telemetry(tmp_path):
+    """The actual prompt path serializes no quota without arithmetic on null."""
+    settings = config.Settings(
+        command_calls=None, workers=1, writer_context_tokens=258400
+    )
+    ledger = budget.ExecutionLedger(tmp_path / "ledger.json", settings)
+    ledger.initialize()
+    ledger.start()
+    attempt = ledger.admit("full")
+    provider = providers.FixtureProvider(
+        {"plan": {"content": "Plan", "tasks": []}}
+    )
+    store = documents.SourceStore(tmp_path / "sources")
+    runner = workflow.StageRunner(
+        settings,
+        provider,
+        tools.EvidenceTools(store, settings, "fixed-corpus", ledger),
+        ledger,
+        attempt,
+    )
+    result = runner.run(
+        "plan", "plan", {"brief": "Industry overview"}, tmp_path / "run"
+    )
+    assert result["output"]["content"] == "Plan"
+    assert json.loads(provider.calls[0].prompt)["remaining_calls"] is None
+    assert artifacts.read(ledger.path)["invocations"][0]["status"] == "complete"
