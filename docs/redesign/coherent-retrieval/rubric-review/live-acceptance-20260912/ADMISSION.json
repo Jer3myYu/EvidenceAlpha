@@ -1,0 +1,20 @@
+{
+  "code": {
+    "head": "3d945cf6cecea5599e13f8bb9c0f4badf50858d6",
+    "diff_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "active_code_hash": "6e1d394d06131cacdcc8ada576882c97ed0603320890448cfa99b20acd729a01",
+    "status": "?? docs/redesign/coherent-retrieval/rubric-review/live-acceptance-20260912/\n"
+  },
+  "preflight": "data/redesign/fixed-corpus-integration/rubric-live-preflight-20260912/preflight/RESULT.json",
+  "capacity_evidence": "/home/cobot/.codex/models_cache.json",
+  "capacity_sha256": "621b4e3d1c775ce126f1915eeb23cdcf32cb737f38a6f75a984dbe8e83fda8b9",
+  "budget": "New authorized live acceptance, up to 7200 seconds and 12 generative invocations; token usage telemetry only; unchanged hardware/input/watchdog limits",
+  "agent_input_exclusions": [
+    "known findings",
+    "expected answers",
+    "old reviewer outputs",
+    "supplemental findings",
+    "corrected report"
+  ],
+  "compatibility": "Full original brief and 13 requirements; recovery manifest and all source/checkpoint hashes validated through normal path."
+}

@@ -113,7 +113,13 @@ def test_normal_post_review_recovery_and_failed_recovery(tmp_path, monkeypatch):
     sid = store.ingest(source)["id"]
     for failed in (False, True):
         initial = assessment()
-        initial["issues"] = [issue("missing_evidence")]
+        gap = issue("missing_evidence")
+        if not failed:
+            gap["suggestion"] = (
+                "Explain industry supplier-to-customer relationships "
+                "for an investor unfamiliar with this industry."
+            )
+        initial["issues"] = [gap]
         final = assessment()
         final["resolutions"] = (
             []
@@ -197,3 +203,11 @@ def test_normal_post_review_recovery_and_failed_recovery(tmp_path, monkeypatch):
                     )
                 )
         assert result["initial_review_issues"]
+        if not failed:
+            follow_request = next(
+                c for c in provider.calls if c.stage == "review-followup"
+            )
+            assert gap["suggestion"] in follow_request.prompt
+            assert "without imposing a company/financial checklist" in (
+                follow_request.prompt
+            )
