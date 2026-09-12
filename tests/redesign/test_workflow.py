@@ -107,7 +107,7 @@ def test_reviewer_has_independent_portable_context(tmp_path):
     assert "asset_hashes" in portable
     record = next((root / "stages/review").glob("*/input.json"))
     data = artifacts.read(record)
-    assert data["settings"]["model"] == config.RUNTIME_MODEL
+    assert data["settings"]["model"] == config.REVIEW_MODEL
     assert data["settings"]["effort"] == "medium"
     assert data["portable"]["draft"] == (root / "reports/report.md").read_text()
 

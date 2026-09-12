@@ -99,6 +99,15 @@ class StageRunner:
     ) -> dict:
         """Record a new attempt."""
         stage_tools = copy.copy(self.tools)
+        if stage_tools.mode == "verification":
+            stage_tools.mode = (
+                "live"
+                if self.settings.web_verification
+                and (
+                    role in ("review", "recheck") or stage == "review-followup"
+                )
+                else "fixed-corpus"
+            )
         scorer = self.tools.retriever.scorer
         stage_tools.retriever = retrieval.Retriever(
             self.tools.store,
@@ -117,7 +126,11 @@ class StageRunner:
             + (prompt_path / f"{role}.md").read_text()
         )
         settings = self.settings.model(role, rehearsal)
-        if self.ledger and artifacts.read(self.ledger.path)["claude_disabled"]:
+        if (
+            self.ledger
+            and settings.provider == "claude"
+            and artifacts.read(self.ledger.path)["claude_disabled"]
+        ):
             settings = config.ModelSettings("codex", config.RUNTIME_MODEL)
         record = {
             "stage": stage,
@@ -336,6 +349,14 @@ class StageRunner:
                         - self.settings.writer_output_tokens
                         - self.settings.writer_transport_tokens
                     )
+                if role in ("review", "recheck") and live_execution:
+                    if not self.settings.reviewer_context_tokens:
+                        raise ValueError("GPT-6 review capacity is unconfirmed")
+                    input_tokens = (
+                        self.settings.reviewer_context_tokens
+                        - self.settings.reviewer_output_tokens
+                        - self.settings.writer_transport_tokens
+                    )
                 if live_execution:
                     used = artifacts.read(self.ledger.path)["invocations"]
                     context.data["task"]["scheduling_guidance"] = {
@@ -436,8 +457,36 @@ class StageRunner:
                             if settings.provider == "codex"
                             else providers.ClaudeProvider()
                         )
+                    artifacts.write(
+                        call_dir / "model-identity.json",
+                        {
+                            "requested_model": settings.model,
+                            "actual_model": None,
+                            "status": "awaiting_provider_result",
+                        },
+                    )
                     result = provider.run(request)
                     usage = result.usage
+                    artifacts.write(
+                        call_dir / "model-identity.json",
+                        {
+                            "requested_model": settings.model,
+                            "actual_model": result.effective_model,
+                            "status": (
+                                "provider_reported"
+                                if result.effective_model
+                                else "not_reported_by_provider"
+                            ),
+                        },
+                    )
+                    if (
+                        result.effective_model
+                        and result.effective_model
+                        not in (settings.model, "fixture")
+                    ):
+                        raise providers.ProviderError(
+                            "Provider model mismatch", usage
+                        )
                     call_status = "complete"
                 except providers.QuotaExhausted as exc:
                     usage = exc.usage
@@ -815,9 +864,18 @@ def _prepare_report(
         for source in missing_sources:
             label = source["id"]
             body += f'- [{label}]({source["url"]})\n'
+    mapping_path = reports / "source-map.json"
     mapping = {
-        source["id"]: f"S{i}" for i, source in enumerate(store.sources(), 1)
+        value["source_id"]: alias
+        for alias, value in (
+            artifacts.read(mapping_path).items()
+            if mapping_path.exists()
+            else []
+        )
     }
+    for source in store.sources():
+        if source["id"] not in mapping:
+            mapping[source["id"]] = f"S{len(mapping) + 1}"
     for source_id, alias in mapping.items():
         body = body.replace(source_id, alias)
     artifacts.write(
@@ -847,10 +905,12 @@ def run(
     replay_runner: object | None = None,
 ) -> dict:
     """Run one plan/research/write/review/revise/recheck path."""
-    if mode not in ("fixture", "fixed-corpus", "live"):
+    if mode not in ("fixture", "fixed-corpus", "live", "verification"):
         raise ValueError("Unknown run mode")
     if not isinstance(provider, providers.FixtureProvider) and not ledger:
         raise ValueError("Model runs require an admitted campaign attempt")
+    if mode == "fixed-corpus" and settings.web_verification:
+        raise ValueError("Fixed-corpus mode cannot enable web verification")
     execution = execution or {}
     root.mkdir(parents=True, exist_ok=resume or bool(execution))
     manifest_path = root / execution.get("manifest_file", "manifest.json")
@@ -1400,6 +1460,8 @@ def run(
                 "brief": brief,
                 "draft": path.read_text(),
                 "review_mode": True,
+                "information_cutoff": settings.information_cutoff,
+                "web_verification_enabled": settings.web_verification,
                 "questions": required_scope
                 or [
                     {"id": key, "question": key}
@@ -1431,7 +1493,9 @@ def run(
                 "upstream_omissions": assembled["upstream_omissions"],
                 "required_original_refs": assembled["required_original_refs"],
                 "required_scope": [],
-                "sources": sources,
+                "sources": _source_inputs(
+                    store, [s["id"] for s in store.sources()]
+                ),
                 "source_map": artifacts.read(reports / "source-map.json"),
                 "figures": artifacts.read(reports / "figures.json"),
                 "visual_review_capability": (
@@ -1528,6 +1592,10 @@ def run(
             gap_input = {
                 **base,
                 **assembled,
+                "sources": _source_inputs(
+                    store, [s["id"] for s in store.sources()]
+                ),
+                "information_cutoff": settings.information_cutoff,
                 "task": {
                     "role": "company",
                     "question": "Investigate only these essential review gaps. "

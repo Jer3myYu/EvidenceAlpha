@@ -1,0 +1,22 @@
+{
+  "model": "gpt-6-astra",
+  "catalog_path": "/home/cobot/.codex/models_cache.json",
+  "catalog_hash": "3f8825d1344bcd609a58fe232896a7947da1d26b4e1320eb180488cd534b993a",
+  "context_window": 272000,
+  "effective_percent": 95,
+  "reasoning": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+  ],
+  "output_limit": null,
+  "output_limit_note": "Catalog may not expose a CLI output ceiling; application output reservation is not a hard cap.",
+  "official_model_reference": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+  "official_API_max_output_tokens": 128000,
+  "CLI_output_cap_confirmed": false,
+  "application_output_reserve": 12000,
+  "actual_model_note": "Recorded from provider response if emitted; null and not_reported_by_provider otherwise. Never infer actual backend identity from the requested setting."
+}

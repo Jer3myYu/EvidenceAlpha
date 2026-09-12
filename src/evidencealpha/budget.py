@@ -355,9 +355,19 @@ class ExecutionLedger(Ledger):
             "invocation_seconds": self.settings.command_provider_seconds,
             "observable_tokens": self.settings.command_observable_tokens,
             "generative_calls": self.settings.command_calls,
-            "search_calls": 0,
-            "fetch_attempts": 0,
+            "search_calls": None if self.settings.web_verification else 0,
+            "fetch_attempts": None if self.settings.web_verification else 0,
         }
+
+    def acquire(self, kind: str) -> None:
+        """Meter enabled public verification under the overall controls."""
+        if not self.settings.web_verification:
+            raise BudgetExceeded("Fixed-corpus acquisition prohibited")
+        if kind not in ("search_calls", "fetch_attempts"):
+            raise ValueError("Unknown acquisition kind")
+        with self.locked() as data:
+            self._check(data)
+            data[kind] += 1
 
     def _check(self, data: dict) -> float:
         if data["limits"] != self.limits:

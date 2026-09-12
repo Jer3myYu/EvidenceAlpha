@@ -14,6 +14,7 @@ RATINGS = ("Meets", "Partly meets", "Does not meet")
 DECISIONS = ("ready", "ready with disclosed limitations", "needs revision")
 ISSUE_KINDS = (
     "missing_evidence",
+    "conflict",
     "factual",
     "explanation",
     "source_limitation",
@@ -95,7 +96,7 @@ def route(issues: list[dict]) -> list[dict]:
             "id": f"finding-{i}",
             "action": (
                 "research"
-                if issue.get("kind") == "missing_evidence"
+                if issue.get("kind") in ("missing_evidence", "conflict")
                 else (
                     "qualify"
                     if issue.get("kind") == "source_limitation"

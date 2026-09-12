@@ -4,6 +4,7 @@ import json
 import pathlib
 import sys
 
+from evidencealpha import artifacts
 from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import documents
@@ -20,7 +21,14 @@ def main() -> None:
         ),
         settings,
         "live",
-        budget.Ledger(pathlib.Path(value["ledger"])),
+        (
+            budget.ExecutionLedger(pathlib.Path(value["ledger"]), settings)
+            if artifacts.read(pathlib.Path(value["ledger"]))["limits"].get(
+                "policy"
+            )
+            == "overall-controls-v2"
+            else budget.Ledger(pathlib.Path(value["ledger"]))
+        ),
     )
     try:
         result = evidence.call(value["name"], value["arguments"])

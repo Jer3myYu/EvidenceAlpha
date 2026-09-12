@@ -48,6 +48,9 @@ def group_passages(passages: list[dict]) -> dict:
                     "issuer",
                     "url",
                     "identity_scope",
+                    "acquired_at",
+                    "document_date",
+                    "external_verification",
                 )
             }
             groups[source_id]["passages"] = []
@@ -506,6 +509,13 @@ class SourceStore:
             "issuer": identity.get("issuer"),
             "url": source["url"],
             "identity_scope": "Document issuer; passage subjects may differ",
+            "acquired_at": source["acquired_at"],
+            "document_date": source.get("document_date"),
+            "external_verification": (
+                artifacts.read(self.root / source_id / "external.json")
+                if (self.root / source_id / "external.json").exists()
+                else None
+            ),
         }
 
     def concise_passage(self, passage: dict) -> dict:

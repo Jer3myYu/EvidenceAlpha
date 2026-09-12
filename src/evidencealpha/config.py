@@ -5,8 +5,9 @@ import json
 import pathlib
 
 RUNTIME_MODEL = "gpt-5.6-sol"
+REVIEW_MODEL = "gpt-6-astra"
 REHEARSAL_MODEL = "gpt-5.5"
-PROMPT_VERSION = "rubric-review-1"
+PROMPT_VERSION = "rubric-review-web-1"
 LIMITS = {
     "session_seconds": 28800,
     "isolated_attempts": 10,
@@ -43,6 +44,12 @@ class Settings:
 
     runtime_model: str = RUNTIME_MODEL
     runtime_effort: str = "medium"
+    reviewer_model: str = REVIEW_MODEL
+    reviewer_effort: str = "medium"
+    reviewer_context_tokens: int | None = None
+    reviewer_output_tokens: int = 12000
+    web_verification: bool = False
+    information_cutoff: str | None = None
     profile: str = "low_claude_quota"
     claude_model: str | None = None
     rehearsal_model: str = REHEARSAL_MODEL
@@ -108,6 +115,10 @@ class Settings:
             raise ValueError(
                 "This execution retains the authorized model/effort"
             )
+        if self.reviewer_model != REVIEW_MODEL:
+            raise ValueError("Reviewer must use the requested GPT-6 model")
+        if self.web_verification and not self.information_cutoff:
+            raise ValueError("Web verification needs an information cutoff")
         if self.writer_context_tokens is not None and (
             self.writer_context_tokens
             <= self.writer_output_tokens + self.writer_transport_tokens
@@ -179,7 +190,7 @@ class Settings:
         """Select a model without silently upgrading or changing providers."""
         if role in ("review", "recheck"):
             return ModelSettings(
-                "codex", self.runtime_model, self.runtime_effort
+                "codex", self.reviewer_model, self.reviewer_effort
             )
         if rehearsal:
             return ModelSettings("codex", self.rehearsal_model)

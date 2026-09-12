@@ -176,6 +176,7 @@ def output_schema(allowed_tools: tuple[str, ...] | None = None) -> dict:
                                 }
                             )
                         ),
+                        "uncertainty": string,
                         "impact": string,
                         "suggestion": string,
                     }

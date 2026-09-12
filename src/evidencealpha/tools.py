@@ -16,6 +16,7 @@ import requests
 import tavily
 import dotenv
 
+from evidencealpha import artifacts
 from evidencealpha import budget
 from evidencealpha import config
 from evidencealpha import documents
@@ -279,4 +280,27 @@ class EvidenceTools:
                                 "Source exceeds 25 MB capture limit"
                             )
                         output.write(chunk)
-                return {"source": self.store.ingest(path, url), "reused": False}
+                source = self.store.ingest(path, url)
+                artifacts.write(
+                    self.store.root / source["id"] / "external.json",
+                    {
+                        "origin": "external_verification",
+                        "requested_url": url,
+                        "captured_url": response.url,
+                        "acquired_at": source["acquired_at"],
+                        "information_cutoff": self.settings.information_cutoff,
+                        "date_status": "Publication date and reporting period "
+                        "must be checked against captured originals; "
+                        "capture date is not publication date.",
+                        "http_last_modified": response.headers.get(
+                            "Last-Modified"
+                        ),
+                    },
+                )
+                return {
+                    "source": source,
+                    "reused": False,
+                    "instruction": "Capture succeeded. Open original "
+                    "pages/chunks before citing; verify "
+                    "dates against the information cutoff.",
+                }

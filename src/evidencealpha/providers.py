@@ -224,6 +224,28 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
     return events, process.returncode
 
 
+def installed_model(model: str) -> dict:
+    """Resolve an exact installed model without guessing aliases."""
+    path = pathlib.Path.home() / ".codex" / "models_cache.json"
+    if not path.exists():
+        raise ValueError("Installed provider model catalog is unavailable")
+    models = artifacts.read(path).get("models", [])
+    found = next((m for m in models if m.get("slug") == model), None)
+    if not found or found.get("visibility") != "list":
+        raise ValueError(f"Requested model is unavailable in catalog: {model}")
+    return {
+        "model": model,
+        "catalog_path": str(path),
+        "catalog_hash": artifacts.digest(path.read_bytes()),
+        "context_window": found["context_window"],
+        "effective_percent": found.get("effective_context_window_percent", 100),
+        "reasoning": [x["effort"] for x in found["supported_reasoning_levels"]],
+        "output_limit": found.get("max_output_tokens"),
+        "output_limit_note": "Catalog may not expose a CLI output ceiling; "
+        "application output reservation is not a hard cap.",
+    }
+
+
 class CodexProvider:
     """Subscription CLI fallback; no Python Codex SDK is installed."""
 
@@ -232,8 +254,11 @@ class CodexProvider:
         if request.settings.model not in (
             config.RUNTIME_MODEL,
             config.REHEARSAL_MODEL,
+            config.REVIEW_MODEL,
         ):
             raise ValueError("Model is outside the authorized campaign")
+        if request.settings.model == config.REVIEW_MODEL:
+            installed_model(request.settings.model)
         output = request.workspace / "last-message.txt"
         schema = request.workspace / "output-schema.json"
         artifacts.write(schema, protocol.encoded_schema(request.allowed_tools))

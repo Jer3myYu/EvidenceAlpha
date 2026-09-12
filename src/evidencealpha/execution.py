@@ -114,6 +114,7 @@ def run(
     root: pathlib.Path,
     replay_path: pathlib.Path | None = None,
     continue_existing: bool = False,
+    web_verification: bool = False,
 ) -> dict:
     """Admit one command, freeze inputs, supervise setup through export."""
     if root.exists() and not continue_existing:
@@ -122,6 +123,19 @@ def run(
         )
     spec = _paths(artifacts.read(path), path.resolve().parent)
     settings = config.Settings(**spec["settings"])
+    if settings.web_verification != web_verification:
+        raise ValueError(
+            "Web verification requires explicit verify-report command"
+        )
+    model_info = providers.installed_model(settings.reviewer_model)
+    if settings.reviewer_effort not in model_info["reasoning"]:
+        raise ValueError("Reviewer reasoning level unavailable")
+    reviewer_capacity = (
+        model_info["context_window"] * model_info["effective_percent"] // 100
+    )
+    settings = dataclasses.replace(
+        settings, reviewer_context_tokens=reviewer_capacity
+    )
     if settings.profile != "low_claude_quota":
         raise ValueError("Fixed-corpus execution has no provider fallback")
     if settings.workers != 1 or not settings.writer_context_tokens:
@@ -202,6 +216,7 @@ def run(
             "python": sys.executable,
             "started": artifacts.now(),
             "replay": str(replay_path) if replay_path else None,
+            "reviewer_model_resolution": model_info,
             "packages": {
                 name: importlib.metadata.version(name)
                 for name in ("pymupdf", "markdown-it-py", "matplotlib")
@@ -240,7 +255,11 @@ def run(
             ),
             [],
             root,
-            "fixture" if runner else "fixed-corpus",
+            (
+                "fixture"
+                if runner
+                else ("verification" if web_verification else "fixed-corpus")
+            ),
             ledger,
             attempt,
             resume=continue_existing,

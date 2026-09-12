@@ -182,18 +182,19 @@ def parser() -> argparse.ArgumentParser:
     )
     stage2.add_argument("--execute", action="store_true")
     stage2.add_argument("--case", type=pathlib.Path)
-    fixed = commands.add_parser(
-        "fixed-corpus",
-        help="One bounded fixed-corpus report; no external acquisition",
-    )
-    fixed.add_argument("--continue-existing", action="store_true")
-    fixed.add_argument("--execution", type=pathlib.Path, required=True)
-    fixed.add_argument("--output", type=pathlib.Path, required=True)
-    fixed.add_argument(
-        "--replay",
-        type=pathlib.Path,
-        help="Hash-bound saved stage outputs; no model calls",
-    )
+    for name, description in (
+        ("fixed-corpus", "Offline corpus report; no external acquisition"),
+        ("verify-report", "Explicit web-enabled targeted report verification"),
+    ):
+        fixed = commands.add_parser(name, help=description)
+        fixed.add_argument("--continue-existing", action="store_true")
+        fixed.add_argument("--execution", type=pathlib.Path, required=True)
+        fixed.add_argument("--output", type=pathlib.Path, required=True)
+        fixed.add_argument(
+            "--replay",
+            type=pathlib.Path,
+            help="Hash-bound saved stage outputs; no model calls",
+        )
     return result
 
 
@@ -211,9 +212,13 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     args = parser().parse_args()
     settings = config.load(args.config)
-    if args.command == "fixed-corpus":
+    if args.command in ("fixed-corpus", "verify-report"):
         data = execution.run(
-            args.execution, args.output, args.replay, args.continue_existing
+            args.execution,
+            args.output,
+            args.replay,
+            args.continue_existing,
+            web_verification=args.command == "verify-report",
         )
         output = {
             key: data.get(key)
