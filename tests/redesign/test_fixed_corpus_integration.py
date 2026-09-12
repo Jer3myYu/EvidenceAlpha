@@ -481,3 +481,28 @@ def test_review_omits_only_research_navigation(tmp_path):
     assert originals[0]["text"] == passage["text"]
     assert originals[0]["spans"] == passage["spans"]
     assert originals[0]["source_id"] == passage["source_id"]
+
+
+def test_shared_chunk_locations_roundtrip_without_losing_context():
+    """Header/body fragments retain one immutable multi-span chunk binding."""
+    spans = [
+        {"start": 0, "end": 10, "page": 1},
+        {"start": 11, "end": 20, "page": 1},
+    ]
+    values = [
+        {
+            "source_id": "original",
+            "version": {"hash": "unchanged"},
+            "text": text,
+            "spans": [span],
+            "chunk_refs": [{"chunk_id": "c1", "spans": spans}],
+        }
+        for text, span in zip(("Unit: USD", "Revenue 10"), spans)
+    ]
+    original = documents.group_passages(values)
+    compact = documents.compact_passages(original)
+    assert len(compact["sources"][0]["chunk_locations"]) == 1
+    assert documents.ungroup_passages(compact) == documents.ungroup_passages(
+        original
+    )
+    assert documents.compact_passages(compact) == compact

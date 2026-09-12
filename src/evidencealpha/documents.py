@@ -80,6 +80,15 @@ def compact_passages(result: dict) -> dict:
     """
     result = copy.deepcopy(result)
     for source in result.get("sources", []):
+        if "passage_columns" in source:
+            source["passages"] = [
+                {
+                    key: value
+                    for key, value in zip(source["passage_columns"], row)
+                    if value is not None
+                }
+                for row in source["passages"]
+            ]
         for passage in source["passages"]:
             passage.pop("block_ids", None)
             if "spans" in passage and all(
@@ -125,6 +134,24 @@ def compact_passages(result: dict) -> dict:
                     ]
                     for entry in passage.pop("chunk_refs")
                 ]
+            if "chunk_bindings" in passage:
+                bindings = passage.pop("chunk_bindings")
+                locations = source.setdefault("chunk_locations", {})
+                for chunk_id, spans in bindings:
+                    if chunk_id in locations and locations[chunk_id] != spans:
+                        raise ValueError(
+                            "Conflicting immutable chunk locations"
+                        )
+                    locations[chunk_id] = spans
+                passage["chunk_ids"] = [entry[0] for entry in bindings]
+        columns = sorted(
+            {key for p in source["passages"] for key in p},
+            key=lambda key: (key != "text", key),
+        )
+        source["passage_columns"] = columns
+        source["passages"] = [
+            [p.get(key) for key in columns] for p in source["passages"]
+        ]
     return result
 
 
@@ -133,7 +160,15 @@ def ungroup_passages(result: dict) -> list[dict]:
     result_passages = []
     for source in result.get("sources", []):
         for stored in source["passages"]:
-            passage = dict(stored)
+            passage = (
+                {
+                    key: value
+                    for key, value in zip(source["passage_columns"], stored)
+                    if value is not None
+                }
+                if isinstance(stored, list)
+                else dict(stored)
+            )
             if "original_spans" in passage:
                 passage["spans"] = [
                     {"start": span[0], "end": span[1], "page": span[2]}
@@ -143,7 +178,18 @@ def ungroup_passages(result: dict) -> list[dict]:
                 passage["chunk_refs"] = [
                     {
                         "chunk_id": chunk_id,
-                        "spans": copy.deepcopy(passage["spans"]),
+                        "spans": (
+                            [
+                                {
+                                    "start": span[0],
+                                    "end": span[1],
+                                    "page": span[2],
+                                }
+                                for span in source["chunk_locations"][chunk_id]
+                            ]
+                            if chunk_id in source.get("chunk_locations", {})
+                            else copy.deepcopy(passage["spans"])
+                        ),
                     }
                     for chunk_id in passage.pop("chunk_ids")
                 ]
@@ -163,7 +209,12 @@ def ungroup_passages(result: dict) -> list[dict]:
                     **{
                         key: value
                         for key, value in source.items()
-                        if key != "passages"
+                        if key
+                        not in (
+                            "passages",
+                            "chunk_locations",
+                            "passage_columns",
+                        )
                     },
                     **passage,
                 }

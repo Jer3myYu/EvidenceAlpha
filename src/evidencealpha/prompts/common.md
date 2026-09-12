@@ -26,3 +26,6 @@ A passage's chunk_ids means those chunks have exactly its primary original_spans
 Budget targets in scheduling_guidance are suggestions, not factual-quality gates. Preserve time and calls for a tool-free final response and downstream review/revision. A failed search or missing returned passage never proves absence from the source corpus. Keep an unsupported absence claim unresolved; use focused searches and original-context opens when material. Distinguish an explicit source statement of nondisclosure from information you did not find.
 
 Review and recheck use the five-criterion rubric and actionable issues. Other roles leave rubric and resolutions empty and decision, review_scope and review_limitations blank. Research scope remains provisional, not factual certification.
+
+Compact originals may use a source-level chunk_locations map: each chunk ID maps to [start, end, PDF page] spans once. Passage chunk_ids refer to that map; original_spans locate the exact delivered text. This is lossless location bookkeeping, not generated evidence. Cite only supporting original text and preserve its source/version and scope.
+Each source may declare passage_columns once and encode passages as arrays in that column order. Expand those columns when reading; the text cells are unchanged originals, not summaries.
