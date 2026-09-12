@@ -4,6 +4,7 @@ import concurrent.futures
 import copy
 import dataclasses
 import json
+import itertools
 import math
 import pathlib
 import re
@@ -19,6 +20,7 @@ from evidencealpha import handoff as evidence_handoff
 from evidencealpha import providers
 from evidencealpha import reading
 from evidencealpha import render
+from evidencealpha import presentation
 from evidencealpha import retrieval
 from evidencealpha import reranking
 from evidencealpha import review as review_contract
@@ -267,7 +269,9 @@ class StageRunner:
                 if live_execution
                 else self.settings.tool_rounds
             )
-            for turn in range(rounds):
+            for turn in (
+                range(rounds) if rounds is not None else itertools.count()
+            ):
                 evidence_remaining = evidence_end - time.monotonic()
                 should_write = (
                     final_notes_only
@@ -280,7 +284,7 @@ class StageRunner:
                         not live_execution
                         and tool_count >= self.settings.stage_tool_limit
                     )
-                    or turn == rounds - 1
+                    or (rounds is not None and turn == rounds - 1)
                     or evidence_remaining <= longest_call
                     or (not live_execution and role == "revision" and turn >= 2)
                 )
@@ -364,8 +368,11 @@ class StageRunner:
                         "stage_calls_used": sum(
                             x.get("stage") == stage for x in used
                         ),
-                        "overall_calls_remaining": self.settings.command_calls
-                        - len(used),
+                        "overall_calls_remaining": (
+                            self.settings.command_calls - len(used)
+                            if self.settings.command_calls is not None
+                            else None
+                        ),
                         "stage_seconds_target": record["seconds"],
                         "stage_seconds_used": time.monotonic() - started_stage,
                         "instruction": (
@@ -829,7 +836,11 @@ def _source_inputs(store: documents.SourceStore, ids: list[str]) -> list[dict]:
 
 
 def _prepare_report(
-    output: dict, reports: pathlib.Path, store: documents.SourceStore, name: str
+    output: dict,
+    reports: pathlib.Path,
+    store: documents.SourceStore,
+    name: str,
+    information_cutoff: str | None = None,
 ) -> pathlib.Path:
     artifacts.write(reports / name, output["content"])
     specs = output.get("figures", [])
@@ -850,9 +861,11 @@ def _prepare_report(
         )
         caption += "来源：" + ", ".join(figure["source_ids"]) + "\n"
         pattern = r"(!\[[^\]]*\]\(" + re.escape(figure["path"]) + r"\))"
+        existing = re.search(pattern + r"\s*\n\s*图\s*\d+", body)
         body, count = re.subn(
             pattern,
-            lambda match, caption=caption: match[0] + "\n" + caption,
+            lambda match, caption=caption, existing=existing: match[0]
+            + ("" if existing else "\n" + caption),
             body,
             count=1,
         )
@@ -885,6 +898,22 @@ def _prepare_report(
             for sid, alias in mapping.items()
         },
     )
+    for sid, alias in mapping.items():
+        context = store.source_context(sid)
+        label = presentation.source_label(alias, context)
+        url = context["url"]
+        body = body.replace(f"[{alias}]({url})", f"[{label}]({url})")
+    body = presentation.table_notes(body)
+    report_date = artifacts.now()[:10]
+    cutoff = information_cutoff or "未指定"
+    code_version = artifacts.revision()["head"][:7]
+    metadata = (
+        f"报告日期：{report_date} · 信息截止："
+        f"{cutoff} · 版本："
+        f"{code_version}"
+    )
+    first, separator, rest = body.partition("\n")
+    body = first + separator + "\n" + metadata + "\n\n" + rest
     path = reports / name
     artifacts.write(path, body)
     return path
@@ -1449,7 +1478,11 @@ def run(
             and previous_synthesis == synthesis["path"]
         ):
             draft = _prepare_report(
-                synthesis["output"], reports, store, "draft.md"
+                synthesis["output"],
+                reports,
+                store,
+                "draft.md",
+                settings.information_cutoff,
             )
         current = draft
 
@@ -1660,7 +1693,11 @@ def run(
             )
             save("revision", revision)
             current = _prepare_report(
-                revision["output"], reports, store, "revised.md"
+                revision["output"],
+                reports,
+                store,
+                "revised.md",
+                settings.information_cutoff,
             )
             recheck = stage(
                 "recheck",

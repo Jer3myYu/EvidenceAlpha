@@ -123,6 +123,13 @@ def run(
         )
     spec = _paths(artifacts.read(path), path.resolve().parent)
     settings = config.Settings(**spec["settings"])
+    if spec.get("wall_deadline_epoch") is not None:
+        remaining = int(spec["wall_deadline_epoch"] - time.time())
+        if remaining <= 0:
+            raise ValueError("Enclosing work deadline expired")
+        settings = dataclasses.replace(
+            settings, command_seconds=min(settings.command_seconds, remaining)
+        )
     if settings.web_verification != web_verification:
         raise ValueError(
             "Web verification requires explicit verify-report command"

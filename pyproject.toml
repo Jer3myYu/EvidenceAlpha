@@ -12,6 +12,7 @@ dependencies = [
   "beautifulsoup4==4.15.0",
   "markdown-it-py>=3,<5",
   "matplotlib>=3.9,<4",
+  "fonttools>=4.50,<5",
   "requests>=2.32,<3",
   "tavily-python>=0.8,<1",
   "python-dotenv>=1.2,<2",

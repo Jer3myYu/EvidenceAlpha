@@ -379,13 +379,16 @@ class ExecutionLedger(Ledger):
         )
         if remaining <= 0:
             raise BudgetExceeded("Session window exhausted")
-        if len(data["invocations"]) >= self.settings.command_calls:
+        if (
+            self.settings.command_calls is not None
+            and len(data["invocations"]) >= self.settings.command_calls
+        ):
             raise BudgetExceeded("Generative call ceiling reached")
         return remaining
 
     def writing_due(self) -> bool:
         """Offer writing before the shared call supply runs out."""
-        if not self.research:
+        if not self.research or self.settings.command_calls is None:
             return False
         data = artifacts.read(self.path)
         return len(data["invocations"]) >= (

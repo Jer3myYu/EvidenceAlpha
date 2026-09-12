@@ -97,7 +97,7 @@ class Settings:
     company_provider_seconds: int = 600
     company_observable_tokens: int = 12000
     command_seconds: int = 10800
-    command_calls: int = 16
+    command_calls: int | None = 16
     command_provider_seconds: int = 3600
     command_observable_tokens: int = 40000
     writing_provider_reserve: int = 900
@@ -126,6 +126,8 @@ class Settings:
             raise ValueError(
                 "Provider capacity cannot contain output/transport"
             )
+        if self.command_calls is not None and self.command_calls <= 0:
+            raise ValueError("Call ceiling must be positive or null")
         if self.rehearsal_model not in (REHEARSAL_MODEL, RUNTIME_MODEL):
             raise ValueError("Rehearsals allow only policy-approved models")
         if self.profile not in ("low_claude_quota", "preferred"):
@@ -153,7 +155,6 @@ class Settings:
             self.company_provider_seconds,
             self.company_observable_tokens,
             self.command_seconds,
-            self.command_calls,
             self.command_provider_seconds,
             self.command_observable_tokens,
             self.writing_provider_reserve,
@@ -226,7 +227,7 @@ DIAGNOSTIC_LIMITS = {
 # All other stage/cumulative allocations are scheduling guidance and telemetry.
 EXECUTION_HARD_LIMITS = {
     "command_seconds": "Single elapsed deadline, including tools and waiting",
-    "command_calls": "Admitted generative calls, including failures",
+    "command_calls": "Optional call ceiling; null uses the wall deadline",
     "invocation_seconds": "Provider watchdog within overall deadline",
     "writer_context_tokens": "Supplied verified provider context capacity",
     "writer_output_tokens": "Output headroom reserved within provider context",

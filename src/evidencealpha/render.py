@@ -14,19 +14,9 @@ import markdown_it
 import pymupdf
 
 from evidencealpha import artifacts
+from evidencealpha import layout
 
-CSS = """
-body { font-family: sans-serif; font-size: 10pt;
-       line-height: 1.5; color: #182434; }
-h1 { font-size: 20pt; color: #123b55; }
-h2 { font-size: 14pt; color: #123b55; margin-top: 18pt; }
-table { width: 100%; table-layout: fixed; border-spacing: 0; margin: 10pt 0; }
-th { background-color: #e6eef4; }
-th, td { border: 0.5pt solid #a6b5bf; padding: 5pt; font-size: 9pt; }
-img { max-width: 100%; }
-.report-image { page-break-before: always; }
-a { color: #086788; }
-"""
+CSS = layout.CSS
 
 
 def figures(
@@ -103,19 +93,24 @@ def figures(
             ]
             if not pairs:
                 raise ValueError("No observed values to plot")
-            font_path = directory / "cjk.ttf"
-            if not font_path.exists():
-                artifacts.write(font_path, pymupdf.Font("cjk").buffer)
+            font_path = pathlib.Path(layout.fonts(directory)["regular"]["file"])
             import matplotlib.font_manager as fm
 
             font = fm.FontProperties(fname=str(font_path))
             fig, axis = plt.subplots(figsize=(8, 4), layout="constrained")
             try:
-                axis.bar(
+                bars = axis.bar(
                     [p[0] for p in pairs],
                     [p[1] for p in pairs],
                     color="#176b87",
                 )
+                axis.bar_label(
+                    bars,
+                    labels=[f"{p[1]:,.2f}" for p in pairs],
+                    padding=4,
+                    fontproperties=font,
+                )
+                axis.margins(y=0.16)
                 axis.set_ylabel(spec["unit"], fontproperties=font)
                 axis.set_title(spec["title"], fontproperties=font)
                 for label in axis.get_xticklabels():
@@ -153,33 +148,12 @@ def export(markdown_path: pathlib.Path) -> dict:
         if not path.is_file():
             name = image["src"]
             raise ValueError(f"Missing report asset: {name}")
-        # Start figures on a fresh page: Story can shrink an explicitly sized
-        # image to unreadable dimensions in the remaining page space.
         pixmap = pymupdf.Pixmap(str(path))
-        scale = min(500 / pixmap.width, 450 / pixmap.height, 1)
+        scale = min(495 / pixmap.width, 320 / pixmap.height, 1)
         image["style"] = (
             f"width: {pixmap.width * scale}pt; "
             f"height: {pixmap.height * scale}pt;"
         )
-        image.parent["class"] = ["report-image"]
-    for table in soup.find_all("table"):
-        for node in list(table.find_all(string=True)):
-            node.replace_with(
-                re.sub(
-                    r"[\x21-\x7e]{16,}",
-                    lambda match: "\u200b".join(
-                        match[0][i : i + 12]
-                        for i in range(0, len(match[0]), 12)
-                    ),
-                    str(node),
-                )
-            )
-        for row in table.find_all("tr"):
-            cells = row.find_all(["th", "td"], recursive=False)
-            columns = sum(int(cell.get("colspan", 1)) for cell in cells)
-            for cell in cells:
-                width = 100 * int(cell.get("colspan", 1)) / columns
-                cell["style"] = f"width: {width}%;"
     body = str(soup)
     artifacts.write(
         markdown_path.with_suffix(".html"), f"<style>{CSS}</style>{body}"
@@ -194,26 +168,9 @@ def export(markdown_path: pathlib.Path) -> dict:
     buffer = io.BytesIO()
     diagnostics = {}
     try:
-        writer = pymupdf.DocumentWriter(buffer)
-        try:
-            story = pymupdf.Story(
-                html=body,
-                user_css=CSS,
-                archive=pymupdf.Archive(str(markdown_path.parent)),
-            )
-            page_rect = pymupdf.paper_rect("a4")
-            more = True
-            for _ in range(100):
-                device = writer.begin_page(page_rect)
-                more, _ = story.place(page_rect + (42, 42, -42, -42))
-                story.draw(device)
-                writer.end_page()
-                if not more:
-                    break
-            if more:
-                raise ValueError("PDF pagination failed to converge")
-        finally:
-            writer.close()
+        payload, pagination = layout.pdf(soup, markdown_path.parent)
+        buffer.write(payload)
+        diagnostics.update(pagination)
         with pymupdf.open(stream=buffer.getvalue(), filetype="pdf") as document:
             packed = re.sub(
                 r"[\s\u200b]",
@@ -239,14 +196,19 @@ def export(markdown_path: pathlib.Path) -> dict:
                     raise ValueError(f"PDF omitted text: {fragment[:60]}")
             if len(document) == 0:
                 raise ValueError("PDF contains no pages")
-            document.subset_fonts()
             artifacts.write(pdf_path, document.tobytes(deflate=True))
             document[0].get_pixmap(matrix=pymupdf.Matrix(1.3, 1.3)).save(
                 str(markdown_path.with_suffix(".preview.png"))
             )
-        status.update(pdf=str(pdf_path), pdf_status="complete")
+        status.update(
+            pdf=str(pdf_path),
+            pdf_status="complete",
+            pages=diagnostics["pages"],
+            **pagination,
+        )
     except (RuntimeError, ValueError, OSError) as exc:
         status["error"] = str(exc)
+        status["pdf_status"] = "failed"
         if buffer.getvalue():
             rejected = markdown_path.with_name(
                 markdown_path.stem
