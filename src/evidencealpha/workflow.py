@@ -1789,7 +1789,13 @@ def run(
                 "recheck",
                 "recheck",
                 {
-                    **review_followup_input(review_input(current)),
+                    **{
+                        key: value
+                        for key, value in review_followup_input(
+                            review_input(current)
+                        ).items()
+                        if key != "recovered_followup_notes"
+                    },
                     "prior_issues": material,
                     "initial_review_assessment": examined,
                     "required_scope": [],
