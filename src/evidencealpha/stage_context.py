@@ -291,6 +291,20 @@ class StageContext:
                     "version", {}
                 ).get(key):
                     del source[key]
+        inventory = {
+            source["source_id"]: source
+            for source in task.get("sources", [])
+            if isinstance(source, dict) and "source_id" in source
+        }
+        for alias, value in task.get("source_map", {}).items():
+            parent = inventory.get(value.get("source_id"), {})
+            task["source_map"][alias] = {
+                key: field
+                for key, field in value.items()
+                if key == "source_id"
+                or key not in parent
+                or field != parent[key]
+            }
         return {
             **task,
             "unresolved_questions": task.get("unresolved_questions", []),

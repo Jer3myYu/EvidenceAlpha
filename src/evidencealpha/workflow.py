@@ -853,6 +853,12 @@ def _prepare_report(
             figure[key] = f"{version}/{figure[key]}"
     artifacts.write(reports / "figures.json", manifest)
     body = output["content"].replace("](" + "figures/", f"]({version}/figures/")
+    body, declarations = presentation.resolve_declared_sources(
+        body, [source["id"] for source in store.sources()]
+    )
+    artifacts.write(
+        reports / f"{version}-citation-resolution.json", declarations
+    )
     # A revision may retain the prior draft directory. Bind known figure
     # filenames to the new manifest before deciding a figure is missing.
     for figure in manifest:
@@ -868,8 +874,9 @@ def _prepare_report(
             body,
         )
     for index, figure in enumerate(manifest, 1):
+        caption_text = re.sub(r"^图\s*\d+\s*[:：　]?\s*", "", figure["caption"])
         caption = (
-            f'\n图 {index}：{figure["caption"]} '
+            f"\n图 {index}：{caption_text} "
             f'({figure["period"]}; {figure["unit"]})。'
             f'{figure["caveats"]}\n'
         )

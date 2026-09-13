@@ -31,3 +31,5 @@ Compact originals may use a source-level chunk_locations map: each chunk ID maps
 Each source may declare passage_columns once and encode passages as arrays in that column order. Expand those columns when reading; the text cells are unchanged originals, not summaries.
 
 An inventory's identifying_passage inherits any omitted source metadata (source ID, version, URL, issuer and dates) from its enclosing source entry. This only avoids repeated metadata; original text and location fields remain explicit. Source hash/text_hash may appear once inside version.
+
+A source may declare span_table as [[start,end,page],...]. Passage span_indices and chunk_span_indices[chunk_id] are zero-based indices into that table; expanding them restores the unchanged original locations. Source-map aliases inherit omitted metadata from the sources entry with the same source_id.
