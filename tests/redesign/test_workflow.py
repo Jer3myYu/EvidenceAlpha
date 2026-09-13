@@ -102,7 +102,7 @@ def test_reviewer_has_independent_portable_context(tmp_path):
     """Writer notes and private provider sessions are not reviewer inputs."""
     _, provider, root = _run(tmp_path)
     review = next(c for c in provider.calls if c.stage == "review")
-    portable = json.loads(json.loads(review.prompt)["messages"][1]["content"])
+    portable = json.loads(review.prompt)["messages"][1]["content"]
     assert "notes" not in portable
     assert "asset_hashes" in portable
     record = next((root / "stages/review").glob("*/input.json"))

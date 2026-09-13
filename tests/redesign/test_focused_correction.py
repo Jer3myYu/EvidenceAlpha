@@ -317,7 +317,7 @@ def test_failed_worker_evidence_reaches_synthesis(tmp_path):
     ]
     workflow.run(brief, config.Settings(), provider, paths, tmp_path / "run")
     request = next(c for c in provider.calls if c.stage == "synthesis")
-    portable = json.loads(json.loads(request.prompt)["messages"][1]["content"])
+    portable = json.loads(request.prompt)["messages"][1]["content"]
     assert not portable["notes"]
     fallback = portable["unsynthesized_evidence"]["research-0"]
     assert fallback["status"] == "unsynthesized_evidence"
@@ -401,9 +401,9 @@ def test_false_luxin_objection_can_be_contested(tmp_path):
         "revision", "revision", portable, tmp_path / "run", seconds=300
     )
     assert result["output"]["content"] == rejected
-    tool_reply = json.loads(
-        json.loads(provider.calls[1].prompt)["messages"][-1]["content"]
-    )["settled_evidence"]
+    tool_reply = json.loads(provider.calls[1].prompt)["messages"][-1][
+        "content"
+    ]["settled_evidence"]
     tool_reply = documents.ungroup_passages(tool_reply)[0]
     assert tool_reply["issuer"]["value"] == expected["luxin_issuer"]
     assert tool_reply["text"] == passage["text"]

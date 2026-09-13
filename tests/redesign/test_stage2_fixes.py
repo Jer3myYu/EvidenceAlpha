@@ -354,7 +354,7 @@ def test_source_inventory_carries_original_identifying_passage(tmp_path):
     root = tmp_path / "run"
     workflow.run(brief, config.Settings(), provider, sources, root)
     request = next(c for c in provider.calls if c.stage == "plan")
-    portable = json.loads(json.loads(request.prompt)["messages"][1]["content"])
+    portable = json.loads(request.prompt)["messages"][1]["content"]
     store = documents.SourceStore(root / "sources")
     for item in portable["sources"]:
         passage = item["identifying_passage"]

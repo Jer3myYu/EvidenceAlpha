@@ -83,3 +83,30 @@ def test_explicit_source_aliases_do_not_follow_inventory_order():
     assert f"Fact [{second}:c3]" in resolved
     assert f"[{first}:c4-c5；{second}:c4-c5]" in resolved
     assert mapping["S1"] == [second]
+
+
+def test_single_encoding_preserves_inventory_and_originals(tmp_path):
+    import json
+    from evidencealpha import documents
+
+    original = {
+        "source_id": "s",
+        "url": "https://example.test/original",
+        "version": {"hash": "v"},
+        "text": '原文 "quoted" with units: 10万元',
+        "spans": [{"start": 0, "end": 30, "page": 1}],
+        "chunk_id": "c1",
+    }
+    inventory = {k: original[k] for k in ("source_id", "url", "version")}
+    context = stage_context.StageContext(
+        tmp_path / "context.json", {"sources": [inventory]}
+    )
+    context.settle(documents.group_passages([original]))
+    prompt, view = context.request(
+        "Review originals", {}, "final_notes", None, 50000
+    )
+    assert json.loads(prompt)["messages"][1]["content"] == view
+    assert view["sources"] == [{"source_id": "s"}]
+    delivered = documents.ungroup_passages(view["settled_evidence"])[0]
+    for key in ("text", "spans", "source_id", "url", "version"):
+        assert delivered[key] == original[key]

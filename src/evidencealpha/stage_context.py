@@ -436,8 +436,21 @@ class StageContext:
             ),
             key=lambda qid: (priorities.get(coverage[qid]["priority"], 2), qid),
         )
+        fixed = self._fixed()
+        delivered_sources = {
+            source["source_id"]: source for source in evidence["sources"]
+        }
+        for source in fixed.get("sources", []):
+            parent = delivered_sources.get(source.get("source_id"), {})
+            for key in list(source):
+                if (
+                    key != "source_id"
+                    and key in parent
+                    and source[key] == parent[key]
+                ):
+                    del source[key]
         return {
-            **self._fixed(),
+            **fixed,
             "next_question_id": (
                 pending_questions[0] if pending_questions else None
             ),
@@ -627,9 +640,7 @@ class StageContext:
                         {"role": "system", "content": instructions},
                         {
                             "role": "user",
-                            "content": json.dumps(
-                                view, ensure_ascii=False, separators=(",", ":")
-                            ),
+                            "content": view,
                         },
                     ],
                     "tools": tools,
