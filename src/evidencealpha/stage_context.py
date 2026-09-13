@@ -278,6 +278,19 @@ class StageContext:
     def _fixed(self) -> dict:
         task = copy.deepcopy(self.data["task"])
         task.pop("required_original_refs", None)
+        for source in task.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            passage = source.get("identifying_passage")
+            if isinstance(passage, dict):
+                for key in list(passage):
+                    if key in source and passage[key] == source[key]:
+                        del passage[key]
+            for key in ("hash", "text_hash"):
+                if key in source and source[key] == source.get(
+                    "version", {}
+                ).get(key):
+                    del source[key]
         return {
             **task,
             "unresolved_questions": task.get("unresolved_questions", []),

@@ -1093,6 +1093,18 @@ def run(
             if not same_task or artifacts.digest(saved) != old["output_hash"]:
                 raise ValueError("Completed current-run research changed")
             return old
+        completed_output = (
+            execution.get("continuation", {})
+            .get("completed_stage_hashes", {})
+            .get(name)
+        )
+        if old and completed_output:
+            saved = artifacts.read(root / old["path"] / "output.json")
+            if artifacts.digest(saved) != completed_output or old[
+                "input_hash"
+            ] != artifacts.digest(portable):
+                raise ValueError("Completed stage checkpoint changed")
+            return old
         completed_review = execution.get("continuation", {}).get(
             "review_output_hash"
         )
