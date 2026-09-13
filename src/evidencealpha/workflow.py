@@ -1058,6 +1058,9 @@ def run(
         )
         if checkpoint:
             portable = {**portable, "continuation_checkpoint": checkpoint}
+            final_notes_only = final_notes_only or checkpoint.get(
+                "final_notes_only", False
+            )
         old = manifest["stages"].get(name)
         if old and old.get("recovery_origin"):
             prior = artifacts.read(root / old["path"] / "input.json")[

@@ -370,7 +370,10 @@ def test_cancellation_stops_later_stages_and_export(tmp_path):
     cancel.assert_called_once()
 
 
-def test_current_run_checkpoint_reuses_evidence_and_pending_tool(tmp_path):
+@pytest.mark.parametrize("pending_tool", [True, False])
+def test_current_run_checkpoint_reuses_evidence_and_pending_tool(
+    tmp_path, pending_tool
+):
     """A continuation executes a pending open, not the prior model call."""
     store, passage = corpus(tmp_path)
     root = tmp_path / "checkpoint-run"
@@ -405,6 +408,9 @@ def test_current_run_checkpoint_reuses_evidence_and_pending_tool(tmp_path):
         "retrieval_seconds": 2.0,
         "tool_count": 1,
     }
+    if not pending_tool:
+        checkpoint.pop("pending_output")
+        checkpoint.pop("pending_hash")
     settings = dataclasses.replace(config.Settings(), tool_rounds=1)
     provider = providers.FixtureProvider(
         {"company": {"content": "Pilot supply only."}}
@@ -417,10 +423,11 @@ def test_current_run_checkpoint_reuses_evidence_and_pending_tool(tmp_path):
         "company",
         {**portable, "continuation_checkpoint": checkpoint},
         root,
+        final_notes_only=not pending_tool,
     )
     assert len(provider.calls) == 1
     usage = artifacts.read(root / result["path"] / "work-usage.json")
-    assert usage["tool_executions"] == 2
+    assert usage["tool_executions"] == (2 if pending_tool else 1)
     assert usage["reranker_pairs"] == 4
 
 
