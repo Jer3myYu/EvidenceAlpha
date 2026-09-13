@@ -225,7 +225,7 @@ class StageRunner:
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
-            if checkpoint:
+            if checkpoint and checkpoint.get("pending_output"):
                 pending_path = artifacts.contained(
                     root, checkpoint["pending_output"]
                 )
