@@ -1,0 +1,58 @@
+{
+  "brief": {
+    "text": "Research an industry and its important companies for an investor unfamiliar with the field. Replace this text with the actual topic and comparison requirements.",
+    "scope": "Use the supplied original sources. Explain terminology, value chain, business models, drivers and risks. Preserve units, periods, entity scope and technical-status qualifiers. Disclose unresolved information; do not infer document-wide absence from a search miss."
+  },
+  "corpus": "/absolute/path/to/prepared-corpus",
+  "required_research_roles": [
+    "industry",
+    "company"
+  ],
+  "required_scope": [
+    {
+      "id": "industry",
+      "role": "industry",
+      "question": "Explain industry structure, products, value chain, drivers, barriers and risks."
+    },
+    {
+      "id": "company",
+      "role": "company",
+      "question": "Compare the requested companies using supported commercial, technical and financial dimensions, preserving gaps."
+    }
+  ],
+  "planning_constraints": {
+    "instruction": "Preserve all brief requirements in the assigned tasks. Choose focused queries and context opens; leave capacity for final writing and review."
+  },
+  "settings": {
+    "profile": "low_claude_quota",
+    "runtime_model": "gpt-5.6-sol",
+    "runtime_effort": "medium",
+    "reviewer_model": "gpt-6-astra",
+    "reviewer_effort": "medium",
+    "writer_context_tokens": null,
+    "writer_output_tokens": 12000,
+    "writer_transport_tokens": 4096,
+    "reranker_path": "/absolute/path/to/installed-reranker",
+    "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "candidate_limit": 64,
+    "retrieval_limit": 6,
+    "reading_window_characters": 8000,
+    "reranker_search_seconds": 300,
+    "reranker_threads": 4,
+    "reranker_memory_bytes": 8589934592,
+    "workers": 1,
+    "command_seconds": 10800,
+    "command_calls": 22,
+    "invocation_seconds": 900,
+    "web_verification": false,
+    "information_cutoff": null
+  },
+  "environment": {
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "TOKENIZERS_PARALLELISM": "false"
+  },
+  "acceptance_provenance": {
+    "basis": "Template only. Replace topic, paths, cutoff and model capacity; no saved research or expected answers imported."
+  }
+}

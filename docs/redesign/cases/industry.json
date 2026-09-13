@@ -1,7 +1,0 @@
-{
-  "kind": "isolated",
-  "provider": "codex",
-  "execution": "surrogate",
-  "input": "docs/redesign/inputs/industry.json",
-  "corpus": "data/redesign/stage1-real-corpus"
-}

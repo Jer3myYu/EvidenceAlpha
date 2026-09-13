@@ -1,8 +1,8 @@
 # Diagram assets
 
 `architecture.png` and `workflow.png` are illustrated documentation assets,
-regenerated using the user's supplied visual reference. The reference provided
-visual styling only; legacy technologies and roles were not adopted.
+showing the current conceptual role and evidence workflow. Optional hybrid
+retrieval details are described in [Retrieval](../RETRIEVAL.md).
 
 The companion `.dot` files preserve the earlier editable topology diagrams.
 They do not generate the illustrated PNGs. To render a separate topology preview:
@@ -18,4 +18,5 @@ specification. The workflow shows conditional correction paths; actual admission
 and remaining limits can leave a partial result. The written module guide and
 runtime contracts govern detailed behavior.
 
-Previous PNGs remain locally in `.local/diagram-previous-20260912/`.
+These assets are tracked documentation. Generated previews and historical
+versions remain local; the written guides govern detailed runtime behavior.

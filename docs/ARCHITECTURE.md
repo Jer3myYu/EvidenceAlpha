@@ -2,7 +2,8 @@
 
 EvidenceAlpha has one active CLI research workflow. Infrastructure preserves
 source identity and execution state; language models perform research, synthesis
-and user-focused review. This guide describes the code inspected at `560662e`.
+and user-focused review. This guide covers the maintained source tree, including optional Chroma hybrid
+retrieval and rubric-based correction.
 
 ![Architecture](diagrams/architecture.png)
 
@@ -21,6 +22,8 @@ Paths below are relative to `src/evidencealpha/`.
 | `protocol.py`, `prompts/` | Structured tool/output contracts and role-specific instructions. |
 | `documents.py` | Versioned source store, parsing and original source/chunk identity. |
 | `retrieval.py` | Lexical candidate generation and contextual reranking integration. Candidate depth is a retrieval parameter, not a campaign quota. |
+| `vector_index.py`, `dense_runtime.py`, `dense_worker.py` | Optional reference-only Chroma index, lexical/dense fusion and supervised local encoder operations. |
+| `embedding_chunks.py` | Structural token-bounded search units mapped to original spans. |
 | `reranking.py` | Explicit local neural scorer subprocess and resource supervision. Uncached search initializes its scorer; do not assume a resident warm model. |
 | `reading.py` | Structural reading windows, chunk bindings and bounded surrounding/continuation context. |
 | `preparation.py` | Cooperative cancellation/deadline checks during evidence preparation. |
@@ -36,7 +39,9 @@ Paths below are relative to `src/evidencealpha/`.
 
 ## Evidence path
 
-1. Parsing stores original source versions and locators.
+1. Parsing stores original bytes, canonical text, source versions and locators.
+   Optional Chroma vectors reference those originals; an immutable index snapshot
+   must match the corpus and model artifacts. See [Retrieval](RETRIEVAL.md).
 2. Candidate search finds possible anchors; neural ranking orders contextual
    candidates. These are different quality questions from context completeness.
 3. Researchers open original chunks, nearby passages or continuations when needed.

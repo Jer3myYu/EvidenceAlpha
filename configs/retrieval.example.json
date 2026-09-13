@@ -1,0 +1,16 @@
+{
+  "dense_model_path": "/absolute/path/to/installed-e5-snapshot",
+  "dense_model_revision": "d128750597153bb5987e10b1c3493a34e5a4502a",
+  "dense_python": "/absolute/path/to/venv/bin/python",
+  "embedding_unit_tokens": 384,
+  "dense_operation_seconds": 2400,
+  "candidate_limit": 64,
+  "retrieval_limit": 6,
+  "reading_window_characters": 8000,
+  "reranker_path": "/absolute/path/to/installed-reranker",
+  "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+  "reranker_search_seconds": 300,
+  "reranker_threads": 4,
+  "reranker_memory_bytes": 8589934592,
+  "workers": 1
+}

@@ -1,87 +1,71 @@
 # EvidenceAlpha
 
-**Turn a research brief and original sources into a cited industry and company
-report.**
+**Source-grounded industry research, from a brief to a reviewed report.**
 
-EvidenceAlpha is a Python command-line application for investors who understand
-investing but are new to an industry. It coordinates research, writing and
-independent review to explain the value chain, technology, commercialization,
-company economics and risks. Reports can include company comparisons, sourced
-charts, relationship diagrams and Chinese-capable PDF output.
+EvidenceAlpha is a Python CLI for investors who understand investing but are new
+to an industry. It coordinates specialist research, writing and independent
+review to explain products, value chains, company differences, growth drivers
+and risks. It delivers cited Markdown, sourced charts and Chinese-capable PDFs.
 
-Original passages and source locations accompany findings through research,
-writing and correction. Generated notes help organize the work; citations remain
-anchored to the original material.
+Original evidence accompanies findings through writing and correction. The
+system records missing information and review limitations instead of treating a
+generated report as proof that every question has been answered.
 
-[How it works](#how-it-works) · [Quick start](#quick-start-no-model-calls) ·
-[Live research](#run-live-research) · [Review a report](#review-a-report) ·
-[Documentation](docs/README.md)
+[Architecture](#architecture) · [Quick start](#quick-start) ·
+[Live usage](#live-usage) · [Documentation](docs/README.md) ·
+[Results and limitations](docs/EVALUATION.md)
 
-## What the project provides
+## Architecture
 
-| Input | Work performed | Output |
-| --- | --- | --- |
-| Research question, scope and constraints | Planning and specialist industry/company research | A structured explanation that addresses the brief |
-| Authorized source corpus | Search, local reranking and original-context reading | Cited findings with source locations and disclosed gaps |
-| Explicit model and execution settings | Synthesis, independent review and a bounded correction cycle | Markdown, PDF, sourced figures and source mapping |
-| Saved stage artifacts | Inspection, compatible replay and checkpoint recovery | Traceable execution, usage and delivery records |
+![EvidenceAlpha architecture](docs/diagrams/architecture.png)
 
-The current interface is the CLI. The proposed visual workspace is described in
-[the Studio design](docs/redesign/workflow-studio/DESIGN.md); it is not an
-implemented UI. Research results can retain gaps and factual errors. Readiness,
-source coverage and successful file export are reported separately.
-
-## How it works
-
-### Architecture
-
-![EvidenceAlpha architecture: brief and corpus feed an orchestrator, four research roles, shared original evidence and report export](docs/diagrams/architecture.png)
-
-The **workflow orchestrator** controls stage admission, routing, recovery and
-completion. Four roles share the same source and evidence infrastructure:
+A deterministic **orchestrator** controls stage routing, resource admission,
+checkpoint recovery and delivery. Four model roles perform the research work:
 
 | Role | Responsibility |
-| --- | --- |
-| Research Lead / Writer | Interpret the brief, plan work, synthesize findings, create figures and revise the report |
-| Industry Researcher | Explain industry structure, technology, value chains and commercial drivers |
-| Company Researcher | Investigate company products, financials, relationships and competitive position |
-| Independent Reviewer | Assess the report against the brief and check pivotal claims against original sources |
+|---|---|
+| Research Lead / Writer | Interpret the brief, plan tasks, synthesize findings, produce figures and revise the report |
+| Industry Researcher | Explain industry structure, technology, value chains, demand and risks |
+| Company Researcher | Investigate products, finances, commercial relationships and competitive position |
+| Independent Reviewer | Assess report usefulness and check pivotal claims against original sources |
 
-Source tools retrieve candidates, rerank them locally and open original passages
-with surrounding or continuation context. The evidence layer preserves source
-identity, units, periods, qualifiers and omissions for downstream stages. Runtime
-adapters isolate provider calls; artifacts and usage records make the work
-inspectable. The architecture diagram is conceptual, not a concurrency schedule.
+The **filesystem is the source of truth**: original documents, parsed text,
+source versions and locations stay in the source store. Optional **Chroma hybrid
+retrieval** combines lexical and semantic candidates, resolves matches to
+original spans, and applies local contextual reranking. Researchers can open
+surrounding text or continuations. Generated summaries are navigation aids,
+not original evidence.
 
-Optional **hybrid retrieval** combines lexical search with a local Chroma vector
-index before reranking. Its index references original spans; generated summaries
-do not become evidence. See the [retrieval implementation and setup](docs/redesign/chroma-source-index/IMPLEMENTATION.md).
+The evidence handoff preserves supporting text, units, periods, source identity
+and technical qualifiers within request capacity. Runtime adapters isolate
+provider calls; saved stage artifacts make the work inspectable.
 
-### Research and review workflow
+Read the [module guide](docs/ARCHITECTURE.md) and
+[retrieval guide](docs/RETRIEVAL.md) for implementation details. The diagram is a
+conceptual overview, not a concurrency schedule.
 
-![EvidenceAlpha workflow: admission, planning, research, evidence handoff, writing, independent review, conditional correction and delivery](docs/diagrams/workflow.png)
+## Workflow
 
-1. **Define and admit the run.** Load the brief, corpus and explicit settings;
-   check provider capacity and required local resources.
-2. **Plan and research.** Assign relevant specialist work, search for evidence,
-   open originals and record unresolved questions. Essential gaps may receive a
-   bounded follow-up.
-3. **Synthesize.** Carry original support into the writer's context and produce
-   the report, comparisons and figures.
-4. **Review independently.** Assess brief coverage, understanding, useful analysis,
-   responsible evidence use and clear communication, with targeted source checks.
-5. **Correct and deliver.** Route supported factual or editorial fixes to the
-   writer; unresolved essential evidence may require focused research. At most
-   one consolidated revision and one focused recheck follow the review.
+![EvidenceAlpha workflow](docs/diagrams/workflow.png)
 
-The workflow retains unresolved material issues when resources or sources cannot
-resolve them. A retrieval miss does not establish that the full source lacks a
-fact. The [module guide](docs/ARCHITECTURE.md) explains implementation boundaries.
+1. **Configure and admit:** load the brief, prepared corpus and explicit model
+   settings; check context capacity and local resources.
+2. **Plan and research:** assign specialist tasks, retrieve and read originals,
+   record findings and essential gaps, and use a bounded follow-up where needed.
+3. **Synthesize:** write a cited report with useful comparisons and sourced figures.
+4. **Review:** assess brief coverage, understanding, useful analysis, responsible
+   evidence use and clear communication; check material claims against sources.
+5. **Correct and deliver:** route missing evidence to focused research and supported
+   corrections directly to revision; perform one consolidated revision and focused
+   recheck, then export with the actual review outcome and remaining limitations.
 
-## Quick start: no model calls
+The reviewer can return **ready**, **ready with disclosed limitations**, or
+**needs revision**. Execution, coverage, review and export are separate statuses.
+A retrieval miss does not establish that a document lacks the information.
 
-Use Python **3.11 or 3.12** and run commands from the repository root. For a new
-checkout:
+## Quick start
+
+Requires **Python 3.11 or 3.12**. Run these commands from the repository root:
 
 ```bash
 git clone https://github.com/Jer3myYu/EvidenceAlpha.git
@@ -91,176 +75,88 @@ python3.12 -m venv .venv
 .venv/bin/python -m evidencealpha --help
 ```
 
-Reuse an existing configured environment when working in an established checkout.
-Graphviz's `dot` executable supports relationship-diagram rendering. Chinese PDF
-output needs compatible installed fonts, preferably Noto or Source Han.
+Graphviz's `dot` executable is required for relationship diagrams. PDF export
+needs compatible fonts; Noto or Source Han fonts are recommended for Chinese.
+Reuse an existing environment when working in an established installation.
 
-Run the versioned manufacturing fixture into a **new output directory**:
+Try the versioned deterministic example in a **new output directory**:
 
 ```bash
 .venv/bin/python -m evidencealpha run \
-  --fixture tests/fixtures/redesign/manufacturing.json \
-  --output data/redesign/my-fixture-run
+  --fixture tests/fixtures/redesign/quickstart.json \
+  --output data/examples/manufacturing
 
-.venv/bin/python -m evidencealpha show-run data/redesign/my-fixture-run
+.venv/bin/python -m evidencealpha show-run data/examples/manufacturing
 ```
 
-Open `data/redesign/my-fixture-run/reports/report.md` and the generated PDF to
-inspect the result. The fixture supplies deterministic source and role outputs;
-it exercises orchestration and rendering without generative provider calls.
-It does not measure autonomous research quality.
+Open `data/examples/manufacturing/reports/report.md` and its PDF. The fixture
+uses saved example role outputs: **no provider calls or model downloads**. It
+checks workflow and export behavior, not autonomous research quality.
 
-## Run live research
+## Live usage
 
-Live fixed-corpus research uses your local sources **and makes generative provider
-calls**. The current fixed-corpus path uses the Codex profile. A clone does not
-include the maintained installation's corpus, model weights, environments,
-authentication or saved reports.
+Live research requires a prepared source-store corpus, installed local reranker,
+a configured provider CLI and verified model capacity. A clone includes neither
+model weights, research datasets, authentication nor past reports.
 
-### Prepare the inputs
-
-1. Install the local retrieval dependencies in your chosen environment:
-   `.venv/bin/pip install -e '.[retrieval]'`.
-2. Configure the supported provider runtime through its normal login flow and
-   supply an already installed reranker snapshot with an explicit revision.
-3. Prepare an EvidenceAlpha source-store corpus. The `corpus` field expects the
-   captured source-store structure, not a directory of unparsed PDFs. For custom
-   ingestion, use [`SourceStore.ingest`](src/evidencealpha/documents.py), which
-   captures original bytes, parsed text and source locators.
-4. Copy the [execution example](configs/photomask.fixed-corpus.example.json) to a
-   local file and adapt it to your question and available assets:
+Follow [setup and configuration](docs/SETUP.md), then:
 
 ```bash
 mkdir -p data/local-configs
-cp configs/photomask.fixed-corpus.example.json data/local-configs/my-research.json
-```
-
-Edit these fields before launching:
-
-| Field | What to set |
-| --- | --- |
-| `brief.text`, `brief.scope` | Your research question, audience, scope and limitations |
-| `required_scope`, `required_research_roles`, `planning_constraints` | Requirements and specialist work appropriate to your brief; replace the example's company-specific entries |
-| `corpus` | Path to your prepared source store |
-| `settings.reranker_path`, `settings.reranker_revision` | Installed local reranker snapshot and matching revision |
-| `settings.runtime_model`, `settings.reviewer_model` and effort fields | Explicit models supported by your configured provider |
-| `settings.command_seconds`, `settings.command_calls` | Overall deadline and optional call ceiling |
-| `settings.information_cutoff`, `acceptance_provenance` | Relevant cutoff and an accurate description of this run |
-
-Use absolute corpus/model paths when copying the example: relative paths resolve
-from the execution JSON's directory. `settings.search_env_file` resolves from the
-working directory. Keep credentials in local configuration, outside Git.
-
-The shared example records `gpt-5.6-sol` for research/writing and `gpt-6-astra` for
-review/recheck. These are explicit example requests, not a guarantee of model
-availability or reported effective identity. Choose settings appropriate to your
-installation and authorized run policy. There is no implicit model download or
-paid-provider fallback.
-
-### Launch and inspect
-
-After configuring your local execution file:
-
-```bash
+cp configs/research.fixed-corpus.example.json data/local-configs/research.json
+# Edit the brief, source/model paths and capacity settings before launching.
 .venv/bin/python -m evidencealpha fixed-corpus \
-  --execution data/local-configs/my-research.json \
-  --output data/redesign/my-research-run
+  --execution data/local-configs/research.json \
+  --output data/runs/my-research
 ```
 
-The maintained local installation can use `runtime/environment/bin/python` in
-place of `.venv/bin/python`, with `PYTHONPATH="$PWD/src"` to select this checkout's
-code. That environment link is machine-specific and is not supplied by a clone.
+**This command makes generative provider calls.** Fixed-corpus means no external
+research-source acquisition; it does not mean the generative provider runs locally.
+The current fixed-corpus path uses the Codex adapter. Model names in the example
+are explicit requests, not a guarantee of availability or effective identity.
+There is no implicit model download or paid-provider fallback.
 
-Inspect the printed status and `data/redesign/my-research-run/command-result.json`,
-then open the report paths recorded by the run. Overall deadline, optional call
-ceiling, provider capacity, watchdogs, cancellation and hardware guards constrain
-execution. Some older time/token fields are guidance or telemetry; see
-[budget behavior](docs/redesign/coherent-retrieval/BUDGET-SIMPLIFICATION.md) and
-[settings definitions](src/evidencealpha/config.py).
+Optional Chroma indexing is described in [Retrieval](docs/RETRIEVAL.md). Targeted
+web verification requires both explicit configuration and the `verify-report`
+command; see [Setup](docs/SETUP.md#optional-web-verification).
 
-External source acquisition is disabled by `fixed-corpus`. Targeted web
-verification requires both `settings.web_verification: true` and the explicit
-`verify-report` command, with the same `--execution` and `--output` arguments.
-Captured web originals remain distinguishable from the initial corpus.
+Inspect `command-result.json`, `manifest.json`, stage records and the report paths
+recorded by the command. Use `show-run` for a compact summary. Saved-run
+continuation requires compatible checkpoints and an active admitted execution;
+it does not authorize restarting a closed campaign.
 
-For optional hybrid retrieval, install the `vector-index` extra and follow the
-[index configuration and build instructions](docs/redesign/chroma-source-index/IMPLEMENTATION.md).
-Build into a new directory and set `settings.vector_index_path` in the execution
-file. Corpus changes require a new compatible index snapshot.
+## Results and current limits
 
-## Review a report
+The latest documented Nanfei case produced a Chinese report rated **ready with
+disclosed limitations** and a checked English translation. Two material review
+findings led to corrections, while financial and commercialization coverage
+remained partial. The campaign required engineering and operator recovery.
 
-A useful review checks the deliverable and its evidence alongside execution
-status:
+This is **rubric review with targeted source checks**, not exhaustive factual
+verification. Local neural search can be slow; model-generated gaps can be wrong;
+mandatory evidence may exceed context capacity. The proposed Workflow Studio is
+not an implemented UI. There is no claim of broad reliability or uninterrupted
+autonomous completion. See [evaluation and limitations](docs/EVALUATION.md).
 
-1. **Read the original brief, then the report.** Check whether it explains the
-   requested industry and makes meaningful company comparisons.
-2. **Inspect key citations and figures.** Follow source mapping to original
-   passages. Check financial units, periods and business scope, and distinguish
-   plans, sampling, qualification and commercial production.
-3. **Read the independent review and recheck.** Each of the five criteria receives
-   Meets, Partly meets or Does not meet. Inspect examined scope, material findings,
-   resolved issues and remaining qualifications.
-4. **Check delivery status.** Live results distinguish `execution_status`,
-   `coverage_status`, `review_status`, `readiness`, `unresolved_issues` and
-   `export_status`. An exported PDF alone does not establish report acceptance.
-5. **Check provenance.** Identify the recorded code/settings, source corpus,
-   requested/reported models and whether stages were live, fixture-driven,
-   replayed or recovered.
+## Repository layout
 
-Runs retain stage inputs/outputs, original evidence, tool traces, usage and report
-artifacts. `show-run` provides a compact saved-manifest summary. `render` exports
-saved Markdown without research; it writes export artifacts. Fixture `resume`
-and `replay-stage` differ from live `--continue-existing` checkpoint continuation.
-Use command-specific `--help` and preserve original runs when replaying or
-recovering work.
-
-### Recorded results and limits
-
-The [documented photomask delivery](docs/redesign/presentation-live-20260912/HANDOFF.md)
-completed fresh research and corrective review with engineering recovery. Its
-recheck found it **ready with disclosed limitations**, with partial coverage.
-It was not an uninterrupted run of the final code, and it does not establish
-reliability across unseen industries.
-
-The separate [hybrid retrieval evaluation](docs/redesign/chroma-source-index/LIVE-RESULTS.md)
-found **4 Useful / 3 Partial** substantive answers for hybrid retrieval versus
-**3 Useful / 4 Partial** for the lexical baseline, with higher latency. Its target
-of five Useful answers was not met. The older **9 pass / 7 partial** benchmark is
-a distinct historical result. Ongoing live tests are separate from these records.
-
-Saved reports and datasets under `data/` are ignored local assets and are not
-hosted on GitHub. The linked engineering records describe what was actually
-measured and where local artifacts were saved.
-
-## Repository guide and development
-
-| Path | Purpose |
-| --- | --- |
-| [`src/evidencealpha/`](src/evidencealpha/) | Active CLI, workflow, retrieval, provider adapters, export and role prompts |
-| [`tests/redesign/`](tests/redesign/) | Focused regression checks |
-| [`tests/fixtures/`](tests/fixtures/) | Versioned deterministic examples |
-| [`configs/`](configs/) | Shareable execution examples |
-| [`docs/README.md`](docs/README.md) | Documentation navigation |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Module responsibilities and evidence flow |
-| [`docs/diagrams/`](docs/diagrams/) | Illustrated PNGs and editable topology references |
-| `data/`, `runtime/`, `.venv/`, `.local/`, `worktrees/` | Ignored local sources, outputs, environments and workspace assets |
-
-For code review, start with the module guide, then inspect the relevant module,
-role prompt and focused tests. Development checks use the declared `dev` extras:
-
-```bash
-.venv/bin/python -m pytest tests/redesign
-.venv/bin/python -m black --check src/evidencealpha tests/redesign
-.venv/bin/python -m pylint --jobs=1 src/evidencealpha tests/redesign
+```text
+EvidenceAlpha/
+├── src/evidencealpha/    # CLI, workflow, source tools, retrieval and export
+├── tests/               # Regression checks and versioned example fixtures
+├── configs/             # Shareable configuration templates
+├── scripts/             # Explicit evaluation utilities
+├── docs/                # Maintained guides and diagram assets
+├── pyproject.toml       # Package metadata and declared dependencies
+├── AGENTS.md            # Contributor-agent instructions
+└── LICENSE              # Project license
 ```
 
-Prefer focused checks for changed behavior. Use typed public APIs, Google-style
-Python/docstrings and 80-column Black formatting. Fixture checks establish
-contracts; live research quality requires separate evidence.
+Local `data/`, `runtime/`, `worktrees/`, environments and historical archives are
+ignored. Test code and intentional fixtures stay versioned. Historical plans,
+run ledgers and retired implementation files are retained locally and in prior
+commits; they are not part of the current published tree.
 
-The [redesign package](docs/redesign-package/00-START-HERE.md) preserves the original
-staged implementation policy. Later run-specific changes are recorded in their
-handoffs. Historical instructions and launch commands are provenance, not steps
-required to read or try this project. The [layout receipt](docs/REORGANIZATION-RESULTS-20260912.md)
-explains preserved local assets; Git does not back up ignored files.
+See [Development](docs/DEVELOPMENT.md) for focused checks and contribution
+boundaries. Documentation works directly on GitHub or in a local editor; no
+separate documentation server is required.
