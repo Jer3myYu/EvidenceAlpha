@@ -852,6 +852,7 @@ def _prepare_report(
         for key in ("path", "input", "code"):
             figure[key] = f"{version}/{figure[key]}"
     artifacts.write(reports / "figures.json", manifest)
+    artifacts.write(reports / version / "figures.json", manifest)
     body = output["content"].replace("](" + "figures/", f"]({version}/figures/")
     body, declarations = presentation.resolve_declared_sources(
         body, [source["id"] for source in store.sources()]
@@ -1123,6 +1124,23 @@ def run(
                 or artifacts.digest(normalized)
                 != artifacts.digest(current_input)
             ):
+                artifacts.write(
+                    root
+                    / (
+                        f"checkpoint-conflict-{name}-"
+                        f"{artifacts.digest(current_input)[:12]}.json"
+                    ),
+                    {
+                        "stage": name,
+                        "prior": normalized,
+                        "current": current_input,
+                        "changed_keys": [
+                            key
+                            for key in set(normalized) | set(current_input)
+                            if normalized.get(key) != current_input.get(key)
+                        ],
+                    },
+                )
                 raise ValueError("Completed stage checkpoint changed")
             return old
         completed_review = execution.get("continuation", {}).get(
@@ -1556,6 +1574,7 @@ def run(
             resume
             and draft.exists()
             and previous_synthesis == synthesis["path"]
+            and (reports / "draft" / "figures.json").exists()
         ):
             draft = _prepare_report(
                 synthesis["output"],
@@ -1569,6 +1588,9 @@ def run(
         # Independent reviewer sees brief, exact draft/figures and
         # originals only.
         def review_input(path: pathlib.Path) -> dict:
+            report_figures = artifacts.read(
+                reports / path.stem / "figures.json"
+            )
             return {
                 "brief": brief,
                 "draft": path.read_text(),
@@ -1610,7 +1632,7 @@ def run(
                     store, [s["id"] for s in store.sources()]
                 ),
                 "source_map": artifacts.read(reports / "source-map.json"),
-                "figures": artifacts.read(reports / "figures.json"),
+                "figures": report_figures,
                 "visual_review_capability": (
                     "Text, figure specifications and hashes only; no native "
                     "pixels supplied. Layout/readability require rendered "
@@ -1620,7 +1642,7 @@ def run(
                     figure[key]: artifacts.digest(
                         artifacts.contained(reports, figure[key]).read_bytes()
                     )
-                    for figure in artifacts.read(reports / "figures.json")
+                    for figure in report_figures
                     for key in ("path", "input", "code")
                 },
             }
