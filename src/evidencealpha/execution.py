@@ -117,7 +117,12 @@ def _paths(spec: dict, parent: pathlib.Path) -> dict:
             spec if key in ("corpus", "industry_import") else spec["settings"]
         )
         if target.get(key):
-            target[key] = str((parent / target[key]).resolve())
+            path = parent / target[key]
+            # Resolving a venv executable symlink selects the base interpreter
+            # and loses that environment's installed dependencies.
+            target[key] = str(
+                path.absolute() if key == "dense_python" else path.resolve()
+            )
     return spec
 
 
@@ -218,7 +223,7 @@ def run(
 
     def expired(signum, frame):
         del signum, frame
-        providers.cancel_all()
+        providers.cancel_all(stop_new=True)
         raise providers.ProviderCancelled("Command wall deadline expired")
 
     signal.signal(signal.SIGALRM, expired)

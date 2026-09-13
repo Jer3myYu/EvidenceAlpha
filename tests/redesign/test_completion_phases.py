@@ -137,9 +137,7 @@ def test_early_transition_writes_but_timeout_stops(
         )
     assert result["output"]["content"].startswith("Notes from settled")
     assert len(requests) == (3 if unexpected_cutoff else 2)
-    final_input = json.loads(
-        json.loads(requests[-1].prompt)["messages"][1]["content"]
-    )
+    final_input = json.loads(requests[-1].prompt)["messages"][1]["content"]
     assert len(documents.ungroup_passages(final_input["settled_evidence"])) == 1
     assert len(json.loads(requests[-1].prompt)["messages"]) == 2
     folder = tmp_path / "run" / result["path"]
@@ -280,9 +278,7 @@ def test_saved_evidence_final_notes_only_cannot_research(tmp_path):
     assert result["output"]["content"]
     assert len(provider.calls) == 1
     assert provider.calls[0].allowed_tools == ()
-    portable = json.loads(
-        json.loads(provider.calls[0].prompt)["messages"][1]["content"]
-    )
+    portable = json.loads(provider.calls[0].prompt)["messages"][1]["content"]
     assert len(documents.ungroup_passages(portable["settled_evidence"])) == 67
     evidence.call.assert_not_called()
 

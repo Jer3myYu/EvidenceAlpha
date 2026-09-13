@@ -278,6 +278,33 @@ class StageContext:
     def _fixed(self) -> dict:
         task = copy.deepcopy(self.data["task"])
         task.pop("required_original_refs", None)
+        for source in task.get("sources", []):
+            if not isinstance(source, dict):
+                continue
+            passage = source.get("identifying_passage")
+            if isinstance(passage, dict):
+                for key in list(passage):
+                    if key in source and passage[key] == source[key]:
+                        del passage[key]
+            for key in ("hash", "text_hash"):
+                if key in source and source[key] == source.get(
+                    "version", {}
+                ).get(key):
+                    del source[key]
+        inventory = {
+            source["source_id"]: source
+            for source in task.get("sources", [])
+            if isinstance(source, dict) and "source_id" in source
+        }
+        for alias, value in task.get("source_map", {}).items():
+            parent = inventory.get(value.get("source_id"), {})
+            task["source_map"][alias] = {
+                key: field
+                for key, field in value.items()
+                if key == "source_id"
+                or key not in parent
+                or field != parent[key]
+            }
         return {
             **task,
             "unresolved_questions": task.get("unresolved_questions", []),
@@ -409,8 +436,21 @@ class StageContext:
             ),
             key=lambda qid: (priorities.get(coverage[qid]["priority"], 2), qid),
         )
+        fixed = self._fixed()
+        delivered_sources = {
+            source["source_id"]: source for source in evidence["sources"]
+        }
+        for source in fixed.get("sources", []):
+            parent = delivered_sources.get(source.get("source_id"), {})
+            for key in list(source):
+                if (
+                    key != "source_id"
+                    and key in parent
+                    and source[key] == parent[key]
+                ):
+                    del source[key]
         return {
-            **self._fixed(),
+            **fixed,
             "next_question_id": (
                 pending_questions[0] if pending_questions else None
             ),
@@ -600,9 +640,7 @@ class StageContext:
                         {"role": "system", "content": instructions},
                         {
                             "role": "user",
-                            "content": json.dumps(
-                                view, ensure_ascii=False, separators=(",", ":")
-                            ),
+                            "content": view,
                         },
                     ],
                     "tools": tools,

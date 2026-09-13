@@ -154,24 +154,42 @@ class Pages:
         widths = [minimum + extra * w / sum(weights) for w in weights]
         css = "body {font-size: 9.5pt; line-height: 1.45;} p {margin: 0;}"
 
-        def cell_html(cell: bs4.Tag) -> str:
+        regular = pymupdf.Font(
+            fontfile=str(self.folder / "fonts/regular-v5.otf")
+        )
+        bold = pymupdf.Font(fontfile=str(self.folder / "fonts/bold-v5.otf"))
+
+        def cell_html(cell: bs4.Tag, available_width: float) -> str:
             wrapped = bs4.BeautifulSoup(cell.decode_contents(), "html.parser")
+            font = bold if cell.name == "th" else regular
+
+            def fit_word(match: re.Match) -> str:
+                word = match[0]
+                if font.text_length(word, fontsize=9.5) <= available_width:
+                    return word
+                parts, current = [], ""
+                for character in word:
+                    if (
+                        current
+                        and font.text_length(current + character, fontsize=9.5)
+                        > available_width
+                    ):
+                        parts.append(current)
+                        current = ""
+                    current += character
+                parts.append(current)
+                return "\u200b".join(parts)
+
             for node in list(wrapped.find_all(string=True)):
                 node.replace_with(
-                    re.sub(
-                        r"[\x21-\x7e]{7,}",
-                        lambda m: "\u200b".join(
-                            m[0][i : i + 5] for i in range(0, len(m[0]), 5)
-                        ),
-                        str(node),
-                    )
+                    re.sub(r"[\x21-\x7e]{2,}", fit_word, str(node))
                 )
             value = str(wrapped)
             return "<b>" + value + "</b>" if cell.name == "th" else value
 
         heights = [
             max(
-                self.measure(cell_html(c), w - 12, css)
+                self.measure(cell_html(c, w - 12), w - 12, css)
                 for c, w in zip(row, widths)
             )
             + 14
@@ -202,7 +220,7 @@ class Pages:
                 )
                 spare, scale = self.page.insert_htmlbox(
                     rect + (6, 6, -6, -6),
-                    cell_html(cell),
+                    cell_html(cell, width - 12),
                     css=CSS
                     + css
                     + ("body {text-align: right;}" if numeric else ""),
@@ -257,7 +275,24 @@ def pdf(soup: bs4.BeautifulSoup, folder: pathlib.Path) -> tuple[bytes, dict]:
     """Render Markdown HTML blocks, preserving live links and complete rows."""
     pages = Pages(folder)
     try:
-        blocks = [b for b in soup.children if isinstance(b, bs4.Tag)]
+        blocks = []
+        for block in soup.children:
+            if not isinstance(block, bs4.Tag):
+                continue
+            if block.name in ("ul", "ol"):
+                start = int(block.get("start", 1))
+                for index, item in enumerate(
+                    block.find_all("li", recursive=False)
+                ):
+                    wrapper = bs4.BeautifulSoup("", "html.parser").new_tag(
+                        block.name, attrs={**block.attrs, "style": "margin: 0;"}
+                    )
+                    if block.name == "ol":
+                        wrapper["start"] = str(start + index)
+                    wrapper.append(bs4.BeautifulSoup(str(item), "html.parser"))
+                    blocks.append(wrapper)
+            else:
+                blocks.append(block)
         for i, block in enumerate(blocks):
             if block.name == "table":
                 pages.table(block)
@@ -266,8 +301,8 @@ def pdf(soup: bs4.BeautifulSoup, folder: pathlib.Path) -> tuple[bytes, dict]:
                 if keep:
                     for following in blocks[i + 1 :]:
                         if following.name not in ("h1", "h2", "h3"):
-                            # Images and lists move as whole blocks. Reserve
-                            # their measured height, not a nominal text line.
+                            # Lists are split into complete items above. Reserve
+                            # the next item's height, not the full list.
                             keep += (
                                 90
                                 if following.name == "table"

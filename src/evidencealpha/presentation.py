@@ -106,3 +106,68 @@ def citation_pages(
         return citation[:-1] + f"；PDF第{label}页]"
 
     return re.sub(r"\[[^\]\n]*\bS\d+\b[^\]\n]*\](?!\()", amend, body), locations
+
+
+def resolve_declared_sources(
+    body: str, source_ids: list[str]
+) -> tuple[str, dict]:
+    """Bind explicitly declared report aliases before exporter numbering.
+
+    Abbreviated hashes must resolve uniquely. A declared multi-source alias
+    expands to all its declared originals; it is never silently assigned to one.
+    """
+    declarations = {}
+    pattern = re.compile(r"(?m)^[-*]\s+\*\*(S\d+)\*\*[：:]([^\n]+)$")
+    for match in pattern.finditer(body):
+        alias, line = match.groups()
+        references = []
+        for prefix, suffix in re.findall(
+            r"([a-f0-9]{6,64})(?:…|\.\.\.)([a-f0-9]{3,64})", line
+        ):
+            found = [
+                sid
+                for sid in source_ids
+                if sid.startswith(prefix) and sid.endswith(suffix)
+            ]
+            if len(found) != 1:
+                raise ValueError(
+                    "Source abbreviation is unresolved or ambiguous"
+                )
+            references.extend(found)
+        references.extend(re.findall(r"\b[a-f0-9]{64}\b", line))
+        if references:
+            if not set(references) <= set(source_ids):
+                raise ValueError(
+                    "Source declaration references unknown original"
+                )
+            value = list(dict.fromkeys(references))
+            if alias in declarations and declarations[alias] != value:
+                raise ValueError("Conflicting source alias declarations")
+            declarations[alias] = value
+    if not declarations:
+        return body, declarations
+
+    def expand(match: re.Match) -> str:
+        alias, locator = match.groups()
+        if alias not in declarations:
+            raise ValueError(
+                "Citation alias missing from explicit declarations"
+            )
+        return "；".join(
+            sid + (":" + locator if locator else "")
+            for sid in declarations[alias]
+        )
+
+    def citation(match: re.Match) -> str:
+        return re.sub(r"\b(S\d+)(?::([c\d,–—-]+))?\b", expand, match[0])
+
+    body = re.sub(r"\[[^\]\n]*\bS\d+\b[^\]\n]*\](?!\()", citation, body)
+    body = pattern.sub(
+        lambda match: match[0].replace(
+            "**" + match[1] + "**",
+            "**" + "；".join(declarations.get(match[1], [match[1]])) + "**",
+            1,
+        ),
+        body,
+    )
+    return body, declarations

@@ -60,7 +60,7 @@ def _driver(args: argparse.Namespace, settings: config.Settings) -> dict:
 
     def deadline_expired(signum, frame):
         del signum, frame
-        providers.cancel_all()
+        providers.cancel_all(stop_new=True)
         ledger.finish(attempt, "deadline_exceeded")
         artifacts.write(
             root / "interrupted.json",
@@ -214,7 +214,7 @@ def main() -> None:
 
     def stop(signum, frame):
         del signum, frame
-        providers.cancel_all()
+        providers.cancel_all(stop_new=True)
         raise KeyboardInterrupt("Provider children stopped")
 
     signal.signal(signal.SIGTERM, stop)

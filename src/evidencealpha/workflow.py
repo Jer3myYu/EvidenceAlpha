@@ -225,7 +225,7 @@ class StageRunner:
         event_path = folder / "events.jsonl"
         status = "failed"
         try:
-            if checkpoint:
+            if checkpoint and checkpoint.get("pending_output"):
                 pending_path = artifacts.contained(
                     root, checkpoint["pending_output"]
                 )
@@ -852,7 +852,14 @@ def _prepare_report(
         for key in ("path", "input", "code"):
             figure[key] = f"{version}/{figure[key]}"
     artifacts.write(reports / "figures.json", manifest)
+    artifacts.write(reports / version / "figures.json", manifest)
     body = output["content"].replace("](" + "figures/", f"]({version}/figures/")
+    body, declarations = presentation.resolve_declared_sources(
+        body, [source["id"] for source in store.sources()]
+    )
+    artifacts.write(
+        reports / f"{version}-citation-resolution.json", declarations
+    )
     # A revision may retain the prior draft directory. Bind known figure
     # filenames to the new manifest before deciding a figure is missing.
     for figure in manifest:
@@ -868,8 +875,9 @@ def _prepare_report(
             body,
         )
     for index, figure in enumerate(manifest, 1):
+        caption_text = re.sub(r"^图\s*\d+\s*[:：　]?\s*", "", figure["caption"])
         caption = (
-            f'\n图 {index}：{figure["caption"]} '
+            f"\n图 {index}：{caption_text} "
             f'({figure["period"]}; {figure["unit"]})。'
             f'{figure["caveats"]}\n'
         )
@@ -1058,6 +1066,9 @@ def run(
         )
         if checkpoint:
             portable = {**portable, "continuation_checkpoint": checkpoint}
+            final_notes_only = final_notes_only or checkpoint.get(
+                "final_notes_only", False
+            )
         old = manifest["stages"].get(name)
         if old and old.get("recovery_origin"):
             prior = artifacts.read(root / old["path"] / "input.json")[
@@ -1089,6 +1100,48 @@ def run(
             )
             if not same_task or artifacts.digest(saved) != old["output_hash"]:
                 raise ValueError("Completed current-run research changed")
+            return old
+        completed_output = (
+            execution.get("continuation", {})
+            .get("completed_stage_hashes", {})
+            .get(name)
+        )
+        if old and completed_output:
+            saved = artifacts.read(root / old["path"] / "output.json")
+            prior = artifacts.read(root / old["path"] / "input.json")[
+                "portable"
+            ]
+            normalized = copy.deepcopy(prior)
+            current_input = copy.deepcopy(portable)
+            for value in (normalized, current_input):
+                if "settled_evidence" in value:
+                    value["settled_evidence"] = documents.compact_passages(
+                        value["settled_evidence"]
+                    )
+            if (
+                artifacts.digest(saved) != completed_output
+                or old["input_hash"] != artifacts.digest(prior)
+                or artifacts.digest(normalized)
+                != artifacts.digest(current_input)
+            ):
+                artifacts.write(
+                    root
+                    / (
+                        f"checkpoint-conflict-{name}-"
+                        f"{artifacts.digest(current_input)[:12]}.json"
+                    ),
+                    {
+                        "stage": name,
+                        "prior": normalized,
+                        "current": current_input,
+                        "changed_keys": [
+                            key
+                            for key in set(normalized) | set(current_input)
+                            if normalized.get(key) != current_input.get(key)
+                        ],
+                    },
+                )
+                raise ValueError("Completed stage checkpoint changed")
             return old
         completed_review = execution.get("continuation", {}).get(
             "review_output_hash"
@@ -1521,6 +1574,7 @@ def run(
             resume
             and draft.exists()
             and previous_synthesis == synthesis["path"]
+            and (reports / "draft" / "figures.json").exists()
         ):
             draft = _prepare_report(
                 synthesis["output"],
@@ -1534,6 +1588,9 @@ def run(
         # Independent reviewer sees brief, exact draft/figures and
         # originals only.
         def review_input(path: pathlib.Path) -> dict:
+            report_figures = artifacts.read(
+                reports / path.stem / "figures.json"
+            )
             return {
                 "brief": brief,
                 "draft": path.read_text(),
@@ -1575,7 +1632,7 @@ def run(
                     store, [s["id"] for s in store.sources()]
                 ),
                 "source_map": artifacts.read(reports / "source-map.json"),
-                "figures": artifacts.read(reports / "figures.json"),
+                "figures": report_figures,
                 "visual_review_capability": (
                     "Text, figure specifications and hashes only; no native "
                     "pixels supplied. Layout/readability require rendered "
@@ -1585,7 +1642,7 @@ def run(
                     figure[key]: artifacts.digest(
                         artifacts.contained(reports, figure[key]).read_bytes()
                     )
-                    for figure in artifacts.read(reports / "figures.json")
+                    for figure in report_figures
                     for key in ("path", "input", "code")
                 },
             }
@@ -1754,7 +1811,13 @@ def run(
                 "recheck",
                 "recheck",
                 {
-                    **review_followup_input(review_input(current)),
+                    **{
+                        key: value
+                        for key, value in review_followup_input(
+                            review_input(current)
+                        ).items()
+                        if key != "recovered_followup_notes"
+                    },
                     "prior_issues": material,
                     "initial_review_assessment": examined,
                     "required_scope": [],

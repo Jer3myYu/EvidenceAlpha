@@ -2,6 +2,7 @@
 
 import dataclasses
 import copy
+import json
 import pathlib
 import re
 import threading
@@ -16,7 +17,7 @@ from evidencealpha import preparation
 from evidencealpha import retrieval
 from evidencealpha import reading
 
-PARSER_VERSION = "structural-2-reading-order"
+PARSER_VERSION = "structural-4-html-layout-tables"
 CHUNK_VERSION = "spans-1"
 
 
@@ -72,6 +73,71 @@ def group_passages(passages: list[dict]) -> dict:
     return {"sources": list(groups.values())}
 
 
+def _span_table(source: dict) -> dict:
+    """Intern repeated span coordinates in a lossless transport view."""
+    packed = copy.deepcopy(source)
+    table = []
+    indices = {}
+
+    def intern(spans: list) -> list[int]:
+        result = []
+        for span in spans:
+            key = tuple(span)
+            if key not in indices:
+                indices[key] = len(table)
+                table.append(span)
+            result.append(indices[key])
+        return result
+
+    columns = packed.get("passage_columns", [])
+    if "original_spans" in columns:
+        column = columns.index("original_spans")
+        columns[column] = "span_indices"
+        for row in packed["passages"]:
+            if row[column] is not None:
+                row[column] = intern(row[column])
+    if "chunk_locations" in packed:
+        packed["chunk_span_indices"] = {
+            key: intern(spans)
+            for key, spans in packed.pop("chunk_locations").items()
+        }
+    packed["span_table"] = table
+
+    def size(value: dict) -> int:
+        return len(json.dumps(value, ensure_ascii=False).encode())
+
+    return packed if size(packed) < size(source) else source
+
+
+def _expand_span_table(source: dict) -> dict:
+    """Restore exact coordinates before ordinary passage reconstruction."""
+    if "span_table" not in source:
+        return source
+    source = copy.deepcopy(source)
+    table = source.pop("span_table")
+
+    def expand(indices: list[int]) -> list:
+        if any(
+            not isinstance(i, int) or not 0 <= i < len(table) for i in indices
+        ):
+            raise ValueError("Invalid source span index")
+        return [table[i] for i in indices]
+
+    columns = source.get("passage_columns", [])
+    if "span_indices" in columns:
+        column = columns.index("span_indices")
+        columns[column] = "original_spans"
+        for row in source["passages"]:
+            if row[column] is not None:
+                row[column] = expand(row[column])
+    if "chunk_span_indices" in source:
+        source["chunk_locations"] = {
+            key: expand(indices)
+            for key, indices in source.pop("chunk_span_indices").items()
+        }
+    return source
+
+
 def compact_passages(result: dict) -> dict:
     """Remove navigation geometry, preserving text and canonical locators.
 
@@ -79,6 +145,9 @@ def compact_passages(result: dict) -> dict:
     source versions remain available in the transport view.
     """
     result = copy.deepcopy(result)
+    result["sources"] = [
+        _expand_span_table(source) for source in result.get("sources", [])
+    ]
     for source in result.get("sources", []):
         if "passage_columns" in source:
             source["passages"] = [
@@ -152,6 +221,7 @@ def compact_passages(result: dict) -> dict:
         source["passages"] = [
             [p.get(key) for key in columns] for p in source["passages"]
         ]
+    result["sources"] = [_span_table(source) for source in result["sources"]]
     return result
 
 
@@ -159,6 +229,7 @@ def ungroup_passages(result: dict) -> list[dict]:
     """Recover explicit source bindings from grouped tool or handoff data."""
     result_passages = []
     for source in result.get("sources", []):
+        source = _expand_span_table(source)
         for stored in source["passages"]:
             passage = (
                 {
@@ -222,6 +293,89 @@ def ungroup_passages(result: dict) -> list[dict]:
     return result_passages
 
 
+def _html_blocks(root: bs4.Tag) -> list[dict]:
+    """Extract container text once in DOM order, retaining table boundaries."""
+    output = []
+    containers = {
+        "html",
+        "body",
+        "div",
+        "section",
+        "article",
+        "main",
+        "header",
+        "footer",
+        "aside",
+        "address",
+        "blockquote",
+        "ul",
+        "ol",
+        "dl",
+        "li",
+        "dt",
+        "dd",
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "table",
+        "pre",
+        "figure",
+        "figcaption",
+    }
+
+    def visit(tag: bs4.Tag) -> None:
+        if tag.name == "table" and not tag.find("table"):
+            rows = [
+                " | ".join(
+                    cell.get_text(" ", strip=True)
+                    for cell in row.find_all(["th", "td"], recursive=False)
+                )
+                for row in tag.find_all("tr")
+            ]
+            output.append({"text": "\n".join(rows), "kind": "table"})
+            return
+        pending = []
+
+        def flush() -> None:
+            text = " ".join(pending).strip()
+            if text:
+                output.append(
+                    {
+                        "text": text,
+                        "kind": (
+                            "heading"
+                            if tag.name in ("h1", "h2", "h3", "h4", "h5", "h6")
+                            else "paragraph"
+                        ),
+                    }
+                )
+            pending.clear()
+
+        for child in tag.children:
+            if isinstance(child, bs4.Comment):
+                continue
+            if isinstance(child, bs4.NavigableString):
+                text = str(child).strip()
+                if text:
+                    pending.append(text)
+            elif isinstance(child, bs4.Tag):
+                if child.name in containers or child.find(list(containers)):
+                    flush()
+                    visit(child)
+                else:
+                    text = child.get_text(" ", strip=True)
+                    if text:
+                        pending.append(text)
+        flush()
+
+    visit(root)
+    return output
+
+
 def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
     blocks = []
     warnings = []
@@ -270,27 +424,8 @@ def _blocks(data: bytes, suffix: str) -> tuple[list[dict], list[str]]:
         soup = bs4.BeautifulSoup(data, "html.parser")
         for tag in soup(["script", "style", "nav"]):
             tag.decompose()
-        for tag in soup.find_all(["h1", "h2", "h3", "h4", "p", "li", "table"]):
-            if tag.find_parent(["table", "li"]):
-                continue
-            if tag.name == "table":
-                rows = [
-                    " | ".join(
-                        cell.get_text(" ", strip=True)
-                        for cell in row.find_all(["th", "td"])
-                    )
-                    for row in tag.find_all("tr")
-                ]
-                text = "\n".join(rows)
-                kind = "table"
-            else:
-                text = tag.get_text(" ", strip=True)
-                kind = "heading" if tag.name.startswith("h") else "paragraph"
-            blocks.append({"text": text, "kind": kind})
-        if not blocks:
-            blocks.append(
-                {"text": soup.get_text("\n", strip=True), "kind": "paragraph"}
-            )
+        blocks.extend(_html_blocks(soup.body or soup))
+
     else:
         text = data.decode("utf-8")
         for block in re.split(r"\n\s*\n", text):

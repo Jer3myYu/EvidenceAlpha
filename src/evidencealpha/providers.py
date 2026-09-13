@@ -20,12 +20,15 @@ from evidencealpha import reranking
 _ACTIVE: set[int] = set()
 _CANCELLED: set[int] = set()
 _ACTIVE_LOCK = threading.Lock()
+_STOP_REQUESTED = threading.Event()
 
 
-def cancel_all() -> None:
+def cancel_all(stop_new: bool = False) -> None:
     """Terminate active provider groups before controller cancellation exits."""
     reranking.cancel_all()
     with _ACTIVE_LOCK:
+        if stop_new:
+            _STOP_REQUESTED.set()
         for pid in _ACTIVE:
             _CANCELLED.add(pid)
             try:
@@ -166,17 +169,19 @@ def execute(command: list[str], request: Request) -> tuple[list[dict], int]:
             "w", encoding="utf-8"
         ) as stderr,
     ):
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=stdout,
-            stderr=stderr,
-            cwd=request.workspace,
-            env=environment,
-            start_new_session=True,
-            text=True,
-        )
         with _ACTIVE_LOCK:
+            if _STOP_REQUESTED.is_set():
+                raise ProviderCancelled("Controller stopped new invocations")
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=request.workspace,
+                env=environment,
+                start_new_session=True,
+                text=True,
+            )
             _ACTIVE.add(process.pid)
         artifacts.event(
             request.workspace / "events.jsonl", "invoked", pid=process.pid
