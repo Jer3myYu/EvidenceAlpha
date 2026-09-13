@@ -1107,9 +1107,22 @@ def run(
         )
         if old and completed_output:
             saved = artifacts.read(root / old["path"] / "output.json")
-            if artifacts.digest(saved) != completed_output or old[
-                "input_hash"
-            ] != artifacts.digest(portable):
+            prior = artifacts.read(root / old["path"] / "input.json")[
+                "portable"
+            ]
+            normalized = copy.deepcopy(prior)
+            current_input = copy.deepcopy(portable)
+            for value in (normalized, current_input):
+                if "settled_evidence" in value:
+                    value["settled_evidence"] = documents.compact_passages(
+                        value["settled_evidence"]
+                    )
+            if (
+                artifacts.digest(saved) != completed_output
+                or old["input_hash"] != artifacts.digest(prior)
+                or artifacts.digest(normalized)
+                != artifacts.digest(current_input)
+            ):
                 raise ValueError("Completed stage checkpoint changed")
             return old
         completed_review = execution.get("continuation", {}).get(
