@@ -1,0 +1,19 @@
+digraph Architecture {
+ graph [rankdir=TB, bgcolor="white", pad="0.3", nodesep="0.35", ranksep="0.5", fontname="DejaVu Sans", label="EvidenceAlpha | System architecture", labelloc=t, fontsize=22];
+ node [shape=box, style="rounded,filled", fillcolor="#EEF3F8", color="#879BAF", fontname="DejaVu Sans", fontsize=12, margin="0.18,0.12"];
+ edge [color="#536B82", fontname="DejaVu Sans", fontsize=10];
+ cli [label="CLI + execution admission\nBrief / corpus / explicit settings", fillcolor="#D9E8F5"];
+ workflow [label="Workflow orchestrator\nStage routing / recovery / readiness", fillcolor="#D9E8F5"];
+ roles [label="Role prompts + provider adapters\nLead writer / researchers / reviewer"];
+ tools [label="Source tools\nSearch / exact opens / surrounding context"];
+ retrieval [label="Candidate retrieval → local reranking\nStructural reading blocks"];
+ store [label="Versioned source store\nOriginal text / identity / locations", shape=cylinder];
+ evidence [label="StageContext + evidence handoff\nOriginal support / gaps / explicit omissions"];
+ export [label="Presentation + renderer\nMarkdown / charts / source map / PDF"];
+ records [label="Artifacts + execution ledger\nInputs / traces / usage / outcomes", shape=cylinder];
+ web [label="Optional public-source verification\nExplicit opt-in; capture originals", style="rounded,dashed"];
+ cli -> workflow; workflow -> roles; roles -> tools; tools -> retrieval; retrieval -> store;
+ tools -> store [label="direct opens"]; tools -> web [style=dashed]; web -> store [style=dashed,label="captured sources"];
+ store -> evidence; evidence -> workflow [label="writing + review inputs"]; workflow -> export;
+ cli -> records [style=dashed]; workflow -> records [style=dashed];
+}

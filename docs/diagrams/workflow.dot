@@ -1,0 +1,21 @@
+digraph Workflow {
+ graph [rankdir=TB, bgcolor="white", pad="0.3", nodesep="0.3", ranksep="0.35", fontname="DejaVu Sans", label="EvidenceAlpha | Report workflow", labelloc=t, fontsize=22];
+ node [shape=box, style="rounded,filled", fillcolor="#EEF3F8", color="#879BAF", fontname="DejaVu Sans", fontsize=12, margin="0.16,0.10"];
+ edge [color="#536B82", fontname="DejaVu Sans", fontsize=10];
+ start [label="Brief + authorized corpus + settings"];
+ plan [label="Plan required industry / company questions"];
+ research [label="Research with retrieval and context opens\nPreserve originals, explanations and gaps"];
+ gap [label="Essential gaps?",shape=diamond];
+ follow [label="Bounded focused follow-up\nKeep initial partial result"];
+ synth [label="Evidence handoff → cited draft + figures"];
+ review [label="Independent five-criterion review\nTargeted checks against original sources"];
+ route [label="Material issues?",shape=diamond];
+ correction [label="Orchestrator routes corrections\nUnresolved evidence → focused research if admitted\nAvailable evidence / editorial issue → writer"];
+ revision [label="One consolidated revision + focused recheck"];
+ outcome [label="Readiness + unresolved limitations\nPartial when material problems remain"];
+ delivery [label="Markdown / source mapping / charts / PDF\nExport success is separate from acceptance",fillcolor="#D9E8F5"];
+ start -> plan -> research -> gap;
+ gap -> follow [label="yes, if admitted"]; follow -> synth; gap -> synth [label="no / disclose unresolved"];
+ synth -> review -> route; route -> correction [label="yes"]; correction -> revision -> outcome;
+ route -> outcome [label="no"]; outcome -> delivery;
+}
